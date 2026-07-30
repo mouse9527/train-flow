@@ -498,3 +498,121 @@ test('Attack: 最终 pointer 写失败时旧快照必须保留；重启后应按
   assert.equal(storage.peek(ACTIVE), 'b');
   assert.deepEqual(storage.peek(SLOT_A), oldA, 'pointer recovery must not overwrite the prior snapshot');
 });
+
+test('Attack: mutator 写入 undefined 时必须拒绝提交，不能经 JSON clone 静默变成 null', () => {
+  const oldA = makeSnapshot({ localRevision: 150, records: [{ id: 'durable-record' }] });
+  const oldB = makeSnapshot({ localRevision: 149 });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const database = createDatabase(storage);
+  storage.clearOperations();
+
+  assert.throws(
+    () =>
+      database.commit((draft) => {
+        draft.records.push(undefined);
+      }),
+    /undefined|JSON|serializable|record|validation/i
+  );
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: 两实例在 mutator 内交错提交时 expectedRevision 必须在最终落盘前再次校验，不能覆盖已成功提交者', () => {
+  const oldA = makeSnapshot({ localRevision: 160, records: [{ id: 'base' }] });
+  const storage = seedPair({
+    active: 'a',
+    a: oldA,
+    b: makeSnapshot({ localRevision: 159 })
+  });
+  const outerDatabase = createDatabase(storage);
+  const innerDatabase = createDatabase(storage);
+  let outerError = null;
+
+  try {
+    outerDatabase.commit(
+      (outerDraft) => {
+        innerDatabase.commit(
+          (innerDraft) => innerDraft.records.push({ id: 'inner-winner' }),
+          160
+        );
+        outerDraft.records.push({ id: 'stale-outer' });
+      },
+      160
+    );
+  } catch (error) {
+    outerError = error;
+  }
+
+  assert.match(
+    outerError && outerError.message,
+    /revision conflict: expected 160, actual 161/i,
+    'outer commit must detect that another instance committed after its initial revision check'
+  );
+  const persisted = innerDatabase.load();
+  assert.equal(persisted.localRevision, 161);
+  assert.deepEqual(persisted.records.map(({ id }) => id), ['base', 'inner-winner']);
+});
+
+test('Attack: 空数据库初始化时 now() 返回非有限值必须失败，不能暴露 committedAt=null 的伪快照', () => {
+  const storage = new StorageDouble();
+  const database = createDatabase(storage, { now: () => Number.NaN });
+
+  assert.throws(() => database.load(), /committedAt|finite|timestamp|now/i);
+  storage.assertOnlyKeysWritten([]);
+  assert.equal(storage.peek(SLOT_A), undefined);
+  assert.equal(storage.peek(SLOT_B), undefined);
+  assert.equal(storage.peek(ACTIVE), undefined);
+});
+
+test('Attack: storage 返回内部引用时，调用者修改 load/commit 返回对象也不得篡改持久快照', () => {
+  class ReferenceStorage {
+    constructor(initial) {
+      this.values = new Map(Object.entries(initial));
+    }
+
+    getStorageSync(key) {
+      return this.values.get(key);
+    }
+
+    setStorageSync(key, value) {
+      this.values.set(key, value);
+    }
+  }
+
+  const storage = new ReferenceStorage({
+    [SLOT_A]: makeSnapshot({ localRevision: 170, records: [{ id: 'durable' }] }),
+    [SLOT_B]: makeSnapshot({ localRevision: 169 }),
+    [ACTIVE]: 'a'
+  });
+  const database = createDatabase(storage);
+
+  const loaded = database.load();
+  loaded.records.push({ id: 'load-alias-attack' });
+  assert.deepEqual(database.load().records.map(({ id }) => id), ['durable']);
+
+  const committed = database.commit((draft) => draft.records.push({ id: 'committed' }));
+  committed.records.push({ id: 'commit-alias-attack' });
+  assert.deepEqual(database.load().records.map(({ id }) => id), ['durable', 'committed']);
+});
+
+test('Attack: load 修复 stale pointer 的 setStorageSync 失败时不得改槽；重试后仍能选择最高 revision 并完成修复', () => {
+  const oldA = makeSnapshot({ localRevision: 180, records: [{ id: 'old-pointer-target' }] });
+  const newerB = makeSnapshot({ localRevision: 181, records: [{ id: 'newest' }] });
+  const storage = seedPair({ active: 'a', a: oldA, b: newerB });
+  const database = createDatabase(storage);
+  storage.failNextWrite(ACTIVE, new Error('pointer repair unavailable'));
+
+  assert.throws(() => database.load(), /pointer repair unavailable/i);
+  assert.equal(storage.peek(ACTIVE), 'a');
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), newerB);
+
+  const recovered = database.load();
+  assert.equal(recovered.localRevision, 181);
+  assert.equal(recovered.records[0].id, 'newest');
+  assert.equal(storage.peek(ACTIVE), 'b');
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), newerB);
+});

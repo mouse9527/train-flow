@@ -158,7 +158,13 @@ class LocalDatabase {
     } catch (error) {
       install = null;
     }
-    return createAppDatabase({ now: this.now, install, schemaVersion: this.currentSchemaVersion });
+    const snapshot = createAppDatabase({
+      now: this.now,
+      install,
+      schemaVersion: this.currentSchemaVersion
+    });
+    assertAppDatabaseSnapshot(snapshot, { checksumRequired: false });
+    return snapshot;
   }
 
   load() {
@@ -227,6 +233,13 @@ class LocalDatabase {
   commitSnapshot(state, draft) {
     if (state.snapshot.localRevision >= Number.MAX_SAFE_INTEGER) {
       throw new Error('LocalDatabase localRevision overflow: no safe revision remains');
+    }
+    assertAppDatabaseSnapshot(draft, { checksumRequired: false });
+    const latestState = this.readState();
+    if (latestState.snapshot.localRevision !== state.snapshot.localRevision) {
+      throw new Error(
+        `LocalDatabase revision conflict: expected ${state.snapshot.localRevision}, actual ${latestState.snapshot.localRevision}`
+      );
     }
     const targetSlot = state.activeSlot === 'a' ? 'b' : 'a';
     const nextPayload = {

@@ -10,7 +10,50 @@ function assertNonNegativeInteger(value, label) {
   }
 }
 
+function assertJsonSafe(value, path = '$', ancestors = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${path} must contain only finite JSON numbers`);
+    }
+    return value;
+  }
+  if (typeof value !== 'object') {
+    throw new Error(`${path} contains non-JSON value ${typeof value}`);
+  }
+  if (ancestors.has(value)) {
+    throw new Error(`${path} contains a circular reference and is not JSON serializable`);
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${path} must contain only plain JSON objects`);
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw new Error(`${path} contains symbol keys that are not JSON serializable`);
+  }
+
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) {
+        throw new Error(`${path}[${index}] is a sparse JSON array entry`);
+      }
+      assertJsonSafe(value[index], `${path}[${index}]`, ancestors);
+    }
+  } else {
+    for (const key of Object.keys(value)) {
+      assertJsonSafe(value[key], `${path}.${key}`, ancestors);
+    }
+  }
+  ancestors.delete(value);
+  return value;
+}
+
 function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
+  assertJsonSafe(snapshot);
   assertPlainObject(snapshot, 'AppDatabase snapshot');
   assertNonNegativeInteger(snapshot.schemaVersion, 'schemaVersion');
   if (snapshot.schemaVersion < 1) {
@@ -35,4 +78,9 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   return snapshot;
 }
 
-module.exports = { assertAppDatabaseSnapshot, assertNonNegativeInteger, assertPlainObject };
+module.exports = {
+  assertAppDatabaseSnapshot,
+  assertJsonSafe,
+  assertNonNegativeInteger,
+  assertPlainObject
+};
