@@ -773,12 +773,15 @@ test('Attack Round 4: repeated -30 调整不得让 running deadline 越过 nowMs
   const first = timerOf(engine.adjust(running, -30, adjustAt));
   const second = timerOf(engine.adjust(first, -30, adjustAt));
   assert.deepEqual(running, original);
-  for (const snapshot of [first, second]) {
-    assert.equal(snapshot.status, 'running');
-    assert.ok(snapshot.expectedEndAt >= adjustAt);
-    assert.ok(snapshot.expectedEndAt >= snapshot.startedAt);
-    assert.equal(remainingOf(engine.getRemaining(snapshot, adjustAt)), 0);
-  }
+  assert.equal(first.status, 'running');
+  assert.equal(first.expectedEndAt, adjustAt);
+  assert.ok(first.expectedEndAt >= first.startedAt);
+  assert.equal(remainingOf(engine.getRemaining(first, adjustAt)), 0);
+  assert.equal(second.status, 'expired');
+  assert.equal(second.expiredAt, adjustAt);
+  assert.ok(occurrenceIdOf(second));
+  assert.equal(second.stepId, running.stepId);
+  assert.equal(second.setNumber, running.setNumber);
 
   const toleratedBackwards = timerOf(engine.adjust(running, -30, START_AT - 5_000));
   assert.equal(toleratedBackwards.expectedEndAt, START_AT);
@@ -883,33 +886,36 @@ test('Attack Round 5: factory TimerEngine 必须暴露 canonical remaining alias
   assert.deepEqual(violations, [], violations.join('; '));
 });
 
-test('Peer regression: running deadline 已跨越时所有状态命令必须先物化同一个 expired 边界', () => {
+test('Peer regression: running deadline 到达或跨越时所有状态命令必须先物化同一个 expired 边界', () => {
   const engine = loadEngine();
   const running = timerOf(startStep(engine));
-  const observedAt = END_AT + 60_000;
-  const commands = [
-    ['pause', () => engine.pause(running, observedAt)],
-    ['resume', () => engine.resume(running, observedAt)],
-    ['adjust +30', () => engine.adjust(running, 30, observedAt)],
-    ['adjust -30', () => engine.adjust(running, -30, observedAt)],
-    ['restore', () => engine.restore(running, observedAt)],
-    ['expire', () => engine.expire(running, observedAt)]
-  ];
-  const results = commands.map(([label, command]) => [label, timerOf(command())]);
-  const occurrenceId = occurrenceIdOf(results[0][1]);
+  let occurrenceId;
 
-  assert.ok(occurrenceId, 'crossed deadline must materialize an expiration occurrence');
-  for (const [label, expired] of results) {
-    assert.equal(expired.status, 'expired', `${label} must materialize expired`);
-    assert.equal(expired.expiredAt, END_AT, `${label} must retain the original deadline`);
-    assert.equal(occurrenceIdOf(expired), occurrenceId, `${label} occurrence identity`);
-    assert.equal(expired.stepId, running.stepId, `${label} must not advance step`);
-    assert.equal(expired.setNumber, running.setNumber, `${label} must not advance set`);
+  for (const observedAt of [END_AT, END_AT + 60_000]) {
+    const commands = [
+      ['pause', () => engine.pause(running, observedAt)],
+      ['resume', () => engine.resume(running, observedAt)],
+      ['adjust +30', () => engine.adjust(running, 30, observedAt)],
+      ['adjust -30', () => engine.adjust(running, -30, observedAt)],
+      ['restore', () => engine.restore(running, observedAt)],
+      ['expire', () => engine.expire(running, observedAt)]
+    ];
+    const results = commands.map(([label, command]) => [label, timerOf(command())]);
+    occurrenceId = occurrenceId || occurrenceIdOf(results[0][1]);
+
+    assert.ok(occurrenceId, 'due deadline must materialize an expiration occurrence');
+    for (const [label, expired] of results) {
+      assert.equal(expired.status, 'expired', `${label} at ${observedAt} must materialize expired`);
+      assert.equal(expired.expiredAt, END_AT, `${label} must retain the original deadline`);
+      assert.equal(occurrenceIdOf(expired), occurrenceId, `${label} occurrence identity`);
+      assert.equal(expired.stepId, running.stepId, `${label} must not advance step`);
+      assert.equal(expired.setNumber, running.setNumber, `${label} must not advance set`);
+    }
+
+    const firstExpired = results[0][1];
+    const restored = timerOf(engine.restore(firstExpired, observedAt + 60_000));
+    const repeated = timerOf(engine.expire(restored, observedAt + 120_000));
+    assert.deepEqual(restored, firstExpired, 'repeated restore must preserve the boundary');
+    assert.deepEqual(repeated, firstExpired, 'repeated expiration confirmation is exactly-once');
   }
-
-  const firstExpired = results[0][1];
-  const restored = timerOf(engine.restore(firstExpired, observedAt + 60_000));
-  const repeated = timerOf(engine.expire(restored, observedAt + 120_000));
-  assert.deepEqual(restored, firstExpired, 'repeated restore must preserve the boundary');
-  assert.deepEqual(repeated, firstExpired, 'repeated expiration confirmation is exactly-once');
 });

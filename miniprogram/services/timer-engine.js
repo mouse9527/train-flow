@@ -82,7 +82,7 @@ function getRemaining(snapshot, nowMs) {
 }
 
 function materializeExpiredRunning(snapshot, nowMs) {
-  if (snapshot.status === 'running' && nowMs > snapshot.expectedEndAt) {
+  if (snapshot.status === 'running' && nowMs >= snapshot.expectedEndAt) {
     return expire(snapshot, nowMs);
   }
   return null;
