@@ -1034,3 +1034,47 @@ test('Reviewer regression: checksum-valid 恶意 settings 槽必须让 load 与 
     assert.equal(storage.peek(ACTIVE), 'a');
   }
 });
+
+test('Reviewer round 2 regression: checksum mismatch 必须先按普通损坏隔离，只有 checksum-valid 未知字段才 fail closed', () => {
+  const healthyA = makeSnapshot({ localRevision: 340, records: [{ id: 'healthy-active' }] });
+  const staleChecksumB = makeSnapshot({ localRevision: 339, records: [{ id: 'older-inactive' }] });
+  staleChecksumB.settings.openId = 'not-covered-by-stale-checksum';
+  const recoverableStorage = seedPair({ active: 'a', a: healthyA, b: staleChecksumB });
+  recoverableStorage.clearOperations();
+
+  const recovered = createDatabase(recoverableStorage).load();
+
+  assert.deepEqual(recovered, healthyA);
+  recoverableStorage.assertOnlyKeysWritten([]);
+  assert.deepEqual(recoverableStorage.peek(SLOT_A), healthyA);
+  assert.deepEqual(recoverableStorage.peek(SLOT_B), staleChecksumB);
+  assert.equal(recoverableStorage.peek(ACTIVE), 'a');
+
+  const checksumValidB = makeSnapshot({
+    localRevision: 339,
+    records: [{ id: 'older-inactive' }],
+    settings: {
+      ...makeSnapshot().settings,
+      openId: 'covered-by-valid-checksum'
+    }
+  });
+  const unsafeStorage = seedPair({ active: 'a', a: healthyA, b: checksumValidB });
+  const unsafeDatabase = createDatabase(unsafeStorage);
+  unsafeStorage.clearOperations();
+
+  assert.throws(
+    () => unsafeDatabase.load(),
+    /settings|field|schema|unknown|unexpected|unsafe/i
+  );
+  unsafeStorage.assertOnlyKeysWritten([]);
+
+  unsafeStorage.clearOperations();
+  assert.throws(
+    () => unsafeDatabase.commit((draft) => draft.records.push({ id: 'must-not-commit' })),
+    /settings|field|schema|unknown|unexpected|unsafe/i
+  );
+  unsafeStorage.assertOnlyKeysWritten([]);
+  assert.deepEqual(unsafeStorage.peek(SLOT_A), healthyA);
+  assert.deepEqual(unsafeStorage.peek(SLOT_B), checksumValidB);
+  assert.equal(unsafeStorage.peek(ACTIVE), 'a');
+});

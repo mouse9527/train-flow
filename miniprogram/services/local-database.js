@@ -54,10 +54,14 @@ function decodeStored(value) {
 }
 
 function validateStoredSnapshot(snapshot) {
-  assertAppDatabaseSnapshot(snapshot);
-  if (snapshot.checksum !== computeChecksum(snapshot)) {
+  if (
+    typeof snapshot.checksum !== 'string' ||
+    snapshot.checksum.length === 0 ||
+    snapshot.checksum !== computeChecksum(snapshot)
+  ) {
     throw new Error('AppDatabase checksum validation failed');
   }
+  assertAppDatabaseSnapshot(snapshot);
   return snapshot;
 }
 
