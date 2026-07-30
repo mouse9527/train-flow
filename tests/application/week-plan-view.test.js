@@ -5,8 +5,18 @@ const {
   createDefaultPlans
 } = require('../../miniprogram/domain/planning/default-plan-factory');
 const {
+  createPlanApplicationService
+} = require('../../miniprogram/application/plan-application-service');
+const {
   createWeekPlanView
 } = require('../../miniprogram/application/week-plan-view');
+const {
+  createPlanRepository
+} = require('../../miniprogram/domain/planning/plan-repository');
+const {
+  createLocalDatabase
+} = require('../../miniprogram/services/local-database');
+const { StorageDouble } = require('../helpers/storage-double');
 
 const FIXED_NOW = 1785717300000;
 
@@ -147,4 +157,33 @@ test('WeekPlanView maps Sunday as rest guidance without total timer or start-wor
   assert.match(view.selectedDay.restGuidance, /不补练/);
   assert.ok(view.selectedDay.safetyNotices.includes('休息日不补练，保证睡眠与恢复。'));
   assert.ok(view.selectedDay.safetyNotices.includes('训练前后注意补水。'));
+});
+
+test('PlanApplicationService queries repository week ranges and keeps empty-week navigation read-only', () => {
+  const storage = new StorageDouble();
+  const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
+  const repository = createPlanRepository({ database, now: () => FIXED_NOW });
+  const application = createPlanApplicationService({ repository });
+  application.initializeDefaultPlans();
+  storage.clearOperations();
+
+  const initial = application.getWeekPlan({
+    weekStart: '2026-08-03',
+    selectedDate: '2026-08-06',
+    recordSummaries: [{ trainingDate: '2026-08-06', completed: true }]
+  });
+  const next = application.getWeekPlan({ weekStart: initial.nextWeekStart });
+  const restored = application.getWeekPlan({
+    weekStart: next.previousWeekStart,
+    selectedDate: '2026-08-09'
+  });
+
+  assert.equal(initial.days.length, 7);
+  assert.equal(initial.selectedDay.trainingDate, '2026-08-06');
+  assert.equal(initial.selectedDay.completionLabel, '已完成');
+  assert.equal(next.isEmpty, true);
+  assert.equal(next.weekStart, '2026-08-10');
+  assert.equal(restored.days.length, 7);
+  assert.equal(restored.selectedDay.trainingDate, '2026-08-09');
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
 });

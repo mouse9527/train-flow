@@ -4,6 +4,10 @@ const {
 const {
   createDefaultPlans
 } = require('../domain/planning/default-plan-factory');
+const {
+  DEFAULT_WEEK_START,
+  createWeekPlanView
+} = require('./week-plan-view');
 
 class PlanApplicationService {
   constructor({ repository, defaultPlanFactory = createDefaultPlans }) {
@@ -20,6 +24,19 @@ class PlanApplicationService {
   initializeDefaultPlans() {
     const plans = this.defaultPlanFactory();
     return this.repository.initializeDefaults(plans, DEFAULT_PLAN_TEMPLATE_VERSION);
+  }
+
+  getWeekPlan({
+    weekStart = DEFAULT_WEEK_START,
+    selectedDate = null,
+    recordSummaries = []
+  } = {}) {
+    if (typeof this.repository.findRange !== 'function') {
+      throw new Error('PlanApplicationService week queries require PlanRepository.findRange');
+    }
+    const range = createWeekPlanView({ weekStart, plans: [] });
+    const plans = this.repository.findRange(range.weekStart, range.weekEnd);
+    return createWeekPlanView({ weekStart, selectedDate, plans, recordSummaries });
   }
 }
 
