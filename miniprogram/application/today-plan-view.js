@@ -68,14 +68,32 @@ function minutesLabel(seconds, { approximate = false } = {}) {
 }
 
 function formatLocalTime(epochMs, timezone) {
-  if (!Number.isFinite(epochMs)) {
+  if (!Number.isFinite(epochMs) || typeof timezone !== 'string' || timezone.length === 0) {
+    return null;
+  }
+  if (typeof Intl !== 'undefined' && typeof Intl.DateTimeFormat === 'function') {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: timezone,
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).formatToParts(new Date(epochMs));
+      const hour = parts.find(({ type }) => type === 'hour');
+      const minute = parts.find(({ type }) => type === 'minute');
+      if (hour && minute) {
+        return `${hour.value === '24' ? '00' : hour.value}:${minute.value}`;
+      }
+    } catch (error) {
+      return null;
+    }
+  }
+  if (timezone !== 'UTC' && timezone !== 'Asia/Shanghai') {
     return null;
   }
   const offsetMinutes = timezone === 'UTC' ? 0 : 8 * 60;
   const shifted = new Date(epochMs + offsetMinutes * 60 * 1000);
-  const hour = String(shifted.getUTCHours()).padStart(2, '0');
-  const minute = String(shifted.getUTCMinutes()).padStart(2, '0');
-  return `${hour}:${minute}`;
+  return `${String(shifted.getUTCHours()).padStart(2, '0')}:${String(shifted.getUTCMinutes()).padStart(2, '0')}`;
 }
 
 function isRestPlan(plan) {
@@ -196,8 +214,8 @@ function matchesActiveSession(activeSession, plan, selectedDate) {
 }
 
 function resolveState({ activeSession, plan, todayRecord, selectedDate }) {
-  if (matchesActiveSession(activeSession, plan, selectedDate)) {
-    return 'active';
+  if (plan && isRestPlan(plan)) {
+    return 'rest';
   }
   if (todayRecord && todayRecord.status === 'completed') {
     return 'completed';
@@ -205,11 +223,11 @@ function resolveState({ activeSession, plan, todayRecord, selectedDate }) {
   if (todayRecord && ['skipped', 'aborted'].includes(todayRecord.status)) {
     return 'skipped';
   }
+  if (matchesActiveSession(activeSession, plan, selectedDate)) {
+    return 'active';
+  }
   if (!plan) {
     return 'empty';
-  }
-  if (isRestPlan(plan)) {
-    return 'rest';
   }
   return 'scheduled';
 }
@@ -272,6 +290,15 @@ function statePresentation(state, { activeSession, plan, todayRecord }) {
   };
 }
 
+function buildCompletedSessionSummary(record, timezone) {
+  const endedAt = formatLocalTime(record.endedAt, timezone);
+  return {
+    recordId: record.id,
+    durationLabel: minutesLabel(record.elapsedActiveSeconds),
+    endedAtLabel: endedAt ? `${endedAt} 完成` : '已完成'
+  };
+}
+
 function buildTodayPlanView({
   selectedDate,
   plan,
@@ -319,11 +346,7 @@ function buildTodayPlanView({
     steps: safePlan ? projectSteps(safePlan.steps || []) : [],
     weekSummary: buildWeekSummary(clone(weekPlans), safeRecords, startDate, endDate),
     completedSessionSummary: state === 'completed'
-      ? {
-        recordId: todayRecord.id,
-        durationLabel: minutesLabel(todayRecord.elapsedActiveSeconds),
-        endedAtLabel: `${formatLocalTime(todayRecord.endedAt, timezone)} 完成`
-      }
+      ? buildCompletedSessionSummary(todayRecord, timezone)
       : null
   };
 }

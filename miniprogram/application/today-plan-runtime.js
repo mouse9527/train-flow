@@ -64,11 +64,17 @@ function createSnapshotReadRepositories({ database, fixture, selectedDate }) {
 function createTodayPlanRuntime({
   selectedDate,
   fixture = null,
+  allowDeveloperFixtures = false,
   database = createLocalDatabase()
 }) {
+  const acceptedFixture = allowDeveloperFixtures ? fixture : null;
   const planRepository = createPlanRepository({ database });
   createPlanApplicationService({ repository: planRepository }).initializeDefaultPlans();
-  const repositories = createSnapshotReadRepositories({ database, fixture, selectedDate });
+  const repositories = createSnapshotReadRepositories({
+    database,
+    fixture: acceptedFixture,
+    selectedDate
+  });
   const service = createTodayPlanApplicationService({
     planRepository,
     ...repositories

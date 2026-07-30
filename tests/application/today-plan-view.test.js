@@ -9,6 +9,7 @@ const {
 function plan({
   id = 'plan_monday',
   trainingDate = '2026-08-03',
+  timezone = 'Asia/Shanghai',
   title = '基础训练',
   estimatedDurationSeconds = 2280,
   recommendedEndLocalTime = '09:10',
@@ -43,7 +44,7 @@ function plan({
   return {
     id,
     trainingDate,
-    timezone: 'Asia/Shanghai',
+    timezone,
     title,
     estimatedDurationSeconds,
     recommendedEndLocalTime,
@@ -323,4 +324,83 @@ test('Attack: a completed fact wins over a later skipped record and duplicate se
   assert.equal(view.completedSessionSummary.recordId, 'record_second_completed');
   assert.equal(view.weekSummary.completedCount, 1);
   assert.equal(view.weekSummary.completionRate, 100);
+});
+
+test('Peer regression: rest and terminal records suppress every stale active-session action', () => {
+  const monday = plan();
+  const staleActive = {
+    id: 'session_stale',
+    planId: monday.id,
+    trainingDate: monday.trainingDate,
+    status: 'in_progress',
+    currentStepIndex: 0
+  };
+  const completed = buildTodayPlanView({
+    selectedDate: monday.trainingDate,
+    plan: monday,
+    weekPlans: [monday],
+    weekRecords: [record()],
+    activeSession: staleActive
+  });
+  assert.equal(completed.state, 'completed');
+  assert.equal(completed.primaryAction.id, 'view_record');
+
+  const skipped = buildTodayPlanView({
+    selectedDate: monday.trainingDate,
+    plan: monday,
+    weekPlans: [monday],
+    weekRecords: [record({ status: 'skipped', elapsedActiveSeconds: 0 })],
+    activeSession: staleActive
+  });
+  assert.equal(skipped.state, 'skipped');
+  assert.equal(skipped.primaryAction, null);
+
+  const sunday = plan({
+    id: 'plan_sunday',
+    trainingDate: '2026-08-09',
+    title: '完全休息',
+    estimatedDurationSeconds: 0,
+    recommendedEndLocalTime: null,
+    steps: [{
+      id: 'step_rest',
+      order: 10,
+      kind: 'rest_day',
+      name: '休息',
+      description: '',
+      durationSeconds: null,
+      sets: null,
+      reps: null,
+      restSeconds: null,
+      optional: false
+    }]
+  });
+  const rest = buildTodayPlanView({
+    selectedDate: sunday.trainingDate,
+    plan: sunday,
+    weekPlans: [sunday],
+    weekRecords: [],
+    activeSession: {
+      ...staleActive,
+      planId: sunday.id,
+      trainingDate: sunday.trainingDate
+    }
+  });
+  assert.equal(rest.state, 'rest');
+  assert.equal(rest.primaryAction, null);
+});
+
+test('Peer regression: completed time follows UTC and arbitrary IANA zones with honest fallback', () => {
+  const completedRecord = record();
+  const viewFor = (timezone) => buildTodayPlanView({
+    selectedDate: '2026-08-03',
+    plan: plan({ timezone }),
+    weekPlans: [plan({ timezone })],
+    weekRecords: [completedRecord],
+    activeSession: null
+  });
+
+  assert.equal(viewFor('UTC').completedSessionSummary.endedAtLabel, '01:09 完成');
+  assert.equal(viewFor('Asia/Shanghai').completedSessionSummary.endedAtLabel, '09:09 完成');
+  assert.equal(viewFor('America/New_York').completedSessionSummary.endedAtLabel, '21:09 完成');
+  assert.equal(viewFor('Unsupported/Timezone').completedSessionSummary.endedAtLabel, '已完成');
 });

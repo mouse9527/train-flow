@@ -36,7 +36,7 @@ function loadTodayPage() {
   };
 }
 
-function withWxDouble(callback) {
+function withWxDouble(callback, { envVersion = 'develop' } = {}) {
   const calls = [];
   const values = new Map();
   const originalWx = global.wx;
@@ -52,6 +52,9 @@ function withWxDouble(callback) {
     },
     removeStorageSync(key) {
       values.delete(key);
+    },
+    getAccountInfoSync() {
+      return { miniProgram: { envVersion } };
     },
     navigateTo(options) {
       calls.push(['navigateTo', options.url]);
@@ -78,11 +81,13 @@ test('Today page renders repository-backed scheduled, completed, rest and empty 
   assert.equal(scheduled.data.view.primaryAction.id, 'start');
   assert.ok(scheduled.data.view.steps.length > 1);
 
-  const completed = loadTodayPage();
-  completed.onLoad({ date: '2026-08-03', fixture: 'completed' });
-  assert.equal(completed.data.view.state, 'completed');
-  assert.equal(completed.data.view.weekSummary.completionRate, 17);
-  assert.equal(completed.data.view.completedSessionSummary.durationLabel, '34 分钟');
+  withWxDouble(() => {
+    const completed = loadTodayPage();
+    completed.onLoad({ date: '2026-08-03', fixture: 'completed' });
+    assert.equal(completed.data.view.state, 'completed');
+    assert.equal(completed.data.view.weekSummary.completionRate, 17);
+    assert.equal(completed.data.view.completedSessionSummary.durationLabel, '34 分钟');
+  });
 
   const rest = loadTodayPage();
   rest.onLoad({ date: '2026-08-09' });
@@ -165,4 +170,18 @@ test('developer fixtures are anonymous, date-selectable read models and never pe
   assert.match(runtimeSource, /fixture === 'active'/);
   assert.doesNotMatch(runtimeSource, /database\.commit|setStorageSync/);
   assert.doesNotMatch(runtimeSource, /realName|openId|weightKg|heartRate|medicalHistory/);
+});
+
+test('production env ignores user-controlled fixture query while develop env accepts it', () => {
+  withWxDouble(() => {
+    const develop = loadTodayPage();
+    develop.onLoad({ date: '2026-08-03', fixture: 'completed' });
+    assert.equal(develop.data.view.state, 'completed');
+  }, { envVersion: 'develop' });
+
+  withWxDouble(() => {
+    const release = loadTodayPage();
+    release.onLoad({ date: '2026-08-03', fixture: 'completed' });
+    assert.equal(release.data.view.state, 'scheduled');
+  }, { envVersion: 'release' });
 });

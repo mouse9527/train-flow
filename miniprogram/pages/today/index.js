@@ -5,6 +5,22 @@ function currentTrainingDate(now = Date.now()) {
   return local.toISOString().slice(0, 10);
 }
 
+function developerFixturesEnabled() {
+  if (typeof wx === 'undefined' || typeof wx.getAccountInfoSync !== 'function') {
+    return false;
+  }
+  try {
+    const accountInfo = wx.getAccountInfoSync();
+    return Boolean(
+      accountInfo &&
+      accountInfo.miniProgram &&
+      accountInfo.miniProgram.envVersion === 'develop'
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
 Page({
   data: {
     view: null
@@ -13,7 +29,8 @@ Page({
   onLoad(query = {}) {
     this.runtime = createTodayPlanRuntime({
       selectedDate: query.date || currentTrainingDate(),
-      fixture: query.fixture || null
+      fixture: query.fixture || null,
+      allowDeveloperFixtures: developerFixturesEnabled()
     });
     this.refresh();
   },
@@ -41,4 +58,4 @@ Page({
   }
 });
 
-module.exports = { currentTrainingDate };
+module.exports = { currentTrainingDate, developerFixturesEnabled };
