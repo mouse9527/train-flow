@@ -31,6 +31,12 @@ Page({
     this.setData({ settings: updated });
   },
 
+  onTimeChange(event) {
+    const field = event.currentTarget.dataset.field;
+    const updated = settingsService.updateSettings({ [field]: event.detail.value });
+    this.setData({ settings: updated });
+  },
+
   onSwitchSection(event) {
     this.setData({ section: event.currentTarget.dataset.section });
   }

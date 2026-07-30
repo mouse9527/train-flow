@@ -72,6 +72,21 @@ test('settings page golden path: load preferences section then read about/safety
   assert.match(aboutWxml, /补水/);
 });
 
+test('settings page exposes editable time pickers for start and recommended end times', () => {
+  const pageSource = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/settings/index.js'), 'utf8');
+  const pageWxml = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/settings/index.wxml'), 'utf8');
+
+  assert.match(
+    pageWxml,
+    /<picker[\s\S]*mode="time"[\s\S]*data-field="defaultStartLocalTime"[\s\S]*bindchange="onTimeChange"/
+  );
+  assert.match(
+    pageWxml,
+    /<picker[\s\S]*mode="time"[\s\S]*data-field="recommendedEndLocalTime"[\s\S]*bindchange="onTimeChange"/
+  );
+  assert.match(pageSource, /onTimeChange\(event\)/);
+});
+
 test('no identity or health fixture data leaks into the repository (openId, real names, health metrics)', () => {
   const trackedGlobs = [
     'miniprogram',

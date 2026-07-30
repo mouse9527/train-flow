@@ -33,11 +33,25 @@
     </view>
     <view class="tf-row">
       <text class="tf-row-label">默认开始时间</text>
-      <text class="tf-caption">{{settings.defaultStartLocalTime}}</text>
+      <picker
+        mode="time"
+        value="{{settings.defaultStartLocalTime}}"
+        data-field="defaultStartLocalTime"
+        bindchange="onTimeChange"
+      >
+        <view class="tf-caption">{{settings.defaultStartLocalTime}}</view>
+      </picker>
     </view>
     <view class="tf-row">
       <text class="tf-row-label">建议结束时间</text>
-      <text class="tf-caption">{{settings.recommendedEndLocalTime}}</text>
+      <picker
+        mode="time"
+        value="{{settings.recommendedEndLocalTime}}"
+        data-field="recommendedEndLocalTime"
+        bindchange="onTimeChange"
+      >
+        <view class="tf-caption">{{settings.recommendedEndLocalTime}}</view>
+      </picker>
     </view>
     <view class="tf-row">
       <text class="tf-row-label">默认组间休息（秒）</text>
