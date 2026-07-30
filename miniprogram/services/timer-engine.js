@@ -1,0 +1,265 @@
+const {
+  assertNowMs,
+  assertStartInput,
+  assertTimerSnapshot,
+  copyTimerSnapshot,
+  createExpirationOccurrenceId
+} = require('../domain/execution/timer-snapshot');
+
+const CLOCK_BACKWARD_TOLERANCE_MS = 5_000;
+const ADJUSTMENT_SECONDS = 30;
+
+function checkedAddMilliseconds(nowMs, seconds, label) {
+  const milliseconds = seconds * 1_000;
+  if (!Number.isSafeInteger(milliseconds)) {
+    throw new RangeError(`${label} is outside the supported timer range`);
+  }
+  const result = nowMs + milliseconds;
+  if (!Number.isSafeInteger(result)) {
+    throw new RangeError(`${label} produces an unsafe deadline`);
+  }
+  return result;
+}
+
+function start(input, nowMs) {
+  assertStartInput(input);
+  assertNowMs(nowMs);
+
+  return {
+    mode: input.mode,
+    status: 'running',
+    durationSeconds: input.durationSeconds,
+    remainingSecondsAtCheckpoint: input.durationSeconds,
+    startedAt: nowMs,
+    expectedEndAt: checkedAddMilliseconds(nowMs, input.durationSeconds, 'durationSeconds'),
+    checkpointAt: nowMs,
+    pausedAt: null,
+    expiredAt: null,
+    adjustmentSeconds: 0,
+    stepId: input.stepId,
+    setNumber: input.setNumber
+  };
+}
+
+function getRemaining(snapshot, nowMs) {
+  assertTimerSnapshot(snapshot);
+  assertNowMs(nowMs);
+
+  if (snapshot.status === 'expired') {
+    return 0;
+  }
+  if (snapshot.status === 'paused') {
+    return snapshot.remainingSecondsAtCheckpoint;
+  }
+  return Math.max(0, Math.ceil((snapshot.expectedEndAt - nowMs) / 1_000));
+}
+
+function pause(snapshot, nowMs) {
+  assertTimerSnapshot(snapshot);
+  assertNowMs(nowMs);
+
+  if (snapshot.status === 'paused') {
+    return copyTimerSnapshot(snapshot);
+  }
+  if (snapshot.status !== 'running') {
+    throw new Error(`cannot pause timer with status ${snapshot.status}`);
+  }
+
+  return {
+    ...snapshot,
+    status: 'paused',
+    remainingSecondsAtCheckpoint: getRemaining(snapshot, nowMs),
+    expectedEndAt: null,
+    checkpointAt: nowMs,
+    pausedAt: nowMs
+  };
+}
+
+function resume(snapshot, nowMs) {
+  assertTimerSnapshot(snapshot);
+  assertNowMs(nowMs);
+
+  if (snapshot.status === 'running') {
+    return copyTimerSnapshot(snapshot);
+  }
+  if (snapshot.status !== 'paused') {
+    throw new Error(`cannot resume timer with status ${snapshot.status}`);
+  }
+
+  const resumed = {
+    ...snapshot,
+    status: 'running',
+    expectedEndAt: checkedAddMilliseconds(
+      nowMs,
+      snapshot.remainingSecondsAtCheckpoint,
+      'remainingSecondsAtCheckpoint'
+    ),
+    checkpointAt: nowMs,
+    pausedAt: null
+  };
+  delete resumed.clockAnomaly;
+  delete resumed.requiresConfirmation;
+  delete resumed.reason;
+  delete resumed.code;
+  return resumed;
+}
+
+function assertAdjustment(deltaSeconds) {
+  if (deltaSeconds !== ADJUSTMENT_SECONDS && deltaSeconds !== -ADJUSTMENT_SECONDS) {
+    throw new TypeError(`timer adjustment must be +${ADJUSTMENT_SECONDS} or -${ADJUSTMENT_SECONDS}`);
+  }
+}
+
+function adjust(snapshot, deltaSeconds, nowMs) {
+  assertTimerSnapshot(snapshot);
+  assertAdjustment(deltaSeconds);
+  assertNowMs(nowMs);
+
+  if (snapshot.status === 'expired') {
+    throw new Error('cannot adjust an expired timer');
+  }
+
+  const adjustmentSeconds = snapshot.adjustmentSeconds + deltaSeconds;
+  if (!Number.isSafeInteger(adjustmentSeconds)) {
+    throw new RangeError('timer adjustmentSeconds is outside the supported range');
+  }
+
+  if (snapshot.status === 'paused') {
+    const remainingAfterAdjustment = snapshot.remainingSecondsAtCheckpoint + deltaSeconds;
+    if (!Number.isSafeInteger(remainingAfterAdjustment)) {
+      throw new RangeError('adjusted remaining time is outside the supported range');
+    }
+    const adjustedRemaining = Math.max(0, remainingAfterAdjustment);
+    return {
+      ...snapshot,
+      remainingSecondsAtCheckpoint: adjustedRemaining,
+      checkpointAt: nowMs,
+      adjustmentSeconds
+    };
+  }
+
+  const adjustedDeadline = Math.max(
+    nowMs,
+    checkedAddMilliseconds(snapshot.expectedEndAt, deltaSeconds, 'adjusted deadline')
+  );
+  return {
+    ...snapshot,
+    remainingSecondsAtCheckpoint: Math.max(
+      0,
+      Math.ceil((adjustedDeadline - nowMs) / 1_000)
+    ),
+    expectedEndAt: adjustedDeadline,
+    checkpointAt: nowMs,
+    adjustmentSeconds
+  };
+}
+
+function expire(snapshot, nowMs) {
+  assertTimerSnapshot(snapshot);
+  assertNowMs(nowMs);
+
+  if (snapshot.status === 'expired') {
+    return copyTimerSnapshot(snapshot);
+  }
+  if (snapshot.status !== 'running') {
+    throw new Error(`cannot expire timer with status ${snapshot.status}`);
+  }
+  if (getRemaining(snapshot, nowMs) > 0) {
+    throw new Error('cannot expire timer before its deadline');
+  }
+
+  const expirationOccurrenceId = createExpirationOccurrenceId(snapshot);
+  return {
+    ...snapshot,
+    status: 'expired',
+    remainingSecondsAtCheckpoint: 0,
+    expectedEndAt: null,
+    checkpointAt: nowMs,
+    pausedAt: null,
+    expiredAt: snapshot.expectedEndAt,
+    expirationOccurrenceId
+  };
+}
+
+function restore(snapshot, nowMs) {
+  assertTimerSnapshot(snapshot);
+  assertNowMs(nowMs);
+
+  if (snapshot.status === 'expired' || snapshot.status === 'paused') {
+    return copyTimerSnapshot(snapshot);
+  }
+
+  if (snapshot.checkpointAt - nowMs > CLOCK_BACKWARD_TOLERANCE_MS) {
+    return {
+      ...snapshot,
+      status: 'paused',
+      expectedEndAt: null,
+      checkpointAt: nowMs,
+      pausedAt: nowMs,
+      clockAnomaly: true,
+      requiresConfirmation: true,
+      reason: 'clock-anomaly',
+      code: 'CLOCK_ANOMALY'
+    };
+  }
+
+  const remainingSecondsAtCheckpoint = getRemaining(snapshot, nowMs);
+  if (remainingSecondsAtCheckpoint === 0) {
+    return expire(snapshot, nowMs);
+  }
+
+  return {
+    ...snapshot,
+    remainingSecondsAtCheckpoint,
+    checkpointAt: nowMs
+  };
+}
+
+class TimerEngine {
+  start(input, nowMs) {
+    return start(input, nowMs);
+  }
+
+  getRemaining(snapshot, nowMs) {
+    return getRemaining(snapshot, nowMs);
+  }
+
+  pause(snapshot, nowMs) {
+    return pause(snapshot, nowMs);
+  }
+
+  resume(snapshot, nowMs) {
+    return resume(snapshot, nowMs);
+  }
+
+  adjust(snapshot, deltaSeconds, nowMs) {
+    return adjust(snapshot, deltaSeconds, nowMs);
+  }
+
+  restore(snapshot, nowMs) {
+    return restore(snapshot, nowMs);
+  }
+
+  expire(snapshot, nowMs) {
+    return expire(snapshot, nowMs);
+  }
+}
+
+function createTimerEngine() {
+  return new TimerEngine();
+}
+
+module.exports = {
+  ADJUSTMENT_SECONDS,
+  CLOCK_BACKWARD_TOLERANCE_MS,
+  TimerEngine,
+  adjust,
+  createTimerEngine,
+  expire,
+  getRemaining,
+  pause,
+  remaining: getRemaining,
+  restore,
+  resume,
+  start
+};
