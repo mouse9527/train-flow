@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  applyWorkoutCommand,
   assertWorkoutSession,
   createWorkoutSession
 } = require('../../../miniprogram/domain/execution/workout-session');
@@ -13,6 +14,34 @@ const NOW = 1785717300000;
 
 function timedPlan() {
   return createDefaultPlans({ now: () => NOW })[0];
+}
+
+function strengthPlan() {
+  const plan = timedPlan();
+  plan.id = 'plan_strength_fixture';
+  plan.steps = [{ ...plan.steps[3], order: 1 }];
+  return plan;
+}
+
+function singleTimedPlan() {
+  const plan = timedPlan();
+  plan.id = 'plan_timed_fixture';
+  plan.steps = [{ ...plan.steps[0], order: 1 }];
+  return plan;
+}
+
+function startedSession(plan = timedPlan()) {
+  return createWorkoutSession({
+    plan,
+    sessionId: 'session_commands',
+    originDeviceId: 'device_origin',
+    commandKey: 'start_commands',
+    nowMs: NOW
+  });
+}
+
+function command(type, expectedSessionRevision, commandKey, nowMs, payload = {}) {
+  return { type, expectedSessionRevision, commandKey, nowMs, payload };
 }
 
 test('start creates a validated deep PlanSnapshot with stable origin and initial position', () => {
@@ -127,5 +156,165 @@ test('Session boundary rejects custom prototypes, descriptors, unknown and unsaf
     nonEnumerable
   ]) {
     assert.throws(() => assertWorkoutSession(candidate), /session|JSON|field|prototype|finite|safe|enumerable/i);
+  }
+});
+
+test('commands require revision and provide replay-safe idempotency without mutating input', () => {
+  const initial = startedSession();
+  const start = command(
+    'start_step',
+    1,
+    'start_step_1',
+    NOW,
+    { stepId: initial.planSnapshot.steps[0].id }
+  );
+  const first = applyWorkoutCommand(initial, start);
+
+  assert.equal(first.replayed, false);
+  assert.equal(first.session.sessionRevision, 2);
+  assert.equal(first.session.timer.mode, 'step');
+  assert.equal(first.session.timer.stepId, initial.planSnapshot.steps[0].id);
+  assert.equal(initial.timer, null);
+  assert.equal(initial.sessionRevision, 1);
+
+  const replay = applyWorkoutCommand(first.session, start);
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.session, first.session);
+  assert.notEqual(replay.session, first.session);
+
+  assert.throws(
+    () => applyWorkoutCommand(first.session, { ...start, payload: { stepId: 'different' } }),
+    (error) => error && error.code === 'SESSION_COMMAND_KEY_REUSED'
+  );
+  assert.throws(
+    () => applyWorkoutCommand(
+      first.session,
+      command('checkpoint', 1, 'stale_checkpoint', NOW + 1_000, { reason: 'hide' })
+    ),
+    (error) => error && error.code === 'SESSION_REVISION_CONFLICT'
+  );
+});
+
+test('checkpoint and step completion atomically advance revision, elapsed time and timer state', () => {
+  const initial = startedSession();
+  const stepId = initial.planSnapshot.steps[0].id;
+  const started = applyWorkoutCommand(
+    initial,
+    command('start_step', 1, 'start_timer', NOW, { stepId })
+  ).session;
+  const checkpointed = applyWorkoutCommand(
+    started,
+    command('checkpoint', 2, 'hide_checkpoint', NOW + 2_000, { reason: 'hide' })
+  ).session;
+
+  assert.equal(checkpointed.sessionRevision, 3);
+  assert.equal(checkpointed.elapsedActiveSeconds, 2);
+  assert.equal(checkpointed.lastCheckpointAt, NOW + 2_000);
+  assert.equal(checkpointed.timer.remainingSecondsAtCheckpoint, 298);
+  assert.equal(checkpointed.timer.checkpointAt, NOW + 2_000);
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      checkpointed,
+      command('complete_step', 3, 'early_complete', NOW + 3_000, { stepId })
+    ),
+    (error) => error && error.code === 'SESSION_TIMER_NOT_EXPIRED'
+  );
+
+  const completed = applyWorkoutCommand(
+    checkpointed,
+    command('complete_step', 3, 'complete_step', NOW + 300_000, { stepId })
+  ).session;
+  assert.equal(completed.sessionRevision, 4);
+  assert.equal(completed.currentStepIndex, 1);
+  assert.equal(completed.timer, null);
+  assert.deepEqual(completed.stepResults[0], {
+    stepId,
+    status: 'completed',
+    completedAt: NOW + 300_000,
+    setResults: []
+  });
+});
+
+test('set completion rejects double transitions and keeps rest timer identity with next set', () => {
+  const initial = startedSession(strengthPlan());
+  const stepId = initial.planSnapshot.steps[0].id;
+  const completed = applyWorkoutCommand(
+    initial,
+    command('complete_set', 1, 'set_1', NOW + 1_000, {
+      stepId,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+
+  assert.equal(completed.currentSet, 2);
+  assert.equal(completed.timer.mode, 'rest');
+  assert.equal(completed.timer.stepId, stepId);
+  assert.equal(completed.timer.setNumber, 2);
+  assert.deepEqual(completed.stepResults[0].setResults[0], {
+    setNumber: 1,
+    reps: 12,
+    weightKg: 20,
+    completedAt: NOW + 1_000
+  });
+  assert.throws(
+    () => applyWorkoutCommand(
+      completed,
+      command('complete_set', 2, 'set_1_again', NOW + 2_000, {
+        stepId,
+        setNumber: 1,
+        reps: 12,
+        weightKg: 20
+      })
+    ),
+    (error) => error && error.code === 'SESSION_SET_ALREADY_COMPLETED'
+  );
+});
+
+test('terminal Sessions reject new transitions while exact command replay remains safe', () => {
+  const initial = startedSession(singleTimedPlan());
+  const stepId = initial.planSnapshot.steps[0].id;
+  const started = applyWorkoutCommand(
+    initial,
+    command('start_step', 1, 'terminal_start', NOW, { stepId })
+  ).session;
+  const finish = command('complete_step', 2, 'terminal_finish', NOW + 300_000, { stepId });
+  const terminal = applyWorkoutCommand(started, finish).session;
+
+  assert.equal(terminal.status, 'completed');
+  assert.equal(terminal.endedAt, NOW + 300_000);
+  assert.equal(terminal.currentStepIndex, 1);
+  assert.equal(applyWorkoutCommand(terminal, finish).replayed, true);
+  assert.throws(
+    () => applyWorkoutCommand(
+      terminal,
+      command('checkpoint', 3, 'after_terminal', NOW + 301_000, { reason: 'hide' })
+    ),
+    (error) => error && error.code === 'SESSION_TERMINAL'
+  );
+});
+
+test('command boundary rejects custom prototypes, unknown fields and unsafe values', () => {
+  const session = startedSession();
+  const valid = command('checkpoint', 1, 'safe', NOW, { reason: 'hide' });
+  const getter = { ...valid };
+  Object.defineProperty(getter, 'payload', {
+    enumerable: true,
+    get() {
+      throw new Error('getter must never execute');
+    }
+  });
+
+  for (const candidate of [
+    Object.assign(Object.create({ inherited: true }), valid),
+    { ...valid, unknown: true },
+    { ...valid, nowMs: Number.POSITIVE_INFINITY },
+    { ...valid, expectedSessionRevision: -0 },
+    { ...valid, payload: { reason: 'hide', unknown: true } },
+    getter
+  ]) {
+    assert.throws(() => applyWorkoutCommand(session, candidate));
   }
 });

@@ -1,4 +1,7 @@
 const { assertWorkoutPlan } = require('../planning/plan-validation');
+const { assertTimerSnapshot } = require('./timer-snapshot');
+const { createTimerEngine } = require('../../services/timer-engine');
+const { canonicalize } = require('../../utils/checksum');
 
 const SESSION_SCHEMA_VERSION = 1;
 const SESSION_STATUSES = Object.freeze(['in_progress', 'paused', 'completed', 'aborted']);
@@ -24,6 +27,22 @@ const SESSION_FIELDS = Object.freeze([
   'lastCheckpointAt'
 ]);
 const COMMAND_RECORD_FIELDS = Object.freeze(['key', 'type', 'fingerprint', 'sessionRevision']);
+const COMMAND_FIELDS = Object.freeze([
+  'type',
+  'expectedSessionRevision',
+  'commandKey',
+  'nowMs',
+  'payload'
+]);
+const COMMAND_PAYLOAD_FIELDS = Object.freeze({
+  start_step: Object.freeze(['stepId']),
+  checkpoint: Object.freeze(['reason']),
+  complete_step: Object.freeze(['stepId']),
+  complete_set: Object.freeze(['stepId', 'setNumber', 'reps', 'weightKg']),
+  abort: Object.freeze(['reason'])
+});
+const STEP_RESULT_FIELDS = Object.freeze(['stepId', 'status', 'completedAt', 'setResults']);
+const SET_RESULT_FIELDS = Object.freeze(['setNumber', 'reps', 'weightKg', 'completedAt']);
 
 function createSessionError(message, code) {
   const error = new Error(message);
@@ -135,6 +154,50 @@ function assertCommandRecord(record, index) {
   assertSafeInteger(record.sessionRevision, `${label}.sessionRevision`, 1);
 }
 
+function assertNullableMeasurement(value, label) {
+  if (value !== null && (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    Object.is(value, -0) ||
+    value < 0
+  )) {
+    throw new TypeError(`${label} must be null or a non-negative finite number`);
+  }
+}
+
+function assertSetResult(result, label) {
+  assertClosedObject(result, SET_RESULT_FIELDS, label);
+  assertSafeInteger(result.setNumber, `${label}.setNumber`, 1);
+  if (result.reps !== null) {
+    assertSafeInteger(result.reps, `${label}.reps`, 1);
+  }
+  assertNullableMeasurement(result.weightKg, `${label}.weightKg`);
+  assertSafeInteger(result.completedAt, `${label}.completedAt`);
+}
+
+function assertStepResult(result, index) {
+  const label = `session.stepResults[${index}]`;
+  assertClosedObject(result, STEP_RESULT_FIELDS, label);
+  assertNonEmptyString(result.stepId, `${label}.stepId`);
+  if (result.status !== 'completed' && result.status !== 'in_progress') {
+    throw new TypeError(`${label}.status must be completed or in_progress`);
+  }
+  if (result.completedAt !== null) {
+    assertSafeInteger(result.completedAt, `${label}.completedAt`);
+  }
+  if ((result.status === 'completed') !== (result.completedAt !== null)) {
+    throw new TypeError(`${label} status and completedAt must agree`);
+  }
+  if (!Array.isArray(result.setResults)) {
+    throw new TypeError(`${label}.setResults must be an array`);
+  }
+  result.setResults.forEach((entry, setIndex) => assertSetResult(entry, `${label}.setResults[${setIndex}]`));
+  const setNumbers = result.setResults.map(({ setNumber }) => setNumber);
+  if (new Set(setNumbers).size !== setNumbers.length) {
+    throw new TypeError(`${label}.setResults setNumber values must be unique`);
+  }
+}
+
 function assertWorkoutSession(session) {
   assertClosedObject(session, SESSION_FIELDS, 'session');
   if (session.schemaVersion !== SESSION_SCHEMA_VERSION) {
@@ -172,11 +235,27 @@ function assertWorkoutSession(session) {
   if (session.currentSet !== null) {
     assertSafeInteger(session.currentSet, 'session.currentSet', 1);
   }
-  if (session.timer !== null && (typeof session.timer !== 'object' || Array.isArray(session.timer))) {
-    throw new TypeError('session.timer must be null or a TimerSnapshot object');
+  const currentStep = session.planSnapshot.steps[session.currentStepIndex] || null;
+  if (session.timer !== null) {
+    assertTimerSnapshot(session.timer);
+    if (!currentStep || session.timer.stepId !== currentStep.id) {
+      throw new TypeError('session timer identity must match the current PlanSnapshot step');
+    }
+    if (session.timer.mode === 'rest' && session.timer.setNumber !== session.currentSet) {
+      throw new TypeError('session rest timer identity must match currentSet');
+    }
   }
   if (!Array.isArray(session.stepResults)) {
     throw new TypeError('session.stepResults must be an array');
+  }
+  session.stepResults.forEach(assertStepResult);
+  const resultStepIds = session.stepResults.map(({ stepId }) => stepId);
+  if (new Set(resultStepIds).size !== resultStepIds.length) {
+    throw new TypeError('session.stepResults stepId values must be unique');
+  }
+  const knownStepIds = new Set(session.planSnapshot.steps.map(({ id }) => id));
+  if (resultStepIds.some((stepId) => !knownStepIds.has(stepId))) {
+    throw new TypeError('session.stepResults must reference PlanSnapshot steps');
   }
   if (!Array.isArray(session.processedCommands) || session.processedCommands.length === 0) {
     throw new TypeError('session.processedCommands must contain the start command');
@@ -197,7 +276,251 @@ function assertWorkoutSession(session) {
   if (terminal !== (session.endedAt !== null)) {
     throw new TypeError('terminal session status and endedAt must agree');
   }
+  if (terminal && (session.timer !== null || session.currentSet !== null)) {
+    throw new TypeError('terminal session cannot retain timer or currentSet state');
+  }
+  if (!terminal && currentStep) {
+    const needsSet = currentStep.kind === 'strength' || currentStep.kind === 'interval';
+    if (needsSet !== (session.currentSet !== null)) {
+      throw new TypeError('session.currentSet must match the current step kind');
+    }
+    if (session.currentSet !== null && session.currentSet > currentStep.sets) {
+      throw new TypeError('session.currentSet cannot exceed current step sets');
+    }
+  }
   return session;
+}
+
+function assertCommand(command) {
+  assertClosedObject(command, COMMAND_FIELDS, 'command');
+  assertNonEmptyString(command.type, 'command.type');
+  const payloadFields = COMMAND_PAYLOAD_FIELDS[command.type];
+  if (!payloadFields) {
+    throw createSessionError(`Unsupported Session command ${command.type}`, 'SESSION_COMMAND_UNSUPPORTED');
+  }
+  assertSafeInteger(command.expectedSessionRevision, 'command.expectedSessionRevision', 1);
+  assertNonEmptyString(command.commandKey, 'command.commandKey');
+  assertSafeInteger(command.nowMs, 'command.nowMs');
+  assertClosedObject(command.payload, payloadFields, 'command.payload');
+
+  if (hasOwn(command.payload, 'stepId')) {
+    assertNonEmptyString(command.payload.stepId, 'command.payload.stepId');
+  }
+  if (command.type === 'checkpoint') {
+    if (!['hide', 'unload', 'startup', 'show', 'manual'].includes(command.payload.reason)) {
+      throw new TypeError('command.payload.reason is not a supported checkpoint reason');
+    }
+  }
+  if (command.type === 'abort') {
+    assertNonEmptyString(command.payload.reason, 'command.payload.reason');
+  }
+  if (command.type === 'complete_set') {
+    assertSafeInteger(command.payload.setNumber, 'command.payload.setNumber', 1);
+    assertSafeInteger(command.payload.reps, 'command.payload.reps', 1);
+    assertNullableMeasurement(command.payload.weightKg, 'command.payload.weightKg');
+  }
+  return command;
+}
+
+function commandFingerprint(command) {
+  return canonicalize({
+    type: command.type,
+    expectedSessionRevision: command.expectedSessionRevision,
+    nowMs: command.nowMs,
+    payload: command.payload
+  });
+}
+
+function currentStepFor(session) {
+  return session.planSnapshot.steps[session.currentStepIndex] || null;
+}
+
+function findStepResult(session, stepId) {
+  return session.stepResults.find((result) => result.stepId === stepId) || null;
+}
+
+function ensureStepResult(session, stepId) {
+  let result = findStepResult(session, stepId);
+  if (!result) {
+    result = { stepId, status: 'in_progress', completedAt: null, setResults: [] };
+    session.stepResults.push(result);
+  }
+  return result;
+}
+
+function materializeCheckpoint(session, nowMs, timerEngine) {
+  if (nowMs < session.lastCheckpointAt) {
+    throw createSessionError('Session checkpoint time cannot move backwards', 'SESSION_CLOCK_ANOMALY');
+  }
+  if (session.status === 'in_progress') {
+    session.elapsedActiveSeconds += Math.floor((nowMs - session.lastCheckpointAt) / 1_000);
+  }
+  session.lastCheckpointAt = nowMs;
+  if (session.timer !== null) {
+    session.timer = timerEngine.restore(session.timer, nowMs);
+  }
+}
+
+function advanceAfterStep(session, stepId, nowMs) {
+  const result = ensureStepResult(session, stepId);
+  result.status = 'completed';
+  result.completedAt = nowMs;
+  session.timer = null;
+  session.currentStepIndex += 1;
+  if (session.currentStepIndex === session.planSnapshot.steps.length) {
+    session.status = 'completed';
+    session.endedAt = nowMs;
+    session.currentSet = null;
+    return;
+  }
+  const nextStep = currentStepFor(session);
+  session.currentSet = nextStep.kind === 'strength' || nextStep.kind === 'interval' ? 1 : null;
+}
+
+function applyTransition(session, command, timerEngine) {
+  materializeCheckpoint(session, command.nowMs, timerEngine);
+  const step = currentStepFor(session);
+
+  if (command.type === 'checkpoint') {
+    return;
+  }
+  if (command.type === 'abort') {
+    session.status = 'aborted';
+    session.endedAt = command.nowMs;
+    session.timer = null;
+    session.currentSet = null;
+    return;
+  }
+  if (command.payload.stepId !== step.id) {
+    throw createSessionError('Command stepId does not match current step', 'SESSION_STEP_MISMATCH');
+  }
+  if (command.type === 'start_step') {
+    if (session.timer !== null) {
+      throw createSessionError('Current step already has a timer', 'SESSION_TIMER_ALREADY_STARTED');
+    }
+    if (step.kind !== 'timed' && step.kind !== 'interval') {
+      throw createSessionError('Current step cannot start a step timer', 'SESSION_TIMER_UNSUPPORTED');
+    }
+    session.timer = timerEngine.start({
+      mode: 'step',
+      durationSeconds: step.durationSeconds,
+      stepId: step.id,
+      setNumber: null
+    }, command.nowMs);
+    return;
+  }
+  if (command.type === 'complete_step') {
+    if (step.kind !== 'manual') {
+      if (session.timer === null || session.timer.mode !== 'step') {
+        throw createSessionError('Timed step requires its matching timer', 'SESSION_TIMER_MISSING');
+      }
+      if (session.timer.status !== 'expired') {
+        throw createSessionError('Step timer must expire before completion', 'SESSION_TIMER_NOT_EXPIRED');
+      }
+    }
+    if (step.kind === 'interval' && session.currentSet < step.sets) {
+      const result = ensureStepResult(session, step.id);
+      result.setResults.push({
+        setNumber: session.currentSet,
+        reps: null,
+        weightKg: null,
+        completedAt: command.nowMs
+      });
+      session.currentSet += 1;
+      session.timer = step.restSeconds > 0 ? timerEngine.start({
+        mode: 'rest',
+        durationSeconds: step.restSeconds,
+        stepId: step.id,
+        setNumber: session.currentSet
+      }, command.nowMs) : null;
+      return;
+    }
+    if (step.kind === 'interval') {
+      ensureStepResult(session, step.id).setResults.push({
+        setNumber: session.currentSet,
+        reps: null,
+        weightKg: null,
+        completedAt: command.nowMs
+      });
+    }
+    advanceAfterStep(session, step.id, command.nowMs);
+    return;
+  }
+  if (command.type === 'complete_set') {
+    if (step.kind !== 'strength') {
+      throw createSessionError('complete_set requires a strength step', 'SESSION_SET_UNSUPPORTED');
+    }
+    if (command.payload.setNumber !== session.currentSet) {
+      const existing = findStepResult(session, step.id)?.setResults
+        .some(({ setNumber }) => setNumber === command.payload.setNumber);
+      throw createSessionError(
+        existing ? 'Set was already completed' : 'Set number does not match currentSet',
+        existing ? 'SESSION_SET_ALREADY_COMPLETED' : 'SESSION_SET_MISMATCH'
+      );
+    }
+    if (session.timer !== null) {
+      if (
+        session.timer.mode !== 'rest' ||
+        session.timer.setNumber !== session.currentSet ||
+        session.timer.status !== 'expired'
+      ) {
+        throw createSessionError('Rest timer must expire before next set', 'SESSION_REST_NOT_EXPIRED');
+      }
+      session.timer = null;
+    }
+    const result = ensureStepResult(session, step.id);
+    if (result.setResults.some(({ setNumber }) => setNumber === command.payload.setNumber)) {
+      throw createSessionError('Set was already completed', 'SESSION_SET_ALREADY_COMPLETED');
+    }
+    result.setResults.push({
+      setNumber: command.payload.setNumber,
+      reps: command.payload.reps,
+      weightKg: command.payload.weightKg,
+      completedAt: command.nowMs
+    });
+    if (session.currentSet === step.sets) {
+      advanceAfterStep(session, step.id, command.nowMs);
+      return;
+    }
+    session.currentSet += 1;
+    session.timer = step.restSeconds > 0 ? timerEngine.start({
+      mode: 'rest',
+      durationSeconds: step.restSeconds,
+      stepId: step.id,
+      setNumber: session.currentSet
+    }, command.nowMs) : null;
+  }
+}
+
+function applyWorkoutCommand(sourceSession, command, { timerEngine = createTimerEngine() } = {}) {
+  assertWorkoutSession(sourceSession);
+  assertCommand(command);
+  const fingerprint = commandFingerprint(command);
+  const existing = sourceSession.processedCommands.find(({ key }) => key === command.commandKey);
+  if (existing) {
+    if (existing.fingerprint !== fingerprint || existing.type !== command.type) {
+      throw createSessionError('Command key was already used for another command', 'SESSION_COMMAND_KEY_REUSED');
+    }
+    return { session: cloneJson(sourceSession), replayed: true };
+  }
+  if (command.expectedSessionRevision !== sourceSession.sessionRevision) {
+    throw createSessionError('Session revision does not match command expectation', 'SESSION_REVISION_CONFLICT');
+  }
+  if (sourceSession.status === 'completed' || sourceSession.status === 'aborted') {
+    throw createSessionError('Terminal Session rejects new commands', 'SESSION_TERMINAL');
+  }
+
+  const session = cloneJson(sourceSession);
+  applyTransition(session, command, timerEngine);
+  session.sessionRevision += 1;
+  session.processedCommands.push({
+    key: command.commandKey,
+    type: command.type,
+    fingerprint,
+    sessionRevision: session.sessionRevision
+  });
+  assertWorkoutSession(session);
+  return { session: cloneJson(session), replayed: false };
 }
 
 function createWorkoutSession({
@@ -255,6 +578,7 @@ function createWorkoutSession({
 module.exports = {
   SESSION_SCHEMA_VERSION,
   SESSION_STATUSES,
+  applyWorkoutCommand,
   assertInertJson,
   assertWorkoutSession,
   cloneWorkoutSession: cloneJson,
