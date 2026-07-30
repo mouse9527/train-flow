@@ -246,6 +246,20 @@ function assertWorkoutSession(session) {
     if (session.timer.mode === 'rest' && session.timer.setNumber !== session.currentSet) {
       throw new TypeError('session rest timer identity must match currentSet');
     }
+    if (
+      session.timer.mode === 'step' &&
+      currentStep.kind !== 'timed' &&
+      currentStep.kind !== 'interval'
+    ) {
+      throw new TypeError('session step timer mode is unsupported by the current step kind');
+    }
+    if (
+      session.timer.mode === 'rest' &&
+      currentStep.kind !== 'strength' &&
+      currentStep.kind !== 'interval'
+    ) {
+      throw new TypeError('session rest timer mode is unsupported by the current step kind');
+    }
   }
   if (!Array.isArray(session.stepResults)) {
     throw new TypeError('session.stepResults must be an array');
@@ -259,6 +273,30 @@ function assertWorkoutSession(session) {
   if (resultStepIds.some((stepId) => !knownStepIds.has(stepId))) {
     throw new TypeError('session.stepResults must reference PlanSnapshot steps');
   }
+  let previousResultIndex = -1;
+  session.stepResults.forEach((result) => {
+    const resultIndex = session.planSnapshot.steps.findIndex(({ id }) => id === result.stepId);
+    if (resultIndex <= previousResultIndex) {
+      throw new TypeError('session.stepResults must follow PlanSnapshot step order');
+    }
+    if (resultIndex > session.currentStepIndex) {
+      throw new TypeError('session.stepResults cannot contain future PlanSnapshot steps');
+    }
+    if (resultIndex < session.currentStepIndex && result.status !== 'completed') {
+      throw new TypeError('session prior stepResults must be completed');
+    }
+    if (!terminal && resultIndex === session.currentStepIndex && result.status !== 'in_progress') {
+      throw new TypeError('session current stepResult must remain in_progress');
+    }
+    const resultStep = session.planSnapshot.steps[resultIndex];
+    if (resultStep.sets !== null && result.setResults.some(({ setNumber }) => setNumber > resultStep.sets)) {
+      throw new TypeError('session setResult cannot exceed PlanSnapshot step sets');
+    }
+    previousResultIndex = resultIndex;
+  });
+  if (session.status === 'completed' && session.stepResults.length !== session.planSnapshot.steps.length) {
+    throw new TypeError('completed session requires a completed result for every step');
+  }
   if (!Array.isArray(session.processedCommands) || session.processedCommands.length === 0) {
     throw new TypeError('session.processedCommands must contain the start command');
   }
@@ -268,6 +306,17 @@ function assertWorkoutSession(session) {
     throw new TypeError('session.processedCommands keys must be unique');
   }
   assertSafeInteger(session.sessionRevision, 'session.sessionRevision', 1);
+  if (session.processedCommands.length !== session.sessionRevision) {
+    throw new TypeError('session command history length must match sessionRevision');
+  }
+  session.processedCommands.forEach((record, index) => {
+    if (record.sessionRevision !== index + 1) {
+      throw new TypeError('session command history revisions must be contiguous');
+    }
+  });
+  if (session.processedCommands[0].type !== 'start_session') {
+    throw new TypeError('session first command must be start_session');
+  }
   if (session.processedCommands.at(-1).sessionRevision !== session.sessionRevision) {
     throw new TypeError('session latest command revision must match sessionRevision');
   }

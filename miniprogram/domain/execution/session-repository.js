@@ -38,6 +38,17 @@ class SessionRepository {
     const snapshot = this.database.load();
     if (snapshot.activeSession !== null) {
       assertWorkoutSession(snapshot.activeSession);
+      const existingStart = snapshot.activeSession.processedCommands[0];
+      const candidateStart = candidate.processedCommands[0];
+      if (existingStart.key === commandKey) {
+        if (existingStart.fingerprint === candidateStart.fingerprint) {
+          return cloneWorkoutSession(snapshot.activeSession);
+        }
+        throw createSessionError(
+          'Start command key was already used for another Session intent',
+          'SESSION_COMMAND_KEY_REUSED'
+        );
+      }
       throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
     }
     const committed = this.database.commit((draft) => {

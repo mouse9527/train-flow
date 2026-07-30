@@ -9,6 +9,7 @@ const {
 const {
   createDefaultPlans
 } = require('../../../miniprogram/domain/planning/default-plan-factory');
+const { createTimerEngine } = require('../../../miniprogram/services/timer-engine');
 
 const NOW = 1785717300000;
 
@@ -146,6 +147,16 @@ test('Session boundary rejects custom prototypes, descriptors, unknown and unsaf
   });
   const nonEnumerable = { ...valid };
   Object.defineProperty(nonEnumerable, 'hidden', { value: true, enumerable: false });
+  const brokenCommandChain = structuredClone(valid);
+  brokenCommandChain.processedCommands[0].sessionRevision = 7;
+  brokenCommandChain.sessionRevision = 7;
+  const futureStepResult = structuredClone(valid);
+  futureStepResult.stepResults.push({
+    stepId: futureStepResult.planSnapshot.steps[1].id,
+    status: 'completed',
+    completedAt: NOW,
+    setResults: []
+  });
 
   for (const candidate of [
     Object.assign(Object.create({ inherited: true }), valid),
@@ -153,10 +164,28 @@ test('Session boundary rejects custom prototypes, descriptors, unknown and unsaf
     { ...valid, elapsedActiveSeconds: undefined },
     { ...valid, elapsedActiveSeconds: Number.POSITIVE_INFINITY },
     getter,
-    nonEnumerable
+    nonEnumerable,
+    brokenCommandChain,
+    futureStepResult
   ]) {
     assert.throws(() => assertWorkoutSession(candidate), /session|JSON|field|prototype|finite|safe|enumerable/i);
   }
+});
+
+test('timer identity must match both current step ID and supported step kind', () => {
+  const session = startedSession(strengthPlan());
+  const invalid = structuredClone(session);
+  invalid.timer = createTimerEngine().start({
+    mode: 'step',
+    durationSeconds: 30,
+    stepId: invalid.planSnapshot.steps[0].id,
+    setNumber: null
+  }, NOW);
+
+  assert.throws(
+    () => assertWorkoutSession(invalid),
+    /timer|kind|mode|strength/i
+  );
 });
 
 test('commands require revision and provide replay-safe idempotency without mutating input', () => {

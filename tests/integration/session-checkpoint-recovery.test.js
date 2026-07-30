@@ -94,6 +94,11 @@ test('start snapshots the plan in one A/B commit and rejects a second active Ses
   assert.equal(runtime.database.load().activeSession.id, session.id);
   assert.deepEqual(runtime.database.load().activeSession, session);
 
+  const writesBeforeReplay = snapshotWriteCount(runtime.storage);
+  const replayedStart = start(runtime);
+  assert.deepEqual(replayedStart, session);
+  assert.equal(snapshotWriteCount(runtime.storage), writesBeforeReplay);
+
   const writesBeforeCollision = snapshotWriteCount(runtime.storage);
   assert.throws(
     () => start(runtime, { commandKey: 'start_collision' }),
