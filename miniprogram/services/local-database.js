@@ -83,15 +83,22 @@ class LocalDatabase {
   }
 
   readSlot(slot) {
+    let stored;
     try {
-      const snapshot = decodeStored(this.storage.getStorageSync(SLOT_KEYS[slot]));
+      stored = this.storage.getStorageSync(SLOT_KEYS[slot]);
+    } catch (error) {
+      return { slot, readError: error };
+    }
+
+    try {
+      const snapshot = decodeStored(stored);
       if (!snapshot) {
         return null;
       }
       validateStoredSnapshot(snapshot);
       return { slot, snapshot };
     } catch (error) {
-      return { slot, error };
+      return { slot, validationError: error };
     }
   }
 
@@ -111,6 +118,18 @@ class LocalDatabase {
       ({ snapshot }) => snapshot.schemaVersion <= this.currentSchemaVersion
     );
     if (compatible.length === 0) {
+      const failures = candidates.filter(
+        (candidate) => candidate && (candidate.readError || candidate.validationError)
+      );
+      if (failures.length > 0) {
+        const details = failures
+          .map((failure) => {
+            const error = failure.readError || failure.validationError;
+            return `${failure.slot}: ${error.message}`;
+          })
+          .join('; ');
+        throw new Error(`Unable to read a valid AppDatabase snapshot: ${details}`);
+      }
       return { activeSlot: null, snapshot: this.createInitialSnapshot() };
     }
 
@@ -154,7 +173,12 @@ class LocalDatabase {
   }
 
   migrate(state) {
-    const draft = cloneAppDatabase(state.snapshot);
+    const draft = this.migrateDraft(state.snapshot);
+    return this.commitSnapshot(state, draft);
+  }
+
+  migrateDraft(snapshot) {
+    const draft = cloneAppDatabase(snapshot);
     while (draft.schemaVersion < this.currentSchemaVersion) {
       const fromVersion = draft.schemaVersion;
       const migration = this.migrations[fromVersion];
@@ -171,7 +195,7 @@ class LocalDatabase {
         Object.assign(draft, cloneAppDatabase(next));
       }
     }
-    return this.commitSnapshot(state, draft);
+    return draft;
   }
 
   commit(mutator, expectedRevision) {
@@ -188,13 +212,22 @@ class LocalDatabase {
         `LocalDatabase revision conflict: expected ${normalizedExpectedRevision}, actual ${state.snapshot.localRevision}`
       );
     }
+    if (state.snapshot.localRevision >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('LocalDatabase localRevision overflow: no safe revision remains');
+    }
 
-    const draft = cloneAppDatabase(state.snapshot);
+    const draft =
+      state.snapshot.schemaVersion < this.currentSchemaVersion
+        ? this.migrateDraft(state.snapshot)
+        : cloneAppDatabase(state.snapshot);
     mutator(draft);
     return this.commitSnapshot(state, draft);
   }
 
   commitSnapshot(state, draft) {
+    if (state.snapshot.localRevision >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('LocalDatabase localRevision overflow: no safe revision remains');
+    }
     const targetSlot = state.activeSlot === 'a' ? 'b' : 'a';
     const nextPayload = {
       ...cloneAppDatabase(draft),

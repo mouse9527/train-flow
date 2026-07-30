@@ -5,8 +5,8 @@ function assertPlainObject(value, label) {
 }
 
 function assertNonNegativeInteger(value, label) {
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative integer`);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer`);
   }
 }
 

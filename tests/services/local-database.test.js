@@ -394,3 +394,107 @@ test('Attack: 中间版本 migration 抛错时必须回滚 pointer 并保留旧�
   assert.equal(decodeStored(storage.peek(SLOT_A)).migrationTrail.length, 0);
   assert.equal(storage.writesFor(ACTIVE).length, 0);
 });
+
+test('Attack: 未先调用 load() 就在旧 schema 上 commit 时，也必须先完成逐版本迁移再应用业务 mutator', () => {
+  const calls = [];
+  const oldA = makeSnapshot({
+    schemaVersion: 1,
+    localRevision: 120,
+    migrationTrail: [],
+    records: [{ id: 'before-direct-commit' }]
+  });
+  const storage = seedPair({
+    active: 'a',
+    a: oldA,
+    b: makeSnapshot({ schemaVersion: 1, localRevision: 119 })
+  });
+  const database = createDatabase(storage, {
+    currentSchemaVersion: 3,
+    migrations: {
+      1(snapshot) {
+        calls.push('v1-to-v2');
+        snapshot.migrationTrail.push('v2');
+        snapshot.schemaVersion = 2;
+        return snapshot;
+      },
+      2(snapshot) {
+        calls.push('v2-to-v3');
+        snapshot.migrationTrail.push('v3');
+        snapshot.schemaVersion = 3;
+        return snapshot;
+      }
+    }
+  });
+
+  const committed = database.commit((draft) => {
+    draft.records.push({ id: 'after-direct-commit' });
+  });
+
+  assert.deepEqual(calls, ['v1-to-v2', 'v2-to-v3']);
+  assert.equal(committed.schemaVersion, 3);
+  assert.equal(committed.localRevision, 121);
+  assert.deepEqual(committed.migrationTrail, ['v2', 'v3']);
+  assert.deepEqual(
+    committed.records.map(({ id }) => id),
+    ['before-direct-commit', 'after-direct-commit']
+  );
+  assert.deepEqual(storage.peek(SLOT_A), oldA, 'direct commit migration must retain the old valid slot');
+});
+
+test('Attack: 两个 slot 的 storage read 同时抛错时必须中止启动，不能把暂时不可读误判为全新数据库', () => {
+  const oldA = makeSnapshot({ localRevision: 130, records: [{ id: 'durable-a' }] });
+  const oldB = makeSnapshot({ localRevision: 129, records: [{ id: 'durable-b' }] });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const database = createDatabase(storage);
+  storage.failNextRead(SLOT_A, new Error('slot a temporarily unavailable'));
+  storage.failNextRead(SLOT_B, new Error('slot b temporarily unavailable'));
+  storage.clearOperations();
+
+  assert.throws(() => database.load(), /storage|read|unavailable/i);
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: localRevision 到达 MAX_SAFE_INTEGER 时必须拒绝继续提交，不能产生无法单调递增的 revision', () => {
+  const maxSafe = Number.MAX_SAFE_INTEGER;
+  const oldA = makeSnapshot({ localRevision: maxSafe, records: [{ id: 'last-safe-revision' }] });
+  const oldB = makeSnapshot({ localRevision: maxSafe - 1 });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const database = createDatabase(storage);
+  storage.clearOperations();
+
+  assert.throws(
+    () => database.commit((draft) => draft.records.push({ id: 'must-not-overflow' })),
+    /revision|safe|overflow/i
+  );
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: 最终 pointer 写失败时旧快照必须保留；重启后应按最高有效 revision 接管已校验候选槽', () => {
+  const oldA = makeSnapshot({ localRevision: 140, records: [{ id: 'old-active' }] });
+  const oldB = makeSnapshot({ localRevision: 139 });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const database = createDatabase(storage);
+  storage.failNextWrite(ACTIVE, new Error('pointer write unavailable'));
+
+  assert.throws(
+    () => database.commit((draft) => draft.records.push({ id: 'verified-candidate' })),
+    /pointer write unavailable/i
+  );
+  assert.equal(storage.peek(ACTIVE), 'a');
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  const candidateB = decodeStored(storage.peek(SLOT_B));
+  assert.equal(candidateB.localRevision, 141);
+  assert.equal(candidateB.records.at(-1).id, 'verified-candidate');
+
+  const recovered = database.load();
+  assert.equal(recovered.localRevision, 141);
+  assert.equal(recovered.records.at(-1).id, 'verified-candidate');
+  assert.equal(storage.peek(ACTIVE), 'b');
+  assert.deepEqual(storage.peek(SLOT_A), oldA, 'pointer recovery must not overwrite the prior snapshot');
+});
