@@ -3,7 +3,8 @@ const {
   assertStartInput,
   assertTimerSnapshot,
   copyTimerSnapshot,
-  createExpirationOccurrenceId
+  createExpirationOccurrenceId,
+  TIMER_SNAPSHOT_VERSION
 } = require('../domain/execution/timer-snapshot');
 
 const CLOCK_BACKWARD_TOLERANCE_MS = 5_000;
@@ -26,6 +27,7 @@ function start(input, nowMs) {
   assertNowMs(nowMs);
 
   return {
+    snapshotVersion: TIMER_SNAPSHOT_VERSION,
     mode: input.mode,
     status: 'running',
     durationSeconds: input.durationSeconds,
@@ -33,6 +35,7 @@ function start(input, nowMs) {
     startedAt: nowMs,
     expectedEndAt: checkedAddMilliseconds(nowMs, input.durationSeconds, 'durationSeconds'),
     checkpointAt: nowMs,
+    clockObservedAt: nowMs,
     pausedAt: null,
     expiredAt: null,
     adjustmentSeconds: 0,
@@ -71,6 +74,7 @@ function pause(snapshot, nowMs) {
     remainingSecondsAtCheckpoint: getRemaining(snapshot, nowMs),
     expectedEndAt: null,
     checkpointAt: nowMs,
+    clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs),
     pausedAt: nowMs
   };
 }
@@ -95,6 +99,7 @@ function resume(snapshot, nowMs) {
       'remainingSecondsAtCheckpoint'
     ),
     checkpointAt: nowMs,
+    clockObservedAt: nowMs,
     pausedAt: null
   };
   delete resumed.clockAnomaly;
@@ -134,6 +139,7 @@ function adjust(snapshot, deltaSeconds, nowMs) {
       ...snapshot,
       remainingSecondsAtCheckpoint: adjustedRemaining,
       checkpointAt: nowMs,
+      clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs),
       adjustmentSeconds
     };
   }
@@ -150,6 +156,7 @@ function adjust(snapshot, deltaSeconds, nowMs) {
     ),
     expectedEndAt: adjustedDeadline,
     checkpointAt: nowMs,
+    clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs),
     adjustmentSeconds
   };
 }
@@ -175,6 +182,7 @@ function expire(snapshot, nowMs) {
     remainingSecondsAtCheckpoint: 0,
     expectedEndAt: null,
     checkpointAt: nowMs,
+    clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs),
     pausedAt: null,
     expiredAt: snapshot.expectedEndAt,
     expirationOccurrenceId
@@ -189,12 +197,13 @@ function restore(snapshot, nowMs) {
     return copyTimerSnapshot(snapshot);
   }
 
-  if (snapshot.checkpointAt - nowMs > CLOCK_BACKWARD_TOLERANCE_MS) {
+  if (snapshot.clockObservedAt - nowMs > CLOCK_BACKWARD_TOLERANCE_MS) {
     return {
       ...snapshot,
       status: 'paused',
       expectedEndAt: null,
       checkpointAt: nowMs,
+      clockObservedAt: snapshot.clockObservedAt,
       pausedAt: nowMs,
       clockAnomaly: true,
       requiresConfirmation: true,
@@ -211,7 +220,8 @@ function restore(snapshot, nowMs) {
   return {
     ...snapshot,
     remainingSecondsAtCheckpoint,
-    checkpointAt: nowMs
+    checkpointAt: nowMs,
+    clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs)
   };
 }
 

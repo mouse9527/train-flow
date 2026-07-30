@@ -1,9 +1,69 @@
 const TIMER_MODES = Object.freeze(['step', 'rest']);
 const TIMER_STATUSES = Object.freeze(['running', 'paused', 'expired']);
+const TIMER_SNAPSHOT_VERSION = 1;
+const BASE_SNAPSHOT_FIELDS = Object.freeze([
+  'snapshotVersion',
+  'mode',
+  'status',
+  'durationSeconds',
+  'remainingSecondsAtCheckpoint',
+  'startedAt',
+  'expectedEndAt',
+  'checkpointAt',
+  'clockObservedAt',
+  'pausedAt',
+  'expiredAt',
+  'adjustmentSeconds',
+  'stepId',
+  'setNumber'
+]);
+const EXPIRATION_FIELDS = Object.freeze(['expirationOccurrenceId']);
+const CLOCK_ANOMALY_FIELDS = Object.freeze([
+  'clockAnomaly',
+  'requiresConfirmation',
+  'reason',
+  'code'
+]);
 
 function assertObject(value, label) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError(`${label} must be an object`);
+  }
+}
+
+function hasOwn(object, field) {
+  return Object.prototype.hasOwnProperty.call(object, field);
+}
+
+function assertPlainJsonObject(value, label) {
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new TypeError(`${label} must be a plain JSON object without a custom prototype`);
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw new TypeError(`${label} schema does not allow symbol fields`);
+  }
+  for (const field of Object.getOwnPropertyNames(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (!descriptor.enumerable || !hasOwn(descriptor, 'value') || descriptor.value === undefined) {
+      throw new TypeError(`${label} must contain only enumerable JSON data fields`);
+    }
+  }
+}
+
+function assertOwnFields(value, fields, label) {
+  for (const field of fields) {
+    if (!hasOwn(value, field)) {
+      throw new TypeError(`${label} requires own field ${field}`);
+    }
+  }
+}
+
+function assertClosedFields(value, allowedFields, label) {
+  const allowed = new Set(allowedFields);
+  for (const field of Object.getOwnPropertyNames(value)) {
+    if (!allowed.has(field)) {
+      throw new TypeError(`${label} contains unknown field ${field}`);
+    }
   }
 }
 
@@ -46,6 +106,27 @@ function assertNowMs(nowMs) {
 
 function assertTimerSnapshot(snapshot) {
   assertObject(snapshot, 'timer snapshot');
+  assertPlainJsonObject(snapshot, 'timer snapshot');
+  assertOwnFields(snapshot, BASE_SNAPSHOT_FIELDS, 'timer snapshot');
+
+  if (snapshot.snapshotVersion !== TIMER_SNAPSHOT_VERSION) {
+    throw new TypeError(
+      `timer snapshot version must be ${TIMER_SNAPSHOT_VERSION}`
+    );
+  }
+
+  const stateFields = [...BASE_SNAPSHOT_FIELDS];
+  if (snapshot.status === 'expired') {
+    stateFields.push(...EXPIRATION_FIELDS);
+    assertOwnFields(snapshot, EXPIRATION_FIELDS, 'expired timer snapshot');
+  }
+  const hasClockAnomaly = snapshot.status === 'paused' && hasOwn(snapshot, 'clockAnomaly');
+  if (hasClockAnomaly) {
+    stateFields.push(...CLOCK_ANOMALY_FIELDS);
+    assertOwnFields(snapshot, CLOCK_ANOMALY_FIELDS, 'clock anomaly timer snapshot');
+  }
+  assertClosedFields(snapshot, stateFields, 'timer snapshot schema');
+
   assertTimerIdentity(snapshot);
 
   if (!TIMER_STATUSES.includes(snapshot.status)) {
@@ -60,6 +141,10 @@ function assertTimerSnapshot(snapshot) {
   );
   assertSafeInteger(snapshot.startedAt, 'timer snapshot startedAt', { minimum: 0 });
   assertSafeInteger(snapshot.checkpointAt, 'timer snapshot checkpointAt', { minimum: 0 });
+  assertSafeInteger(snapshot.clockObservedAt, 'timer snapshot clockObservedAt', { minimum: 0 });
+  if (snapshot.clockObservedAt < snapshot.checkpointAt) {
+    throw new TypeError('timer snapshot clockObservedAt cannot retreat behind checkpointAt');
+  }
   assertNullableSafeInteger(snapshot.expectedEndAt, 'timer snapshot expectedEndAt');
   assertNullableSafeInteger(snapshot.pausedAt, 'timer snapshot pausedAt');
   assertNullableSafeInteger(snapshot.expiredAt, 'timer snapshot expiredAt');
@@ -103,17 +188,15 @@ function assertTimerSnapshot(snapshot) {
     }
   }
 
-  if (
-    snapshot.clockAnomaly !== undefined &&
-    typeof snapshot.clockAnomaly !== 'boolean'
-  ) {
-    throw new TypeError('timer snapshot clockAnomaly must be boolean');
-  }
-  if (
-    snapshot.requiresConfirmation !== undefined &&
-    typeof snapshot.requiresConfirmation !== 'boolean'
-  ) {
-    throw new TypeError('timer snapshot requiresConfirmation must be boolean');
+  if (hasClockAnomaly) {
+    if (
+      snapshot.clockAnomaly !== true ||
+      snapshot.requiresConfirmation !== true ||
+      snapshot.reason !== 'clock-anomaly' ||
+      snapshot.code !== 'CLOCK_ANOMALY'
+    ) {
+      throw new TypeError('clock anomaly timer snapshot has an invalid confirmation state');
+    }
   }
 
   return snapshot;
@@ -135,6 +218,7 @@ function createExpirationOccurrenceId(snapshot) {
 }
 
 module.exports = {
+  TIMER_SNAPSHOT_VERSION,
   TIMER_MODES,
   TIMER_STATUSES,
   assertNowMs,

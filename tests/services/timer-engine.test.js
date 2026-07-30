@@ -291,3 +291,173 @@ test('Attack: restore 必须拒绝 null、数组、未知 status/mode 与非法 
     assert.throws(() => engine.restore(snapshot, START_AT), /snapshot|status|mode|deadline|expectedEndAt|checkpoint|duration|finite/i);
   }
 });
+
+test('Attack Round 2: 非整秒 absolute deadline 的 ±30 调整必须精确平移毫秒值且不修改输入', () => {
+  const engine = loadEngine();
+  const startAt = START_AT + 137;
+  const running = timerOf(startStep(engine, { durationSeconds: 37 }, startAt));
+  const original = JSON.parse(JSON.stringify(running));
+  const adjustAt = startAt + 12_345;
+
+  const added = timerOf(engine.adjust(running, 30, adjustAt));
+  assert.deepEqual(running, original, 'adjust must not mutate its input snapshot');
+  assert.equal(added.expectedEndAt, original.expectedEndAt + 30_000);
+  assert.equal(added.expectedEndAt % 1_000, 137);
+  assert.equal(remainingOf(engine.getRemaining(added, adjustAt)), 55);
+
+  const restored = timerOf(engine.adjust(added, -30, adjustAt));
+  assert.equal(restored.expectedEndAt, original.expectedEndAt);
+  assert.equal(restored.expectedEndAt % 1_000, 137);
+  assert.equal(restored.adjustmentSeconds, 0);
+});
+
+test('Attack Round 2: unsafe/non-finite 数值必须在所有入口 fail closed 且不产生半状态', () => {
+  const engine = loadEngine();
+  const valid = timerOf(startStep(engine));
+
+  for (const nowMs of [Number.NaN, Number.POSITIVE_INFINITY, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => engine.getRemaining(valid, nowMs), /nowMs|finite|safe|integer/i);
+    assert.throws(() => engine.pause(valid, nowMs), /nowMs|finite|safe|integer/i);
+    assert.throws(() => engine.restore(valid, nowMs), /nowMs|finite|safe|integer/i);
+  }
+
+  assert.throws(
+    () => startStep(engine, { durationSeconds: Number.MAX_SAFE_INTEGER }),
+    /duration|range|deadline|safe/i
+  );
+  assert.throws(
+    () => startStep(engine, { durationSeconds: 1 }, Number.MAX_SAFE_INTEGER),
+    /duration|range|deadline|safe/i
+  );
+  for (const deltaSeconds of [0, 29, -29, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => engine.adjust(valid, deltaSeconds, START_AT),
+      /adjust|30|finite|safe|integer/i
+    );
+  }
+});
+
+test('Attack Round 2: 非法状态命令必须拒绝，重复合法命令必须返回独立快照且不修改输入', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const paused = timerOf(engine.pause(running, START_AT + 1_000));
+  const expired = timerOf(engine.expire(running, END_AT));
+  const pausedBefore = JSON.parse(JSON.stringify(paused));
+  const expiredBefore = JSON.parse(JSON.stringify(expired));
+
+  assert.throws(() => engine.expire(paused, END_AT), /expire|paused|status/i);
+  assert.throws(() => engine.pause(expired, END_AT), /pause|expired|status/i);
+  assert.throws(() => engine.resume(expired, END_AT), /resume|expired|status/i);
+  assert.throws(() => engine.adjust(expired, 30, END_AT), /adjust|expired|status/i);
+  assert.deepEqual(paused, pausedBefore);
+  assert.deepEqual(expired, expiredBefore);
+
+  const pausedAgain = timerOf(engine.pause(paused, START_AT + 2_000));
+  const runningAgain = timerOf(engine.resume(running, START_AT + 2_000));
+  const expiredAgain = timerOf(engine.expire(expired, END_AT + 1_000));
+  assert.deepEqual(pausedAgain, paused);
+  assert.deepEqual(runningAgain, running);
+  assert.deepEqual(expiredAgain, expired);
+  assert.notStrictEqual(pausedAgain, paused);
+  assert.notStrictEqual(runningAgain, running);
+  assert.notStrictEqual(expiredAgain, expired);
+});
+
+test('Attack Round 2: occurrence ID 必须抵抗分隔符碰撞并在 JSON round-trip 后保持确定性', () => {
+  const engine = loadEngine();
+  const weirdStep = timerOf(
+    startStep(engine, { stepId: 'step:["rest",2]:\n:\\:尾' }, START_AT + 137)
+  );
+  const otherStep = timerOf(
+    startStep(engine, { stepId: 'step:["rest",2]:\n:\\:尾:' }, START_AT + 137)
+  );
+
+  const weirdExpired = timerOf(engine.expire(weirdStep, weirdStep.expectedEndAt));
+  const otherExpired = timerOf(engine.expire(otherStep, otherStep.expectedEndAt));
+  assert.notEqual(occurrenceIdOf(weirdExpired), occurrenceIdOf(otherExpired));
+
+  const persistedRunning = JSON.parse(JSON.stringify(weirdStep));
+  const persistedExpired = timerOf(
+    engine.expire(persistedRunning, persistedRunning.expectedEndAt + 60_000)
+  );
+  assert.equal(occurrenceIdOf(persistedExpired), occurrenceIdOf(weirdExpired));
+});
+
+test('Attack Round 2: 连续容差内回拨不得通过 checkpointAt 后退累积绕过 5 秒异常阈值', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+
+  const toleratedOnce = timerOf(engine.restore(running, START_AT - 5_000));
+  assert.equal(toleratedOnce.status, 'running');
+  assert.equal(toleratedOnce.remainingSecondsAtCheckpoint, 305);
+
+  const cumulativeTenSeconds = timerOf(engine.restore(toleratedOnce, START_AT - 10_000));
+  assert.equal(
+    cumulativeTenSeconds.status,
+    'paused',
+    'two successive 5-second backward observations are a cumulative 10-second rollback'
+  );
+  assert.equal(isClockAnomaly(cumulativeTenSeconds), true);
+  assert.equal(cumulativeTenSeconds.remainingSecondsAtCheckpoint, 305);
+  assert.equal(cumulativeTenSeconds.expectedEndAt, null);
+
+  const repeated = timerOf(engine.restore(cumulativeTenSeconds, START_AT - 20_000));
+  assert.deepEqual(repeated, cumulativeTenSeconds, 'repeated anomaly restore must be idempotent');
+
+  const confirmed = timerOf(engine.resume(repeated, START_AT + 60_000));
+  assert.equal(confirmed.status, 'running');
+  assert.equal(confirmed.expectedEndAt, START_AT + 365_000);
+  assert.equal(isClockAnomaly(confirmed), false);
+});
+
+test('Attack Round 2: restore 只能接受 JSON plain TimerSnapshot，不能接受 prototype-backed 对象', () => {
+  const engine = loadEngine();
+  const valid = timerOf(startStep(engine));
+  const inherited = Object.create(valid);
+
+  assert.throws(
+    () => engine.restore(inherited, START_AT + 1_000),
+    /snapshot|plain|prototype|own|schema|JSON/i
+  );
+});
+
+test('Attack Round 2: TimerSnapshot 必须是 closed JSON schema，不能携带业务 index 或 prototype key', () => {
+  const engine = loadEngine();
+  const valid = timerOf(startStep(engine));
+  const withBusinessIndexes = {
+    ...valid,
+    currentStepIndex: 7,
+    currentSet: 3,
+    nextStepStarted: true
+  };
+  const withPrototypeKey = JSON.parse(
+    `${JSON.stringify(valid).slice(0, -1)},"__proto__":{"polluted":true}}`
+  );
+
+  for (const snapshot of [withBusinessIndexes, withPrototypeKey]) {
+    assert.throws(
+      () => engine.restore(snapshot, START_AT + 1_000),
+      /snapshot|plain|prototype|unknown|field|schema|JSON/i
+    );
+  }
+  assert.equal({}.polluted, undefined);
+});
+
+test('Attack Round 2: expired 是终态边界，重复 restore/expire 与失败命令均不得改写 occurrence 或输入', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const expired = timerOf(engine.restore(running, END_AT + 120_000));
+  const before = JSON.parse(JSON.stringify(expired));
+
+  const restored = timerOf(engine.restore(expired, END_AT + 240_000));
+  const expiredAgain = timerOf(engine.expire(expired, END_AT + 240_000));
+  assert.deepEqual(restored, before);
+  assert.deepEqual(expiredAgain, before);
+  assert.equal(occurrenceIdOf(restored), occurrenceIdOf(before));
+  assert.equal(occurrenceIdOf(expiredAgain), occurrenceIdOf(before));
+
+  assert.throws(() => engine.adjust(expired, -30, END_AT + 240_000), /adjust|expired/i);
+  assert.throws(() => engine.pause(expired, END_AT + 240_000), /pause|expired/i);
+  assert.throws(() => engine.resume(expired, END_AT + 240_000), /resume|expired/i);
+  assert.deepEqual(expired, before);
+});
