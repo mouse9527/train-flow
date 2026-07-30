@@ -1,9 +1,13 @@
-const { DEFAULT_USER_SETTINGS, MIN_REST_SECONDS, MAX_REST_SECONDS } = require('../utils/constants');
+const {
+  DEFAULT_USER_SETTINGS,
+  LOCAL_TIME_PATTERN,
+  MIN_REST_SECONDS,
+  MAX_REST_SECONDS
+} = require('../utils/constants');
 
 const BOOLEAN_FIELDS = ['vibrationEnabled', 'soundEnabled', 'voiceEnabled', 'keepScreenOn', 'cloudSyncEnabled'];
 const TIME_FIELDS = ['defaultStartLocalTime', 'recommendedEndLocalTime'];
 const EDITABLE_FIELDS = new Set([...BOOLEAN_FIELDS, ...TIME_FIELDS, 'defaultRestSeconds']);
-const LOCAL_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 function assertKnownFields(patch) {
   for (const field of Object.keys(patch)) {

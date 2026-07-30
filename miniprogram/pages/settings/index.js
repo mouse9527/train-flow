@@ -1,8 +1,9 @@
 const { createSettingsApplicationService } = require('../../application/settings-application-service');
-const { createSettingsRepositoryStub } = require('../../domain/identity-settings/settings-repository-stub');
+const { createSettingsRepository } = require('../../domain/identity-settings/settings-repository');
+const { createLocalDatabase } = require('../../services/local-database');
 
 const settingsService = createSettingsApplicationService({
-  repository: createSettingsRepositoryStub()
+  repository: createSettingsRepository({ database: createLocalDatabase() })
 });
 
 Page({
