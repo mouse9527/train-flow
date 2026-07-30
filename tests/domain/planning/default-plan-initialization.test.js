@@ -258,6 +258,65 @@ test('same-version initialization fails closed on duplicate builtin IDs without 
   assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
 });
 
+test('same-version initialization fails closed on foreign-source duplicate builtin IDs regardless of record order', () => {
+  for (const placement of ['before', 'after']) {
+    const storage = new StorageDouble();
+    const runtime = createPersistentPlanningRuntime(storage);
+    runtime.service.initializeDefaultPlans();
+    const snapshot = runtime.database.load();
+    runtime.database.commit((draft) => {
+      const foreignDuplicate = {
+        ...structuredClone(draft.plans[0]),
+        trainingDate: '2026-09-01',
+        templateSource: null
+      };
+      if (placement === 'before') {
+        draft.plans.unshift(foreignDuplicate);
+      } else {
+        draft.plans.push(foreignDuplicate);
+      }
+    }, snapshot.localRevision);
+    storage.clearOperations();
+
+    assert.throws(
+      () => runtime.service.initializeDefaultPlans(),
+      (error) => error && error.code === 'PLAN_TEMPLATE_INTEGRITY_ERROR',
+      `${placement} foreign duplicate must fail closed`
+    );
+    assert.deepEqual(
+      storage.operations.filter(({ type }) => type === 'write'),
+      [],
+      `${placement} foreign duplicate must not write`
+    );
+  }
+});
+
+test('same-version initialization fails closed when a foreign active plan owns a builtin training date', () => {
+  const storage = new StorageDouble();
+  const runtime = createPersistentPlanningRuntime(storage);
+  runtime.service.initializeDefaultPlans();
+  const snapshot = runtime.database.load();
+  runtime.database.commit((draft) => {
+    const foreignOwner = {
+      ...structuredClone(draft.plans[0]),
+      id: 'foreign_active_same_date',
+      templateSource: null,
+      steps: draft.plans[0].steps.map((step, index) => ({
+        ...structuredClone(step),
+        id: `foreign_active_step_${index}`
+      }))
+    };
+    draft.plans.push(foreignOwner);
+  }, snapshot.localRevision);
+  storage.clearOperations();
+
+  assert.throws(
+    () => runtime.service.initializeDefaultPlans(),
+    (error) => error && error.code === 'PLAN_TEMPLATE_INTEGRITY_ERROR'
+  );
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
 test('same-version initialization fails closed on a structurally corrupt builtin without writing', () => {
   const storage = new StorageDouble();
   const runtime = createPersistentPlanningRuntime(storage);

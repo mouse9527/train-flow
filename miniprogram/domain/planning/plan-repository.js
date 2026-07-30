@@ -30,9 +30,28 @@ function activePlan(plan) {
   return plan && plan.status !== 'deleted';
 }
 
-function assertPersistedTemplateIntegrity(records, candidateIds, templateVersion) {
-  const seenIds = new Set();
+function assertPersistedTemplateIntegrity(records, candidates, templateVersion) {
+  const candidateIds = new Set(candidates.map(({ id }) => id));
+  const candidateOwners = new Map(candidates.map(({ id }) => [id, []]));
+  const activeDateOwners = new Map();
+  const templateRecords = [];
+
   for (const record of records) {
+    if (record.templateSource === templateVersion) {
+      templateRecords.push(record);
+    }
+    if (candidateOwners.has(record.id)) {
+      candidateOwners.get(record.id).push(record);
+    }
+    if (activePlan(record)) {
+      const owners = activeDateOwners.get(record.trainingDate) || [];
+      owners.push(record);
+      activeDateOwners.set(record.trainingDate, owners);
+    }
+  }
+
+  const seenIds = new Set();
+  for (const record of templateRecords) {
     if (!candidateIds.has(record.id) || seenIds.has(record.id)) {
       throw createRepositoryError(
         `Persisted template ${templateVersion} has unexpected or duplicate plan ID ${record.id}`,
@@ -49,7 +68,34 @@ function assertPersistedTemplateIntegrity(records, candidateIds, templateVersion
       );
     }
   }
-  return seenIds;
+
+  for (const candidate of candidates) {
+    const owners = candidateOwners.get(candidate.id);
+    if (owners.length > 1) {
+      throw createRepositoryError(
+        `Persisted template ${templateVersion} has duplicate plan ID ${candidate.id}`,
+        'PLAN_TEMPLATE_INTEGRITY_ERROR'
+      );
+    }
+    if (owners.length === 0) {
+      continue;
+    }
+    const owner = owners[0];
+    if (owner.templateSource !== templateVersion) {
+      throw createRepositoryError(
+        `Plan ID ${candidate.id} is owned by a different template source`,
+        'PLAN_TEMPLATE_INTEGRITY_ERROR'
+      );
+    }
+    if (activePlan(owner) && activeDateOwners.get(owner.trainingDate).length > 1) {
+      throw createRepositoryError(
+        `Persisted template ${templateVersion} has multiple active plans for trainingDate ${owner.trainingDate}`,
+        'PLAN_TEMPLATE_INTEGRITY_ERROR'
+      );
+    }
+  }
+
+  return { persistedTemplateIds: seenIds, templateRecords };
 }
 
 function validateDefaultSet(plans, templateVersion) {
@@ -88,24 +134,15 @@ class PlanRepository {
     validateDefaultSet(plans, templateVersion);
     const candidates = clone(plans);
     const snapshot = this.database.load();
-    const existingFromTemplate = snapshot.plans.filter(
-      ({ templateSource }) => templateSource === templateVersion
-    );
     const candidateIds = new Set(candidates.map(({ id }) => id));
-    const persistedTemplateIds = assertPersistedTemplateIntegrity(
-      existingFromTemplate,
-      candidateIds,
+    const {
+      persistedTemplateIds,
+      templateRecords: existingFromTemplate
+    } = assertPersistedTemplateIntegrity(
+      snapshot.plans,
+      candidates,
       templateVersion
     );
-    for (const candidate of candidates) {
-      const sameId = snapshot.plans.find(({ id }) => id === candidate.id);
-      if (sameId && sameId.templateSource !== templateVersion) {
-        throw createRepositoryError(
-          `Plan ID ${candidate.id} is owned by a different template source`,
-          'PLAN_TEMPLATE_INTEGRITY_ERROR'
-        );
-      }
-    }
     if (
       existingFromTemplate.length === candidates.length &&
       persistedTemplateIds.size === candidateIds.size
