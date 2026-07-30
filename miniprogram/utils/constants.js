@@ -1,4 +1,6 @@
 const SETTINGS_SCHEMA_VERSION = 1;
+const LOCAL_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const TIMEZONE_PATTERN = /^(?:UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+.-]+)+)$/;
 
 const DEFAULT_USER_SETTINGS = Object.freeze({
   schemaVersion: SETTINGS_SCHEMA_VERSION,
@@ -25,6 +27,8 @@ const MAX_REST_SECONDS = 600;
 
 module.exports = {
   SETTINGS_SCHEMA_VERSION,
+  LOCAL_TIME_PATTERN,
+  TIMEZONE_PATTERN,
   DEFAULT_USER_SETTINGS,
   SAFETY_NOTICE_CODES,
   MIN_REST_SECONDS,

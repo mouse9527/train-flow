@@ -1,3 +1,11 @@
+const {
+  LOCAL_TIME_PATTERN,
+  MAX_REST_SECONDS,
+  MIN_REST_SECONDS,
+  SETTINGS_SCHEMA_VERSION,
+  TIMEZONE_PATTERN
+} = require('./constants');
+
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -71,7 +79,13 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   if (snapshot.settings.schemaVersion < 1) {
     throw new Error('settings.schemaVersion must be at least 1');
   }
+  if (snapshot.settings.schemaVersion !== SETTINGS_SCHEMA_VERSION) {
+    throw new Error(`Unsupported settings.schemaVersion ${snapshot.settings.schemaVersion}`);
+  }
   assertNonNegativeInteger(snapshot.settings.revision, 'settings.revision');
+  if (snapshot.settings.revision < 1) {
+    throw new Error('settings.revision must be at least 1');
+  }
   for (const field of [
     'vibrationEnabled',
     'soundEnabled',
@@ -83,12 +97,29 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
       throw new Error(`settings.${field} must be a boolean`);
     }
   }
-  for (const field of ['defaultStartLocalTime', 'recommendedEndLocalTime', 'timezone']) {
-    if (typeof snapshot.settings[field] !== 'string' || snapshot.settings[field].length === 0) {
-      throw new Error(`settings.${field} must be a non-empty string`);
+  for (const field of ['defaultStartLocalTime', 'recommendedEndLocalTime']) {
+    if (
+      typeof snapshot.settings[field] !== 'string' ||
+      !LOCAL_TIME_PATTERN.test(snapshot.settings[field])
+    ) {
+      throw new Error(`settings.${field} must be an HH:mm local time string`);
     }
   }
+  if (
+    typeof snapshot.settings.timezone !== 'string' ||
+    !TIMEZONE_PATTERN.test(snapshot.settings.timezone)
+  ) {
+    throw new Error('settings.timezone must be UTC or an IANA timezone');
+  }
   assertNonNegativeInteger(snapshot.settings.defaultRestSeconds, 'settings.defaultRestSeconds');
+  if (
+    snapshot.settings.defaultRestSeconds < MIN_REST_SECONDS ||
+    snapshot.settings.defaultRestSeconds > MAX_REST_SECONDS
+  ) {
+    throw new Error(
+      `settings.defaultRestSeconds must be between ${MIN_REST_SECONDS} and ${MAX_REST_SECONDS}`
+    );
+  }
   if (!Array.isArray(snapshot.plans) || !Array.isArray(snapshot.records)) {
     throw new Error('plans and records must be arrays');
   }
@@ -100,8 +131,21 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   return snapshot;
 }
 
+function assertInstallMetadata(install) {
+  assertJsonSafe(install, 'install');
+  assertPlainObject(install, 'install');
+  if (typeof install.deviceId !== 'string' || install.deviceId.length === 0) {
+    throw new Error('install.deviceId must be a non-empty string');
+  }
+  if (!Number.isFinite(install.createdAt)) {
+    throw new Error('install.createdAt must be a finite timestamp');
+  }
+  return install;
+}
+
 module.exports = {
   assertAppDatabaseSnapshot,
+  assertInstallMetadata,
   assertJsonSafe,
   assertNonNegativeInteger,
   assertPlainObject

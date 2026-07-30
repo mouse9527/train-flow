@@ -1,6 +1,6 @@
 const { cloneAppDatabase, createAppDatabase } = require('../domain/sync/app-database');
 const { computeChecksum } = require('../utils/checksum');
-const { assertAppDatabaseSnapshot } = require('../utils/validation');
+const { assertAppDatabaseSnapshot, assertInstallMetadata } = require('../utils/validation');
 
 const SLOT_KEYS = Object.freeze({
   a: 'train_flow:v1:db:a',
@@ -181,11 +181,24 @@ class LocalDatabase {
   }
 
   createInitialSnapshot() {
-    let install = null;
+    let storedInstall;
     try {
-      install = decodeStored(this.storage.getStorageSync(INSTALL_KEY));
+      storedInstall = this.storage.getStorageSync(INSTALL_KEY);
     } catch (error) {
-      install = null;
+      throw new Error(`Unable to read install metadata: ${error.message}`);
+    }
+
+    let install = null;
+    if (storedInstall !== undefined) {
+      try {
+        install = decodeStored(storedInstall);
+        if (install === null) {
+          throw new Error('install metadata is null or empty');
+        }
+        assertInstallMetadata(install);
+      } catch (error) {
+        throw new Error(`Corrupt install metadata: ${error.message}`);
+      }
     }
     const snapshot = createAppDatabase({
       now: this.now,

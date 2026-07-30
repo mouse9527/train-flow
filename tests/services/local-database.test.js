@@ -727,3 +727,128 @@ test('Attack: migration map 只能使用自身版本 key，不能执行 prototyp
   assert.deepEqual(storage.peek(SLOT_B), oldB);
   assert.equal(storage.peek(ACTIVE), 'a');
 });
+
+test('Attack: install metadata key 存在但 JSON 损坏时必须失败关闭，不能静默丢弃 device identity', () => {
+  const storage = new StorageDouble({
+    'train_flow:v1:install': '{"deviceId":"truncated"'
+  });
+  const database = createDatabase(storage);
+
+  assert.throws(() => database.load(), /install|JSON|Unexpected|corrupt/i);
+  storage.assertOnlyKeysWritten([]);
+  assert.equal(storage.peek('train_flow:v1:install'), '{"deviceId":"truncated"');
+  assert.equal(storage.peek(SLOT_A), undefined);
+  assert.equal(storage.peek(SLOT_B), undefined);
+  assert.equal(storage.peek(ACTIVE), undefined);
+});
+
+test('Attack: migration 生成非法 settings 时间与休息上限时必须整体回滚，不能只校验字段类型', () => {
+  const oldA = makeSnapshot({ schemaVersion: 1, localRevision: 230 });
+  const oldB = makeSnapshot({ schemaVersion: 1, localRevision: 229 });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const database = createDatabase(storage, {
+    currentSchemaVersion: 2,
+    migrations: {
+      1(snapshot) {
+        snapshot.schemaVersion = 2;
+        snapshot.settings.defaultStartLocalTime = '99:99';
+        snapshot.settings.defaultRestSeconds = 601;
+        return snapshot;
+      }
+    }
+  });
+  storage.clearOperations();
+
+  assert.throws(
+    () => database.load(),
+    /defaultStartLocalTime|HH:mm|defaultRestSeconds|between|600/i
+  );
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: 两槽保存完全相同快照且 pointer 非法时必须无损选定一个槽，只修 pointer', () => {
+  const duplicate = makeSnapshot({ localRevision: 240, records: [{ id: 'duplicate-safe' }] });
+  const storage = seedPair({ active: 'not-a-slot', a: duplicate, b: duplicate });
+  const database = createDatabase(storage);
+  storage.clearOperations();
+
+  const loaded = database.load();
+
+  assert.deepEqual(loaded, duplicate);
+  assert.deepEqual(storage.peek(SLOT_A), duplicate);
+  assert.deepEqual(storage.peek(SLOT_B), duplicate);
+  storage.assertOnlyKeysWritten([ACTIVE]);
+  assert.ok(storage.peek(ACTIVE) === 'a' || storage.peek(ACTIVE) === 'b');
+});
+
+test('Attack: mutator 删除必需顶层字段或把 outbox 改成非数组时必须在写槽前拒绝', () => {
+  const oldA = makeSnapshot({ localRevision: 250 });
+  const oldB = makeSnapshot({ localRevision: 249 });
+
+  for (const mutate of [
+    (draft) => delete draft.settings,
+    (draft) => delete draft.sync,
+    (draft) => {
+      draft.sync.outbox = { opId: 'not-an-array' };
+    }
+  ]) {
+    const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+    const database = createDatabase(storage);
+    storage.clearOperations();
+
+    assert.throws(() => database.commit(mutate), /settings|sync|outbox|object|array/i);
+    storage.assertOnlyKeysWritten([]);
+    assert.deepEqual(storage.peek(SLOT_A), oldA);
+    assert.deepEqual(storage.peek(SLOT_B), oldB);
+    assert.equal(storage.peek(ACTIVE), 'a');
+  }
+});
+
+test('Attack: canonical checksum 必须与标准 SHA-256 在 Unicode、长字符串和 key 重排下完全一致', () => {
+  const crypto = require('node:crypto');
+  const { canonicalize, computeChecksum } = require('../../miniprogram/utils/checksum');
+  const samples = [
+    { message: '训练完成🏋️‍♀️', nested: { z: '末', a: '始' }, values: [3, 2, 1] },
+    { payload: 'TrainFlow-长文本-'.repeat(4096), revision: 260 },
+    { checksum: 'must-be-excluded', b: 2, a: 1 }
+  ];
+
+  for (const sample of samples) {
+    const payload = Object.fromEntries(
+      Object.entries(sample).filter(([key]) => key !== 'checksum')
+    );
+    const expected = crypto
+      .createHash('sha256')
+      .update(canonicalize(payload), 'utf8')
+      .digest('hex');
+    assert.equal(computeChecksum(sample), expected);
+  }
+});
+
+test('Attack: storage 仅实现 get/set 而没有 remove/clear 时仍必须能完成原子 commit', () => {
+  const backing = new Map([
+    [SLOT_A, makeSnapshot({ localRevision: 270 })],
+    [SLOT_B, makeSnapshot({ localRevision: 269 })],
+    [ACTIVE, 'a']
+  ]);
+  const storage = {
+    getStorageSync(key) {
+      return clone(backing.get(key));
+    },
+    setStorageSync(key, value) {
+      backing.set(key, clone(value));
+    }
+  };
+  const database = createDatabase(storage);
+
+  const committed = database.commit((draft) => {
+    draft.sync.outbox.push({ opId: 'no-remove-needed' });
+  });
+
+  assert.equal(committed.localRevision, 271);
+  assert.equal(committed.sync.outbox[0].opId, 'no-remove-needed');
+  assert.equal(backing.get(ACTIVE), 'b');
+});
