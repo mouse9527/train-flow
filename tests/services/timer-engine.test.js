@@ -834,3 +834,51 @@ test('Attack Round 4: 输出 mutation 与非法命令均不得反向污染输入
   }
   assert.deepEqual(expired, expiredBefore);
 });
+
+test('Attack Round 5: factory TimerEngine 必须暴露 canonical remaining alias 并在全状态下与 getRemaining 一致', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const paused = timerOf(engine.pause(running, START_AT + 1_000));
+  const anomaly = timerOf(engine.restore(running, START_AT - 5_001));
+  const expired = timerOf(engine.expire(running, END_AT));
+  const states = [
+    ['running', running, START_AT + 1_000, 299],
+    ['paused', paused, START_AT + 60_000, 299],
+    ['clock-anomaly', anomaly, START_AT + 60_000, 300],
+    ['expired', expired, END_AT + 60_000, 0]
+  ];
+  const violations = [];
+
+  if (typeof engine.remaining !== 'function') {
+    violations.push('createTimerEngine() result does not implement AC1 remaining()');
+  } else {
+    for (const [label, snapshot, nowMs, expected] of states) {
+      assert.equal(engine.remaining(snapshot, nowMs), expected, `${label} remaining alias`);
+      assert.equal(
+        engine.remaining(snapshot, nowMs),
+        engine.getRemaining(snapshot, nowMs),
+        `${label} aliases must stay deterministic`
+      );
+    }
+  }
+
+  const persistedAnomaly = JSON.parse(JSON.stringify(anomaly));
+  assert.deepEqual(
+    timerOf(engine.restore(persistedAnomaly, START_AT - 10_000)),
+    persistedAnomaly,
+    'serialized anomaly restore must remain idempotent'
+  );
+  const confirmed = timerOf(engine.resume(persistedAnomaly, START_AT + 1));
+  assert.deepEqual(
+    timerOf(engine.resume(confirmed, START_AT + 1)),
+    confirmed,
+    'repeated confirmation command must remain idempotent'
+  );
+  assert.equal(
+    occurrenceIdOf(engine.restore(JSON.parse(JSON.stringify(expired)), END_AT + 1)),
+    occurrenceIdOf(expired),
+    'expired serialization/restore must retain its single occurrence identity'
+  );
+
+  assert.deepEqual(violations, [], violations.join('; '));
+});

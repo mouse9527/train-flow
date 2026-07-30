@@ -269,6 +269,10 @@ class TimerEngine {
     return getRemaining(snapshot, nowMs);
   }
 
+  remaining(snapshot, nowMs) {
+    return getRemaining(snapshot, nowMs);
+  }
+
   pause(snapshot, nowMs) {
     return pause(snapshot, nowMs);
   }
