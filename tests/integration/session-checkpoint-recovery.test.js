@@ -226,6 +226,122 @@ test('sub-second elapsed remainder survives persistence and startup recovery', (
   assert.equal(restored.session.elapsedRemainderMilliseconds, 0);
 });
 
+test('paused business progression performs zero writes until resume', () => {
+  const runtime = createRuntime();
+  const manualPlan = clone(runtime.plans.find((plan) =>
+    plan.steps.some(({ kind }) => kind === 'manual')
+  ));
+  manualPlan.id = 'plan_paused_progression';
+  manualPlan.steps = [{
+    ...manualPlan.steps.find(({ kind }) => kind === 'manual'),
+    order: 1
+  }];
+  runtime.database.commit((draft) => {
+    draft.plans.push(manualPlan);
+  });
+  const session = runtime.service.startSession({
+    planId: manualPlan.id,
+    commandKey: 'paused_progression_start',
+    nowMs: NOW
+  });
+  const stepId = session.planSnapshot.steps[0].id;
+  runtime.service.execute({
+    type: 'pause',
+    expectedSessionRevision: 1,
+    commandKey: 'paused_progression_pause',
+    nowMs: NOW + 1_000,
+    payload: { reason: 'user' }
+  });
+  const beforeRejectedCommand = clone(runtime.database.load().activeSession);
+  const writesBeforeRejectedCommand = snapshotWriteCount(runtime.storage);
+
+  assert.throws(
+    () => runtime.service.execute({
+      type: 'complete_step',
+      expectedSessionRevision: 2,
+      commandKey: 'paused_progression_rejected',
+      nowMs: NOW + 2_000,
+      payload: { stepId }
+    }),
+    (error) => error && error.code === 'SESSION_STATUS_INVALID'
+  );
+  assert.equal(snapshotWriteCount(runtime.storage), writesBeforeRejectedCommand);
+  assert.deepEqual(runtime.database.load().activeSession, beforeRejectedCommand);
+
+  runtime.service.execute({
+    type: 'resume',
+    expectedSessionRevision: 2,
+    commandKey: 'paused_progression_resume',
+    nowMs: NOW + 3_000,
+    payload: { reason: 'user' }
+  });
+  const completed = runtime.service.execute({
+    type: 'complete_step',
+    expectedSessionRevision: 3,
+    commandKey: 'paused_progression_complete',
+    nowMs: NOW + 4_000,
+    payload: { stepId }
+  }).session;
+
+  assert.equal(completed.status, 'completed');
+  assert.equal(snapshotWriteCount(runtime.storage) - writesBeforeRejectedCommand, 2);
+});
+
+test('startup recovery persists TimerEngine rollback tolerance and clock anomaly boundaries', () => {
+  for (const rollbackMilliseconds of [1, 5_000, 5_001]) {
+    const runtime = createRuntime();
+    const session = start(runtime, {
+      commandKey: `rollback_integration_start_${rollbackMilliseconds}`
+    });
+    runtime.service.execute({
+      type: 'start_step',
+      expectedSessionRevision: 1,
+      commandKey: `rollback_integration_timer_${rollbackMilliseconds}`,
+      nowMs: NOW,
+      payload: { stepId: session.planSnapshot.steps[0].id }
+    });
+    const anchored = runtime.service.checkpointOnHide({
+      expectedSessionRevision: 2,
+      commandKey: `rollback_integration_anchor_${rollbackMilliseconds}`,
+      nowMs: NOW + 10_000
+    }).session;
+    const rebuilt = createRuntime({ storage: runtime.storage });
+    const beforeRestore = snapshotWriteCount(runtime.storage);
+    const restoreAt = anchored.lastCheckpointAt - rollbackMilliseconds;
+    const restored = rebuilt.service.restoreOnStartup({
+      expectedSessionRevision: 3,
+      commandKey: `rollback_integration_restore_${rollbackMilliseconds}`,
+      nowMs: restoreAt
+    });
+
+    assert.equal(restored.ok, true);
+    assert.equal(snapshotWriteCount(runtime.storage) - beforeRestore, 1);
+    assert.equal(restored.session.lastCheckpointAt, anchored.lastCheckpointAt);
+    assert.equal(restored.session.elapsedActiveSeconds, anchored.elapsedActiveSeconds);
+
+    if (rollbackMilliseconds <= 5_000) {
+      assert.equal(restored.session.status, 'in_progress');
+      assert.equal(restored.session.timer.status, 'running');
+      assert.equal(restored.session.timer.checkpointAt, restoreAt);
+      continue;
+    }
+
+    assert.equal(restored.session.status, 'paused');
+    assert.equal(restored.session.timer.status, 'paused');
+    assert.equal(restored.session.timer.pauseReason, 'clock-anomaly');
+    assert.equal(restored.session.timer.requiresConfirmation, true);
+    const confirmed = rebuilt.service.execute({
+      type: 'resume',
+      expectedSessionRevision: 4,
+      commandKey: 'rollback_integration_confirm',
+      nowMs: restoreAt,
+      payload: { reason: 'clock-confirmed' }
+    }).session;
+    assert.equal(confirmed.status, 'in_progress');
+    assert.equal(confirmed.timer.status, 'running');
+  }
+});
+
 test('non-origin device cannot continue and restore returns a recoverable error without writes', () => {
   const runtime = createRuntime();
   start(runtime);

@@ -1,5 +1,5 @@
 const { assertWorkoutPlan } = require('../planning/plan-validation');
-const { assertTimerSnapshot } = require('./timer-snapshot');
+const { assertTimerSnapshot, CLOCK_BACKWARD_TOLERANCE_MS } = require('./timer-snapshot');
 const { createTimerEngine } = require('../../services/timer-engine');
 const { canonicalize } = require('../../utils/checksum');
 
@@ -44,6 +44,11 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   complete_set: Object.freeze(['stepId', 'setNumber', 'reps', 'weightKg']),
   abort: Object.freeze(['reason'])
 });
+const BUSINESS_PROGRESSION_COMMANDS = Object.freeze([
+  'start_step',
+  'complete_step',
+  'complete_set'
+]);
 const STEP_RESULT_FIELDS = Object.freeze(['stepId', 'status', 'completedAt', 'setResults']);
 const SET_RESULT_FIELDS = Object.freeze(['setNumber', 'reps', 'weightKg', 'completedAt']);
 
@@ -506,21 +511,54 @@ function ensureStepResult(session, stepId) {
   return result;
 }
 
+function assertBusinessProgressionStatus(session, command) {
+  if (
+    BUSINESS_PROGRESSION_COMMANDS.includes(command.type) &&
+    session.status !== 'in_progress'
+  ) {
+    throw createSessionError(
+      'Workout progression requires an in-progress Session',
+      'SESSION_STATUS_INVALID'
+    );
+  }
+}
+
 function materializeCheckpoint(session, nowMs, timerEngine) {
-  if (nowMs < session.lastCheckpointAt) {
-    throw createSessionError('Session checkpoint time cannot move backwards', 'SESSION_CLOCK_ANOMALY');
+  const previousCheckpointAt = session.lastCheckpointAt;
+  const rollbackMilliseconds = previousCheckpointAt - nowMs;
+  let timerClockAnomaly = false;
+
+  if (session.timer !== null) {
+    session.timer = timerEngine.restore(session.timer, nowMs);
+    timerClockAnomaly =
+      session.timer.status === 'paused' &&
+      session.timer.pauseReason === 'clock-anomaly';
+  }
+  if (rollbackMilliseconds > 0) {
+    if (session.timer === null && rollbackMilliseconds > CLOCK_BACKWARD_TOLERANCE_MS) {
+      throw createSessionError(
+        'Session checkpoint time exceeded the backward-clock tolerance',
+        'SESSION_CLOCK_ANOMALY'
+      );
+    }
+    if (timerClockAnomaly) {
+      session.status = 'paused';
+    }
+    return;
+  }
+  if (timerClockAnomaly) {
+    session.status = 'paused';
+    session.lastCheckpointAt = nowMs;
+    return;
   }
   if (session.status === 'in_progress') {
-    const elapsedMilliseconds = nowMs - session.lastCheckpointAt;
+    const elapsedMilliseconds = nowMs - previousCheckpointAt;
     const remainderMilliseconds = session.elapsedRemainderMilliseconds + elapsedMilliseconds % 1_000;
     session.elapsedActiveSeconds += Math.floor(elapsedMilliseconds / 1_000) +
       Math.floor(remainderMilliseconds / 1_000);
     session.elapsedRemainderMilliseconds = remainderMilliseconds % 1_000;
   }
   session.lastCheckpointAt = nowMs;
-  if (session.timer !== null) {
-    session.timer = timerEngine.restore(session.timer, nowMs);
-  }
 }
 
 function advanceAfterStep(session, stepId, nowMs) {
@@ -540,15 +578,24 @@ function advanceAfterStep(session, stepId, nowMs) {
 }
 
 function applyTransition(session, command, timerEngine) {
+  assertBusinessProgressionStatus(session, command);
   materializeCheckpoint(session, command.nowMs, timerEngine);
+  assertBusinessProgressionStatus(session, command);
   const step = currentStepFor(session);
+  const confirmsClockAnomaly =
+    command.type === 'resume' &&
+    session.timer !== null &&
+    session.timer.pauseReason === 'clock-anomaly';
+  const transitionNowMs = confirmsClockAnomaly
+    ? command.nowMs
+    : Math.max(command.nowMs, session.lastCheckpointAt);
 
   if (command.type === 'checkpoint') {
     return;
   }
   if (command.type === 'abort') {
     session.status = 'aborted';
-    session.endedAt = command.nowMs;
+    session.endedAt = transitionNowMs;
     session.timer = null;
     session.currentSet = null;
     return;
@@ -561,7 +608,7 @@ function applyTransition(session, command, timerEngine) {
       if (session.timer.status !== 'running') {
         throw createSessionError('Only a running timer can pause', 'SESSION_TIMER_PAUSE_INVALID');
       }
-      session.timer = timerEngine.pause(session.timer, command.nowMs);
+      session.timer = timerEngine.pause(session.timer, transitionNowMs);
     }
     session.status = 'paused';
     return;
@@ -574,7 +621,7 @@ function applyTransition(session, command, timerEngine) {
       if (session.timer.status !== 'paused') {
         throw createSessionError('Only a paused timer can resume', 'SESSION_TIMER_RESUME_INVALID');
       }
-      session.timer = timerEngine.resume(session.timer, command.nowMs);
+      session.timer = timerEngine.resume(session.timer, transitionNowMs);
     }
     session.status = 'in_progress';
     return;
@@ -601,7 +648,7 @@ function applyTransition(session, command, timerEngine) {
       durationSeconds: step.durationSeconds,
       stepId: step.id,
       setNumber: null
-    }, command.nowMs);
+    }, transitionNowMs);
     return;
   }
   if (command.type === 'complete_step') {
@@ -619,7 +666,7 @@ function applyTransition(session, command, timerEngine) {
         setNumber: session.currentSet,
         reps: null,
         weightKg: null,
-        completedAt: command.nowMs
+        completedAt: transitionNowMs
       });
       session.currentSet += 1;
       session.timer = step.restSeconds > 0 ? timerEngine.start({
@@ -627,7 +674,7 @@ function applyTransition(session, command, timerEngine) {
         durationSeconds: step.restSeconds,
         stepId: step.id,
         setNumber: session.currentSet
-      }, command.nowMs) : null;
+      }, transitionNowMs) : null;
       return;
     }
     if (step.kind === 'interval') {
@@ -635,10 +682,10 @@ function applyTransition(session, command, timerEngine) {
         setNumber: session.currentSet,
         reps: null,
         weightKg: null,
-        completedAt: command.nowMs
+        completedAt: transitionNowMs
       });
     }
-    advanceAfterStep(session, step.id, command.nowMs);
+    advanceAfterStep(session, step.id, transitionNowMs);
     return;
   }
   if (command.type === 'complete_set') {
@@ -672,10 +719,10 @@ function applyTransition(session, command, timerEngine) {
       setNumber: command.payload.setNumber,
       reps: command.payload.reps,
       weightKg: command.payload.weightKg,
-      completedAt: command.nowMs
+      completedAt: transitionNowMs
     });
     if (session.currentSet === step.sets) {
-      advanceAfterStep(session, step.id, command.nowMs);
+      advanceAfterStep(session, step.id, transitionNowMs);
       return;
     }
     session.currentSet += 1;
@@ -684,7 +731,7 @@ function applyTransition(session, command, timerEngine) {
       durationSeconds: step.restSeconds,
       stepId: step.id,
       setNumber: session.currentSet
-    }, command.nowMs) : null;
+    }, transitionNowMs) : null;
   }
 }
 

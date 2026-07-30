@@ -44,6 +44,19 @@ function intervalPlan() {
   return plan;
 }
 
+function manualPlan() {
+  const plan = createDefaultPlans({ now: () => NOW })[2];
+  plan.id = 'plan_manual_fixture';
+  plan.steps = [{ ...plan.steps.find(({ kind }) => kind === 'manual'), order: 1 }];
+  return plan;
+}
+
+function singleSetStrengthPlan() {
+  const plan = strengthPlan();
+  plan.steps[0].sets = 1;
+  return plan;
+}
+
 function startedSession(plan = timedPlan()) {
   return createWorkoutSession({
     plan,
@@ -323,6 +336,209 @@ test('Session status and timer status must form a valid lifecycle state', () => 
       /session|status|timer|paused|running/i
     );
   }
+});
+
+test('paused Sessions reject business progression until an explicit resume', () => {
+  const scenarios = [
+    {
+      plan: singleTimedPlan(),
+      commandType: 'start_step',
+      payload(session) {
+        return { stepId: session.planSnapshot.steps[0].id };
+      },
+      verify(session) {
+        assert.equal(session.status, 'in_progress');
+        assert.equal(session.timer.status, 'running');
+      }
+    },
+    {
+      plan: manualPlan(),
+      commandType: 'complete_step',
+      payload(session) {
+        return { stepId: session.planSnapshot.steps[0].id };
+      },
+      verify(session) {
+        assert.equal(session.status, 'completed');
+      }
+    },
+    {
+      plan: singleSetStrengthPlan(),
+      commandType: 'complete_set',
+      payload(session) {
+        return {
+          stepId: session.planSnapshot.steps[0].id,
+          setNumber: 1,
+          reps: 12,
+          weightKg: 20
+        };
+      },
+      verify(session) {
+        assert.equal(session.status, 'completed');
+      }
+    }
+  ];
+
+  for (const scenario of scenarios) {
+    const initial = startedSession(scenario.plan);
+    const paused = applyWorkoutCommand(
+      initial,
+      command('pause', 1, `pause_before_${scenario.commandType}`, NOW + 1_000, {
+        reason: 'user'
+      })
+    ).session;
+    const beforeRejectedCommand = structuredClone(paused);
+
+    assert.throws(
+      () => applyWorkoutCommand(
+        paused,
+        command(
+          scenario.commandType,
+          2,
+          `paused_${scenario.commandType}`,
+          NOW + 2_000,
+          scenario.payload(paused)
+        )
+      ),
+      (error) => error && error.code === 'SESSION_STATUS_INVALID'
+    );
+    assert.deepEqual(paused, beforeRejectedCommand);
+
+    const resumed = applyWorkoutCommand(
+      paused,
+      command('resume', 2, `resume_before_${scenario.commandType}`, NOW + 3_000, {
+        reason: 'user'
+      })
+    ).session;
+    const advanced = applyWorkoutCommand(
+      resumed,
+      command(
+        scenario.commandType,
+        3,
+        `resumed_${scenario.commandType}`,
+        NOW + 4_000,
+        scenario.payload(resumed)
+      )
+    ).session;
+    scenario.verify(advanced);
+  }
+});
+
+test('Session checkpoints preserve TimerEngine rollback boundaries and fail closed without a timer', () => {
+  function checkpointedTimedSession() {
+    const initial = startedSession(singleTimedPlan());
+    const stepId = initial.planSnapshot.steps[0].id;
+    const running = applyWorkoutCommand(
+      initial,
+      command('start_step', 1, 'rollback_timer_start', NOW, { stepId })
+    ).session;
+    return applyWorkoutCommand(
+      running,
+      command('checkpoint', 2, 'rollback_timer_anchor', NOW + 10_000, { reason: 'hide' })
+    ).session;
+  }
+
+  for (const rollbackMilliseconds of [1, 5_000]) {
+    const anchored = checkpointedTimedSession();
+    const restoredAt = anchored.lastCheckpointAt - rollbackMilliseconds;
+    const restored = applyWorkoutCommand(
+      anchored,
+      command(
+        'checkpoint',
+        3,
+        `rollback_timer_tolerated_${rollbackMilliseconds}`,
+        restoredAt,
+        { reason: 'startup' }
+      )
+    ).session;
+
+    assert.equal(restored.status, 'in_progress');
+    assert.equal(restored.timer.status, 'running');
+    assert.equal(restored.timer.checkpointAt, restoredAt);
+    assert.equal(restored.lastCheckpointAt, anchored.lastCheckpointAt);
+    assert.equal(restored.elapsedActiveSeconds, anchored.elapsedActiveSeconds);
+  }
+
+  const anchored = checkpointedTimedSession();
+  const anomalyAt = anchored.lastCheckpointAt - 5_001;
+  const anomalous = applyWorkoutCommand(
+    anchored,
+    command('checkpoint', 3, 'rollback_timer_anomaly', anomalyAt, { reason: 'startup' })
+  ).session;
+  assert.equal(anomalous.status, 'paused');
+  assert.equal(anomalous.timer.status, 'paused');
+  assert.equal(anomalous.timer.pauseReason, 'clock-anomaly');
+  assert.equal(anomalous.timer.requiresConfirmation, true);
+  assert.equal(anomalous.lastCheckpointAt, anchored.lastCheckpointAt);
+  assert.equal(anomalous.elapsedActiveSeconds, anchored.elapsedActiveSeconds);
+
+  const confirmationAt = anchored.lastCheckpointAt + 5_000;
+  const confirmed = applyWorkoutCommand(
+    anomalous,
+    command('resume', 4, 'rollback_timer_confirm', confirmationAt, { reason: 'clock-confirmed' })
+  ).session;
+  assert.equal(confirmed.status, 'in_progress');
+  assert.equal(confirmed.timer.status, 'running');
+  assert.equal(confirmed.timer.pauseReason, null);
+  assert.equal(confirmed.lastCheckpointAt, confirmationAt);
+  const afterConfirmation = applyWorkoutCommand(
+    confirmed,
+    command('checkpoint', 5, 'rollback_timer_after_confirm', confirmationAt + 1_000, {
+      reason: 'manual'
+    })
+  ).session;
+  assert.equal(
+    afterConfirmation.elapsedActiveSeconds,
+    anchored.elapsedActiveSeconds + 1
+  );
+
+  const timerlessAnchor = applyWorkoutCommand(
+    startedSession(manualPlan()),
+    command('checkpoint', 1, 'rollback_timerless_anchor', NOW + 10_000, { reason: 'hide' })
+  ).session;
+  for (const rollbackMilliseconds of [1, 5_000]) {
+    const tolerated = applyWorkoutCommand(
+      timerlessAnchor,
+      command(
+        'checkpoint',
+        2,
+        `rollback_timerless_tolerated_${rollbackMilliseconds}`,
+        timerlessAnchor.lastCheckpointAt - rollbackMilliseconds,
+        { reason: 'startup' }
+      )
+    ).session;
+    assert.equal(tolerated.status, 'in_progress');
+    assert.equal(tolerated.lastCheckpointAt, timerlessAnchor.lastCheckpointAt);
+    assert.equal(tolerated.elapsedActiveSeconds, timerlessAnchor.elapsedActiveSeconds);
+  }
+  const completedWithinTolerance = applyWorkoutCommand(
+    timerlessAnchor,
+    command(
+      'complete_step',
+      2,
+      'rollback_timerless_complete',
+      timerlessAnchor.lastCheckpointAt - 5_000,
+      { stepId: timerlessAnchor.planSnapshot.steps[0].id }
+    )
+  ).session;
+  assert.equal(completedWithinTolerance.status, 'completed');
+  assert.equal(completedWithinTolerance.endedAt, timerlessAnchor.lastCheckpointAt);
+  assert.equal(
+    completedWithinTolerance.stepResults[0].completedAt,
+    timerlessAnchor.lastCheckpointAt
+  );
+  assert.throws(
+    () => applyWorkoutCommand(
+      timerlessAnchor,
+      command(
+        'checkpoint',
+        2,
+        'rollback_timerless_anomaly',
+        timerlessAnchor.lastCheckpointAt - 5_001,
+        { reason: 'startup' }
+      )
+    ),
+    (error) => error && error.code === 'SESSION_CLOCK_ANOMALY'
+  );
 });
 
 test('setResults must be contiguous and aligned with currentSet', () => {
