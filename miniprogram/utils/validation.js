@@ -67,6 +67,28 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
     throw new Error('checksum must be a non-empty string');
   }
   assertPlainObject(snapshot.settings, 'settings');
+  assertNonNegativeInteger(snapshot.settings.schemaVersion, 'settings.schemaVersion');
+  if (snapshot.settings.schemaVersion < 1) {
+    throw new Error('settings.schemaVersion must be at least 1');
+  }
+  assertNonNegativeInteger(snapshot.settings.revision, 'settings.revision');
+  for (const field of [
+    'vibrationEnabled',
+    'soundEnabled',
+    'voiceEnabled',
+    'keepScreenOn',
+    'cloudSyncEnabled'
+  ]) {
+    if (typeof snapshot.settings[field] !== 'boolean') {
+      throw new Error(`settings.${field} must be a boolean`);
+    }
+  }
+  for (const field of ['defaultStartLocalTime', 'recommendedEndLocalTime', 'timezone']) {
+    if (typeof snapshot.settings[field] !== 'string' || snapshot.settings[field].length === 0) {
+      throw new Error(`settings.${field} must be a non-empty string`);
+    }
+  }
+  assertNonNegativeInteger(snapshot.settings.defaultRestSeconds, 'settings.defaultRestSeconds');
   if (!Array.isArray(snapshot.plans) || !Array.isArray(snapshot.records)) {
     throw new Error('plans and records must be arrays');
   }

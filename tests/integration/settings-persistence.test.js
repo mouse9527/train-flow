@@ -144,3 +144,34 @@ test('Attack: train_flow:v1 storage key 只能出现在 LocalDatabase，不能�
     new Set([SLOT_A, SLOT_B, ACTIVE, 'train_flow:v1:install'])
   );
 });
+
+test('Attack: checksum 正确但 settings revision 类型损坏的高 revision 槽必须被隔离并回退到旧有效设置', () => {
+  const { computeChecksum } = require('../../miniprogram/utils/checksum');
+  const storage = new StorageDouble();
+  const firstRuntime = createPersistentService(storage);
+  const persisted = firstRuntime.service.updateSettings(
+    { soundEnabled: false },
+    DEFAULT_USER_SETTINGS.revision
+  );
+  const validSlot = storage.peek(ACTIVE);
+  const corruptSlot = validSlot === 'a' ? 'b' : 'a';
+  const validKey = validSlot === 'a' ? SLOT_A : SLOT_B;
+  const corruptKey = corruptSlot === 'a' ? SLOT_A : SLOT_B;
+  const validSnapshot = storage.peek(validKey);
+  const corruptPayload = {
+    ...validSnapshot,
+    localRevision: validSnapshot.localRevision + 1,
+    settings: { ...validSnapshot.settings, revision: 'corrupt-revision' }
+  };
+  delete corruptPayload.checksum;
+  const corruptSnapshot = { ...corruptPayload, checksum: computeChecksum(corruptPayload) };
+  storage.seed(corruptKey, corruptSnapshot);
+  storage.seed(ACTIVE, corruptSlot);
+
+  const reloaded = createPersistentService(storage).service.getSettings();
+
+  assert.deepEqual(reloaded, persisted);
+  assert.equal(storage.peek(ACTIVE), validSlot);
+  assert.deepEqual(storage.peek(validKey), validSnapshot);
+  assert.deepEqual(storage.peek(corruptKey), corruptSnapshot);
+});

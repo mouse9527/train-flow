@@ -616,3 +616,114 @@ test('Attack: load 修复 stale pointer 的 setStorageSync 失败时不得改槽
   assert.deepEqual(storage.peek(SLOT_A), oldA);
   assert.deepEqual(storage.peek(SLOT_B), newerB);
 });
+
+test('Attack: second CAS read 两槽都抛错时必须在任何写入前中止 commit', () => {
+  const oldA = makeSnapshot({ localRevision: 190, records: [{ id: 'durable' }] });
+  const oldB = makeSnapshot({ localRevision: 189 });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const originalGetStorageSync = storage.getStorageSync.bind(storage);
+  let slotReads = 0;
+  storage.getStorageSync = (key) => {
+    if (key === SLOT_A || key === SLOT_B) {
+      slotReads += 1;
+      if (slotReads > 2) {
+        throw new Error(`second CAS read unavailable for ${key}`);
+      }
+    }
+    return originalGetStorageSync(key);
+  };
+  const database = createDatabase(storage);
+  storage.clearOperations();
+
+  assert.throws(
+    () => database.commit((draft) => draft.records.push({ id: 'must-not-commit' }), 190),
+    /second CAS read unavailable|Unable to read a valid AppDatabase snapshot/i
+  );
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: second CAS 遇到同 revision 但不同 checksum/payload 时必须识别 ABA，不能只比较 revision', () => {
+  const oldA = makeSnapshot({ localRevision: 200, records: [{ id: 'original-base' }] });
+  const oldB = makeSnapshot({ localRevision: 199 });
+  const conflictingA = makeSnapshot({
+    localRevision: 200,
+    records: [{ id: 'concurrent-same-revision-payload' }]
+  });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const database = createDatabase(storage);
+  storage.clearOperations();
+
+  assert.throws(
+    () =>
+      database.commit(
+        (draft) => {
+          storage.seed(SLOT_A, conflictingA);
+          draft.records.push({ id: 'stale-writer' });
+        },
+        200
+      ),
+    /revision conflict|checksum|concurrent|ABA/i
+  );
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), conflictingA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: slot key 已存在但值为 JSON null 时属于损坏，不得伪装成首次安装并返回空数据库', () => {
+  const storage = new StorageDouble({
+    [SLOT_A]: 'null',
+    [ACTIVE]: 'a'
+  });
+  const database = createDatabase(storage);
+
+  assert.throws(() => database.load(), /valid AppDatabase|corrupt|snapshot|null/i);
+  storage.assertOnlyKeysWritten([]);
+  assert.equal(storage.peek(SLOT_A), 'null');
+  assert.equal(storage.peek(SLOT_B), undefined);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: 显式传入空 expectedRevision options 必须拒绝，不能静默降级为无 CAS commit', () => {
+  const oldA = makeSnapshot({ localRevision: 210, records: [{ id: 'durable' }] });
+  const oldB = makeSnapshot({ localRevision: 209 });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const database = createDatabase(storage);
+  storage.clearOperations();
+
+  assert.throws(
+    () => database.commit((draft) => draft.records.push({ id: 'must-not-commit' }), {}),
+    /expectedRevision|non-negative safe integer|revision option/i
+  );
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});
+
+test('Attack: migration map 只能使用自身版本 key，不能执行 prototype 继承的 migration', () => {
+  const oldA = makeSnapshot({ schemaVersion: 1, localRevision: 220, migrationTrail: [] });
+  const oldB = makeSnapshot({ schemaVersion: 1, localRevision: 219 });
+  const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+  const inheritedMigrations = Object.create({
+    1(snapshot) {
+      snapshot.schemaVersion = 2;
+      snapshot.migrationTrail.push('inherited-prototype-migration');
+      return snapshot;
+    }
+  });
+  const database = createDatabase(storage, {
+    currentSchemaVersion: 2,
+    migrations: inheritedMigrations
+  });
+  storage.clearOperations();
+
+  assert.throws(() => database.load(), /Missing migration from schemaVersion 1/);
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), oldA);
+  assert.deepEqual(storage.peek(SLOT_B), oldB);
+  assert.equal(storage.peek(ACTIVE), 'a');
+});

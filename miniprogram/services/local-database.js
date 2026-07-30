@@ -14,7 +14,12 @@ function createDefaultStorage() {
   if (typeof wx !== 'undefined') {
     return {
       getStorageSync(key) {
-        return wx.getStorageSync(key);
+        const value = wx.getStorageSync(key);
+        if (value !== '' || typeof wx.getStorageInfoSync !== 'function') {
+          return value;
+        }
+        const info = wx.getStorageInfoSync();
+        return info && Array.isArray(info.keys) && info.keys.includes(key) ? value : undefined;
       },
       setStorageSync(key, value) {
         wx.setStorageSync(key, value);
@@ -42,8 +47,8 @@ function decodeStored(value) {
   if (typeof value === 'string') {
     return JSON.parse(value);
   }
-  if (value === undefined || value === null || value === '') {
-    return null;
+  if (value === undefined) {
+    return undefined;
   }
   return cloneAppDatabase(value);
 }
@@ -56,11 +61,32 @@ function validateStoredSnapshot(snapshot) {
   return snapshot;
 }
 
-function normalizeExpectedRevision(expectedRevision) {
-  if (expectedRevision && typeof expectedRevision === 'object') {
-    return expectedRevision.expectedRevision;
+function normalizeExpectedRevision(expectedRevision, provided) {
+  if (!provided) {
+    return undefined;
   }
-  return expectedRevision;
+  let normalized = expectedRevision;
+  if (expectedRevision && typeof expectedRevision === 'object') {
+    if (!Object.prototype.hasOwnProperty.call(expectedRevision, 'expectedRevision')) {
+      throw new Error('expectedRevision options must include expectedRevision');
+    }
+    normalized = expectedRevision.expectedRevision;
+  }
+  if (!Number.isSafeInteger(normalized) || normalized < 0) {
+    throw new Error('expectedRevision must be a non-negative safe integer');
+  }
+  return normalized;
+}
+
+function sameBaseline(left, right) {
+  if (left.activeSlot === null && right.activeSlot === null) {
+    return left.snapshot.localRevision === right.snapshot.localRevision;
+  }
+  return (
+    left.activeSlot === right.activeSlot &&
+    left.snapshot.localRevision === right.snapshot.localRevision &&
+    left.snapshot.checksum === right.snapshot.checksum
+  );
 }
 
 class LocalDatabase {
@@ -91,9 +117,12 @@ class LocalDatabase {
     }
 
     try {
-      const snapshot = decodeStored(stored);
-      if (!snapshot) {
+      if (stored === undefined) {
         return null;
+      }
+      const snapshot = decodeStored(stored);
+      if (snapshot === null) {
+        throw new Error('Stored AppDatabase snapshot is null or empty');
       }
       validateStoredSnapshot(snapshot);
       return { slot, snapshot };
@@ -187,6 +216,9 @@ class LocalDatabase {
     const draft = cloneAppDatabase(snapshot);
     while (draft.schemaVersion < this.currentSchemaVersion) {
       const fromVersion = draft.schemaVersion;
+      if (!Object.prototype.hasOwnProperty.call(this.migrations, fromVersion)) {
+        throw new Error(`Missing migration from schemaVersion ${fromVersion}`);
+      }
       const migration = this.migrations[fromVersion];
       if (typeof migration !== 'function') {
         throw new Error(`Missing migration from schemaVersion ${fromVersion}`);
@@ -209,7 +241,10 @@ class LocalDatabase {
       throw new Error('LocalDatabase commit requires a mutator function');
     }
     const state = this.readState();
-    const normalizedExpectedRevision = normalizeExpectedRevision(expectedRevision);
+    const normalizedExpectedRevision = normalizeExpectedRevision(
+      expectedRevision,
+      arguments.length >= 2
+    );
     if (
       normalizedExpectedRevision !== undefined &&
       normalizedExpectedRevision !== state.snapshot.localRevision
@@ -236,9 +271,9 @@ class LocalDatabase {
     }
     assertAppDatabaseSnapshot(draft, { checksumRequired: false });
     const latestState = this.readState();
-    if (latestState.snapshot.localRevision !== state.snapshot.localRevision) {
+    if (!sameBaseline(state, latestState)) {
       throw new Error(
-        `LocalDatabase revision conflict: expected ${state.snapshot.localRevision}, actual ${latestState.snapshot.localRevision}`
+        `LocalDatabase revision conflict: expected ${state.snapshot.localRevision}, actual ${latestState.snapshot.localRevision}; concurrent baseline changed from ${state.activeSlot || 'empty'}/${state.snapshot.checksum || 'empty'} to ${latestState.activeSlot || 'empty'}/${latestState.snapshot.checksum || 'empty'}`
       );
     }
     const targetSlot = state.activeSlot === 'a' ? 'b' : 'a';
