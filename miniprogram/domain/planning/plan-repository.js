@@ -251,14 +251,16 @@ class PlanRepository {
       );
     }
 
-    const candidate = {
-      ...clone(plan),
+    const untrustedCandidate = {
+      ...plan,
       status: 'scheduled',
       createdAt: existing ? existing.createdAt : timestamp,
       updatedAt: timestamp,
       deletedAt: null,
       revision: actualRevision + 1
     };
+    assertWorkoutPlan(untrustedCandidate);
+    const candidate = clone(untrustedCandidate);
     assertWorkoutPlan(candidate);
 
     const committed = this.database.commit((draft) => {

@@ -19,10 +19,10 @@ function projectStep(step) {
     sets: step.sets,
     reps: step.reps,
     restSeconds: step.restSeconds,
-    targets: clone(step.targets),
+    targets: step.targets,
     optional: step.optional,
-    alternatives: clone(step.alternatives),
-    safetyNoticeCodes: clone(step.safetyNoticeCodes)
+    alternatives: step.alternatives,
+    safetyNoticeCodes: step.safetyNoticeCodes
   };
 }
 
@@ -36,7 +36,7 @@ function projectPlan(plan, templateVersion, timestamp) {
     summary: plan.summary,
     estimatedDurationSeconds: plan.estimatedDurationSeconds,
     recommendedEndLocalTime: plan.recommendedEndLocalTime,
-    safetyNoticeCodes: clone(plan.safetyNoticeCodes),
+    safetyNoticeCodes: plan.safetyNoticeCodes,
     status: 'scheduled',
     steps: plan.steps.map(projectStep),
     templateSource: templateVersion,
@@ -65,7 +65,9 @@ function createDefaultPlans({
   const plans = template.map((plan) => {
     const projected = projectPlan(plan, templateVersion, timestamp);
     assertWorkoutPlan(projected);
-    return projected;
+    const detached = clone(projected);
+    assertWorkoutPlan(detached);
+    return detached;
   });
   const ids = plans.map(({ id }) => id);
   const dates = plans.map(({ trainingDate }) => trainingDate);

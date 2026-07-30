@@ -172,6 +172,51 @@ test('PlanRepository save creates with expected revision zero and updates with m
   assert.equal(database.load().localRevision, 2);
 });
 
+test('PlanRepository save rejects non-finite targets before cloning without writes or input mutation', () => {
+  for (const invalid of [NaN, Infinity, -Infinity]) {
+    const { database, repository, storage } = createPersistentRepository();
+    const plan = makePlan(makeStep('timed', {
+      targets: { speedKph: { min: invalid, max: 4.5 } }
+    }), {
+      id: `plan_non_finite_${String(invalid)}`,
+      trainingDate: '2026-08-10'
+    });
+    const inputTargets = plan.steps[0].targets;
+    const before = database.load();
+    storage.clearOperations();
+
+    assert.throws(
+      () => repository.save(plan, 0),
+      (error) => (
+        error &&
+        error.code === 'PLAN_VALIDATION_FAILED' &&
+        error.fields.some((field) => field.includes('steps[0].targets.speedKph'))
+      )
+    );
+
+    assert.deepEqual(database.load(), before);
+    assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+    assert.equal(plan.steps[0].targets, inputTargets);
+    assert.ok(Object.is(plan.steps[0].targets.speedKph.min, invalid));
+    assert.equal(plan.steps[0].targets.speedKph.max, 4.5);
+  }
+});
+
+test('PlanRepository save continues to accept explicit null target bounds', () => {
+  const { repository } = createPersistentRepository();
+  const plan = makePlan(makeStep('timed', {
+    targets: { speedKph: { min: null, max: 4.5 } }
+  }), {
+    id: 'plan_nullable_target',
+    trainingDate: '2026-08-10'
+  });
+
+  const saved = repository.save(plan, 0);
+
+  assert.equal(saved.steps[0].targets.speedKph.min, null);
+  assert.equal(plan.steps[0].targets.speedKph.min, null);
+});
+
 test('PlanRepository rejects stale revisions and duplicate dates without overwriting the winner', () => {
   const { repository, storage } = createPersistentRepository();
   const initial = repository.save(makePlan(makeStep('manual'), {
