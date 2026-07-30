@@ -188,6 +188,29 @@ test('WeekPlanView enforces a closed strict record-summary schema and joins by t
       /record summary/
     );
   }
+  assert.throws(
+    () => createWeekPlanView({
+      weekStart: '2026-08-03',
+      plans,
+      recordSummaries: [
+        {
+          trainingDate: '2026-08-03',
+          timezone: 'Asia/Shanghai',
+          completed: true,
+          skipped: false,
+          discomfort: false
+        },
+        {
+          trainingDate: '2026-08-03',
+          timezone: 'Asia/Shanghai',
+          completed: false,
+          skipped: true,
+          discomfort: true
+        }
+      ]
+    }),
+    /unique/
+  );
 });
 
 test('WeekPlanView selects any day and exposes ordered kind-specific step duration, set, target and rest details', () => {
@@ -316,9 +339,25 @@ test('PlanApplicationService queries repository week ranges and keeps empty-week
         deletedAt: FIXED_NOW + 2_000
       }),
       canonicalRecord({
-        id: 'completed_skipped',
+        id: 'same_day_completed',
+        trainingDate: '2026-08-06'
+      }),
+      canonicalRecord({
+        id: 'same_day_aborted_skipped',
         trainingDate: '2026-08-06',
+        status: 'aborted',
         stepResults: [{ stepId: 'step_skipped', status: 'skipped' }]
+      }),
+      canonicalRecord({
+        id: 'same_day_incomplete_pain',
+        trainingDate: '2026-08-06',
+        status: 'incomplete',
+        pain: { knee: false, lowerBack: true, dizziness: false }
+      }),
+      canonicalRecord({
+        id: 'same_day_other_timezone',
+        trainingDate: '2026-08-06',
+        timezone: 'UTC'
       }),
       canonicalRecord({
         id: 'completed_pain',
@@ -358,6 +397,13 @@ test('PlanApplicationService queries repository week ranges and keeps empty-week
       timezone: 'Asia/Shanghai',
       completed: true,
       skipped: true,
+      discomfort: true
+    },
+    {
+      trainingDate: '2026-08-06',
+      timezone: 'UTC',
+      completed: true,
+      skipped: false,
       discomfort: false
     },
     {
@@ -393,6 +439,7 @@ test('PlanApplicationService queries repository week ranges and keeps empty-week
   assert.equal(initial.selectedDay.trainingDate, '2026-08-06');
   assert.equal(initial.selectedDay.completionLabel, '已完成');
   assert.equal(initial.selectedDay.skippedLabel, '有跳过');
+  assert.equal(initial.selectedDay.discomfortLabel, '有不适');
   assert.equal(initial.days[0].completionLabel, '未完成');
   assert.equal(initial.days[1].completionLabel, '未完成');
   assert.equal(initial.days[2].completionLabel, '未完成');

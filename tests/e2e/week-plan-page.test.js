@@ -7,6 +7,31 @@ const {
 } = require('../../miniprogram/services/local-database');
 
 const ROOT = path.join(__dirname, '..', '..');
+const FIXED_NOW = 1785717300000;
+
+function canonicalPageRecord({ id, status, stepResults = [], pain = {} }) {
+  return {
+    schemaVersion: 1,
+    id,
+    sourceSessionId: `session_${id}`,
+    trainingDate: '2026-08-03',
+    startedAt: FIXED_NOW,
+    endedAt: FIXED_NOW + 1_000,
+    elapsedActiveSeconds: 1,
+    status,
+    planSnapshot: { timezone: 'Asia/Shanghai' },
+    stepResults,
+    feedback: {
+      rpe: 5,
+      weightBeforeKg: null,
+      pain,
+      note: ''
+    },
+    createdAt: FIXED_NOW + 1_000,
+    updatedAt: FIXED_NOW + 1_000,
+    revision: 1
+  };
+}
 
 function createPageHarness(t) {
   const pageModulePath = require.resolve('../../miniprogram/pages/plan/index');
@@ -73,27 +98,19 @@ test('plan page loads the confirmed seven-day week through the application servi
 
   const { page, database } = createPageHarness(t);
   database.commit((draft) => {
-    draft.records.push({
-      schemaVersion: 1,
-      id: 'record_page_completed',
-      sourceSessionId: 'session_page_completed',
-      trainingDate: '2026-08-03',
-      startedAt: 1785717300000,
-      endedAt: 1785717301000,
-      elapsedActiveSeconds: 1,
-      status: 'completed',
-      planSnapshot: { timezone: 'Asia/Shanghai' },
-      stepResults: [{ stepId: 'step_page_skipped', status: 'skipped' }],
-      feedback: {
-        rpe: 5,
-        weightBeforeKg: null,
-        pain: { knee: true, lowerBack: false, dizziness: false },
-        note: ''
-      },
-      createdAt: 1785717301000,
-      updatedAt: 1785717301000,
-      revision: 1
-    });
+    draft.records.push(
+      canonicalPageRecord({ id: 'record_page_completed', status: 'completed' }),
+      canonicalPageRecord({
+        id: 'record_page_aborted_skipped',
+        status: 'aborted',
+        stepResults: [{ stepId: 'step_page_skipped', status: 'skipped' }]
+      }),
+      canonicalPageRecord({
+        id: 'record_page_incomplete_pain',
+        status: 'incomplete',
+        pain: { knee: true, lowerBack: false, dizziness: false }
+      })
+    );
   });
   page.onLoad({});
 

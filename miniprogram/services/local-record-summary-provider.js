@@ -46,22 +46,38 @@ class LocalRecordSummaryProvider {
   }
 
   findRange(weekStart, weekEnd) {
-    return this.database.load().records
-      .filter((record) => (
+    const summariesByKey = new Map();
+    for (const record of this.database.load().records) {
+      if (!(
         record &&
         typeof record === 'object' &&
         !Array.isArray(record) &&
         !isDeletedRecord(record) &&
         record.trainingDate >= weekStart &&
         record.trainingDate <= weekEnd
-      ))
-      .map((record) => ({
+      )) {
+        continue;
+      }
+
+      const timezone = recordTimezone(record);
+      const key = `${record.trainingDate}\u0000${timezone}`;
+      const facts = {
         trainingDate: record.trainingDate,
-        timezone: recordTimezone(record),
+        timezone,
         completed: record.status === 'completed',
         skipped: hasSkippedStep(record),
         discomfort: hasDiscomfort(record)
-      }));
+      };
+      const summary = summariesByKey.get(key);
+      if (summary) {
+        summary.completed = summary.completed || facts.completed;
+        summary.skipped = summary.skipped || facts.skipped;
+        summary.discomfort = summary.discomfort || facts.discomfort;
+      } else {
+        summariesByKey.set(key, facts);
+      }
+    }
+    return [...summariesByKey.values()];
   }
 }
 
