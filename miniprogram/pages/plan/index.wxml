@@ -27,6 +27,7 @@
     <view
       class="day-row {{day.selected ? 'day-row-selected' : ''}}"
       wx:for="{{week.days}}"
+      wx:for-item="day"
       wx:key="trainingDate"
       data-date="{{day.trainingDate}}"
       bindtap="onSelectDay"

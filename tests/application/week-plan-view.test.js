@@ -27,6 +27,39 @@ function defaultPlans() {
   return createDefaultPlans({ now: () => FIXED_NOW });
 }
 
+function canonicalRecord({
+  id,
+  trainingDate,
+  timezone = 'Asia/Shanghai',
+  status = 'completed',
+  stepResults = [],
+  pain = {},
+  deleted = false,
+  deletedAt = null,
+  tombstone = false
+}) {
+  const record = {
+    schemaVersion: 1,
+    id,
+    sourceSessionId: `session_${id}`,
+    trainingDate,
+    startedAt: FIXED_NOW,
+    endedAt: FIXED_NOW + 1_000,
+    elapsedActiveSeconds: 1,
+    status,
+    planSnapshot: { timezone },
+    stepResults,
+    feedback: { rpe: null, weightBeforeKg: null, pain, note: '' },
+    createdAt: FIXED_NOW + 1_000,
+    updatedAt: FIXED_NOW + 1_000,
+    revision: 1
+  };
+  if (deleted) record.deleted = true;
+  if (deletedAt !== null) record.deletedAt = deletedAt;
+  if (tombstone) record.tombstone = true;
+  return record;
+}
+
 test('WeekPlanView maps the confirmed seven-day week and joins completion, skip and discomfort summaries by trainingDate', () => {
   const view = createWeekPlanView({
     weekStart: '2026-08-03',
@@ -265,17 +298,83 @@ test('PlanApplicationService queries repository week ranges and keeps empty-week
   const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
   const repository = createPlanRepository({ database, now: () => FIXED_NOW });
   database.commit((draft) => {
-    draft.records.push({
-      id: 'record_summary_source',
+    draft.records.push(
+      canonicalRecord({
+        id: 'timezone_mismatch',
+        trainingDate: '2026-08-03',
+        timezone: 'UTC'
+      }),
+      canonicalRecord({
+        id: 'aborted',
+        trainingDate: '2026-08-04',
+        status: 'aborted'
+      }),
+      canonicalRecord({
+        id: 'deleted',
+        trainingDate: '2026-08-05',
+        deleted: true,
+        deletedAt: FIXED_NOW + 2_000
+      }),
+      canonicalRecord({
+        id: 'completed_skipped',
+        trainingDate: '2026-08-06',
+        stepResults: [{ stepId: 'step_skipped', status: 'skipped' }]
+      }),
+      canonicalRecord({
+        id: 'completed_pain',
+        trainingDate: '2026-08-07',
+        pain: { knee: false, lowerBack: true, dizziness: false }
+      }),
+      canonicalRecord({
+        id: 'incomplete',
+        trainingDate: '2026-08-08',
+        status: 'incomplete'
+      }),
+      canonicalRecord({
+        id: 'tombstone',
+        trainingDate: '2026-08-09',
+        tombstone: true
+      })
+    );
+  });
+  const recordSummaryProvider = createLocalRecordSummaryProvider({ database });
+  assert.deepEqual(recordSummaryProvider.findRange('2026-08-03', '2026-08-09'), [
+    {
+      trainingDate: '2026-08-03',
+      timezone: 'UTC',
+      completed: true,
+      skipped: false,
+      discomfort: false
+    },
+    {
+      trainingDate: '2026-08-04',
+      timezone: 'Asia/Shanghai',
+      completed: false,
+      skipped: false,
+      discomfort: false
+    },
+    {
       trainingDate: '2026-08-06',
       timezone: 'Asia/Shanghai',
       completed: true,
+      skipped: true,
+      discomfort: false
+    },
+    {
+      trainingDate: '2026-08-07',
+      timezone: 'Asia/Shanghai',
+      completed: true,
       skipped: false,
-      discomfort: false,
-      sourceOnlyField: 'projected away'
-    });
-  });
-  const recordSummaryProvider = createLocalRecordSummaryProvider({ database });
+      discomfort: true
+    },
+    {
+      trainingDate: '2026-08-08',
+      timezone: 'Asia/Shanghai',
+      completed: false,
+      skipped: false,
+      discomfort: false
+    }
+  ]);
   const application = createPlanApplicationService({ repository, recordSummaryProvider });
   application.initializeDefaultPlans();
   storage.clearOperations();
@@ -293,6 +392,12 @@ test('PlanApplicationService queries repository week ranges and keeps empty-week
   assert.equal(initial.days.length, 7);
   assert.equal(initial.selectedDay.trainingDate, '2026-08-06');
   assert.equal(initial.selectedDay.completionLabel, '已完成');
+  assert.equal(initial.selectedDay.skippedLabel, '有跳过');
+  assert.equal(initial.days[0].completionLabel, '未完成');
+  assert.equal(initial.days[1].completionLabel, '未完成');
+  assert.equal(initial.days[2].completionLabel, '未完成');
+  assert.equal(initial.days[4].discomfortLabel, '有不适');
+  assert.equal(initial.days[5].completionLabel, '未完成');
   assert.equal(next.isEmpty, true);
   assert.equal(next.weekStart, '2026-08-10');
   assert.equal(restored.days.length, 7);

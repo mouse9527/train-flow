@@ -74,11 +74,25 @@ test('plan page loads the confirmed seven-day week through the application servi
   const { page, database } = createPageHarness(t);
   database.commit((draft) => {
     draft.records.push({
+      schemaVersion: 1,
+      id: 'record_page_completed',
+      sourceSessionId: 'session_page_completed',
       trainingDate: '2026-08-03',
-      timezone: 'Asia/Shanghai',
-      completed: true,
-      skipped: true,
-      discomfort: true
+      startedAt: 1785717300000,
+      endedAt: 1785717301000,
+      elapsedActiveSeconds: 1,
+      status: 'completed',
+      planSnapshot: { timezone: 'Asia/Shanghai' },
+      stepResults: [{ stepId: 'step_page_skipped', status: 'skipped' }],
+      feedback: {
+        rpe: 5,
+        weightBeforeKg: null,
+        pain: { knee: true, lowerBack: false, dizziness: false },
+        note: ''
+      },
+      createdAt: 1785717301000,
+      updatedAt: 1785717301000,
+      revision: 1
     });
   });
   page.onLoad({});
@@ -140,11 +154,14 @@ test('Sunday renders rest guidance and cannot launch a workout', (t) => {
 
 test('plan WXML binds week navigation, seven-day selection, statuses, detail and conditional start action', () => {
   const wxml = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/plan/index.wxml'), 'utf8');
+  const dayLoopTag = wxml.match(/<view\b(?=[^>]*wx:for="\{\{week\.days\}\}")[^>]*>/s);
 
   assert.match(wxml, /bindtap="onPreviousWeek"/);
   assert.match(wxml, /bindtap="onNextWeek"/);
-  assert.match(wxml, /wx:for="\{\{week\.days\}\}"/);
-  assert.match(wxml, /bindtap="onSelectDay"/);
+  assert.ok(dayLoopTag, 'week day loop must be declared on one view tag');
+  assert.match(dayLoopTag[0], /wx:for-item="day"/);
+  assert.match(dayLoopTag[0], /data-date="\{\{day\.trainingDate\}\}"/);
+  assert.match(dayLoopTag[0], /bindtap="onSelectDay"/);
   assert.match(wxml, /completionLabel/);
   assert.match(wxml, /skippedLabel/);
   assert.match(wxml, /discomfortLabel/);
