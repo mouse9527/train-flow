@@ -6,8 +6,19 @@ const {
   assertWorkoutPlan,
   canStartStepTimer
 } = require('../../../miniprogram/domain/planning/plan-validation');
+const {
+  createDefaultPlans
+} = require('../../../miniprogram/domain/planning/default-plan-factory');
+const {
+  createPlanRepository
+} = require('../../../miniprogram/domain/planning/plan-repository');
+const {
+  createLocalDatabase
+} = require('../../../miniprogram/services/local-database');
+const { StorageDouble } = require('../../helpers/storage-double');
 
 const FIXED_NOW = 1785717300000;
+const SAVE_NOW = FIXED_NOW + 60000;
 
 function makeStep(kind, overrides = {}) {
   const common = {
@@ -103,4 +114,103 @@ test('plan validation rejects duplicate step IDs, non-increasing order, invalid 
   for (const plan of cases) {
     assert.throws(() => assertWorkoutPlan(plan), PlanValidationError);
   }
+});
+
+function createPersistentRepository(storage = new StorageDouble(), now = () => SAVE_NOW) {
+  const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
+  const repository = createPlanRepository({ database, now });
+  return { database, repository, storage };
+}
+
+function initializeBuiltinPlans(repository) {
+  return repository.initializeDefaults(createDefaultPlans({ now: () => FIXED_NOW }), 'builtin_v1');
+}
+
+test('PlanRepository finds active plans by ID/date/inclusive range and never exposes mutable storage references', () => {
+  const { repository } = createPersistentRepository();
+  initializeBuiltinPlans(repository);
+
+  const byId = repository.findById('plan_20260803_builtin');
+  const byDate = repository.findByDate('2026-08-03');
+  const range = repository.findRange('2026-08-05', '2026-08-07');
+
+  assert.deepEqual(byDate, byId);
+  assert.deepEqual(range.map(({ trainingDate }) => trainingDate), [
+    '2026-08-05',
+    '2026-08-06',
+    '2026-08-07'
+  ]);
+  byId.title = 'mutated outside repository';
+  byId.steps[0].name = 'mutated step';
+  assert.equal(repository.findById('plan_20260803_builtin').title, '熟悉器械与基础力量');
+  assert.notEqual(repository.findById('plan_20260803_builtin').steps[0].name, 'mutated step');
+  assert.equal(repository.findById('missing'), null);
+  assert.equal(repository.findByDate('2026-12-31'), null);
+});
+
+test('PlanRepository save creates with expected revision zero and updates with monotonic revision', () => {
+  const { database, repository } = createPersistentRepository();
+  const newPlan = makePlan(makeStep('manual'), {
+    id: 'plan_custom',
+    trainingDate: '2026-08-10',
+    title: 'Custom plan'
+  });
+
+  const created = repository.save(newPlan, 0);
+  assert.equal(created.revision, 1);
+  assert.equal(created.createdAt, SAVE_NOW);
+  assert.equal(created.updatedAt, SAVE_NOW);
+
+  const updated = repository.save({ ...created, title: 'Updated custom plan' }, created.revision);
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.createdAt, SAVE_NOW);
+  assert.equal(updated.updatedAt, SAVE_NOW);
+  assert.equal(repository.findById(newPlan.id).title, 'Updated custom plan');
+  assert.equal(database.load().localRevision, 2);
+});
+
+test('PlanRepository rejects stale revisions and duplicate dates without overwriting the winner', () => {
+  const { repository, storage } = createPersistentRepository();
+  const initial = repository.save(makePlan(makeStep('manual'), {
+    id: 'plan_custom',
+    trainingDate: '2026-08-10'
+  }), 0);
+  const winner = repository.save({ ...initial, title: 'winner' }, 1);
+  storage.clearOperations();
+
+  assert.throws(
+    () => repository.save({ ...initial, title: 'stale loser' }, 1),
+    (error) => error && error.code === 'PLAN_REVISION_CONFLICT'
+  );
+  assert.equal(repository.findById(initial.id).title, winner.title);
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+
+  assert.throws(
+    () => repository.save(makePlan(makeStep('manual'), {
+      id: 'different_id',
+      trainingDate: initial.trainingDate
+    }), 0),
+    (error) => error && error.code === 'PLAN_DATE_CONFLICT'
+  );
+});
+
+test('PlanRepository delete writes a revisioned tombstone and hides it from active queries', () => {
+  const { database, repository } = createPersistentRepository();
+  const created = repository.save(makePlan(makeStep('manual'), {
+    id: 'plan_to_delete',
+    trainingDate: '2026-08-10'
+  }), 0);
+
+  const deleted = repository.delete(created.id, created.revision);
+
+  assert.equal(deleted.status, 'deleted');
+  assert.equal(deleted.deletedAt, SAVE_NOW);
+  assert.equal(deleted.revision, 2);
+  assert.equal(repository.findById(created.id), null);
+  assert.equal(repository.findByDate(created.trainingDate), null);
+  assert.deepEqual(repository.findRange(created.trainingDate, created.trainingDate), []);
+  assert.deepEqual(
+    database.load().plans.find(({ id }) => id === created.id),
+    deleted
+  );
 });
