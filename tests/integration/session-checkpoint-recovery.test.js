@@ -56,7 +56,11 @@ function snapshotWriteCount(storage) {
   return storage.writes.filter(({ key }) => key === `${SLOT_PREFIX}a` || key === `${SLOT_PREFIX}b`).length;
 }
 
-function createRuntime({ storage = createStorage(), deviceId = 'device_origin' } = {}) {
+function createRuntime({
+  storage = createStorage(),
+  deviceId = 'device_origin',
+  idFactory = () => 'session_persisted'
+} = {}) {
   const database = createLocalDatabase({ storage, now: () => NOW });
   const plans = createDefaultPlans({ now: () => NOW });
   if (database.load().plans.length === 0) {
@@ -70,7 +74,7 @@ function createRuntime({ storage = createStorage(), deviceId = 'device_origin' }
     planRepository,
     sessionRepository,
     deviceId,
-    idFactory: () => 'session_persisted',
+    idFactory,
     now: () => NOW
   });
   return { database, plans, planRepository, service, sessionRepository, storage };
@@ -275,6 +279,114 @@ test('corrupt Session snapshots return recoverable state and preserve every stor
   assert.equal(recovered.error.code, 'SESSION_RECOVERY_REQUIRED');
   assert.equal(recovered.error.recoverable, true);
   assert.deepEqual([...runtime.storage.values.entries()], before);
+});
+
+test('checksum-valid impossible Session state fails load and startup recovery without rewriting data', () => {
+  const runtime = createRuntime();
+  const session = start(runtime);
+  runtime.service.execute({
+    type: 'start_step',
+    expectedSessionRevision: 1,
+    commandKey: 'forged_matrix_timer',
+    nowMs: NOW,
+    payload: { stepId: session.planSnapshot.steps[0].id }
+  });
+  runtime.service.checkpointOnHide({
+    expectedSessionRevision: 2,
+    commandKey: 'forged_matrix_checkpoint',
+    nowMs: NOW + 500
+  });
+
+  for (const key of [`${SLOT_PREFIX}a`, `${SLOT_PREFIX}b`]) {
+    const snapshot = clone(runtime.storage.values.get(key));
+    if (!snapshot || !snapshot.activeSession || snapshot.activeSession.timer === null) continue;
+    snapshot.activeSession.status = 'paused';
+    delete snapshot.checksum;
+    snapshot.checksum = computeChecksum(snapshot);
+    runtime.storage.values.set(key, snapshot);
+  }
+  const before = clone([...runtime.storage.values.entries()]);
+
+  assert.throws(() => runtime.database.load(), /session|status|timer|paused|running/i);
+  const recovered = runtime.service.restoreOnStartup({
+    expectedSessionRevision: 3,
+    commandKey: 'forged_matrix_restore',
+    nowMs: NOW + 1_000
+  });
+
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.error.code, 'SESSION_RECOVERY_REQUIRED');
+  assert.equal(recovered.error.recoverable, true);
+  assert.deepEqual([...runtime.storage.values.entries()], before);
+});
+
+test('application replaces completed and aborted Sessions while terminal commands remain rejected', () => {
+  for (const terminalStatus of ['completed', 'aborted']) {
+    const ids = [`session_${terminalStatus}`, `session_after_${terminalStatus}`];
+    const runtime = createRuntime({ idFactory: () => ids.shift() });
+    let terminal;
+
+    if (terminalStatus === 'completed') {
+      const singlePlan = clone(runtime.plans[0]);
+      singlePlan.id = 'plan_single_completed';
+      singlePlan.steps = [{ ...singlePlan.steps[0], order: 1 }];
+      runtime.database.commit((draft) => {
+        draft.plans.push(singlePlan);
+      });
+      const started = runtime.service.startSession({
+        planId: singlePlan.id,
+        commandKey: 'terminal_completed_start',
+        nowMs: NOW
+      });
+      runtime.service.execute({
+        type: 'start_step',
+        expectedSessionRevision: 1,
+        commandKey: 'terminal_completed_step_start',
+        nowMs: NOW,
+        payload: { stepId: started.planSnapshot.steps[0].id }
+      });
+      terminal = runtime.service.execute({
+        type: 'complete_step',
+        expectedSessionRevision: 2,
+        commandKey: 'terminal_completed_step_finish',
+        nowMs: NOW + 300_000,
+        payload: { stepId: started.planSnapshot.steps[0].id }
+      }).session;
+    } else {
+      start(runtime, { commandKey: 'terminal_aborted_start' });
+      terminal = runtime.service.execute({
+        type: 'abort',
+        expectedSessionRevision: 1,
+        commandKey: 'terminal_aborted_finish',
+        nowMs: NOW + 1_000,
+        payload: { reason: 'user' }
+      }).session;
+    }
+
+    assert.equal(terminal.status, terminalStatus);
+    assert.throws(
+      () => runtime.service.execute({
+        type: 'checkpoint',
+        expectedSessionRevision: terminal.sessionRevision,
+        commandKey: `terminal_${terminalStatus}_rejected`,
+        nowMs: terminal.endedAt + 1,
+        payload: { reason: 'manual' }
+      }),
+      (error) => error && error.code === 'SESSION_TERMINAL'
+    );
+
+    const beforeReplacement = snapshotWriteCount(runtime.storage);
+    const replacement = runtime.service.startSession({
+      planId: runtime.plans[0].id,
+      commandKey: `replacement_after_${terminalStatus}`,
+      nowMs: terminal.endedAt + 2
+    });
+
+    assert.equal(replacement.id, `session_after_${terminalStatus}`);
+    assert.equal(replacement.status, 'in_progress');
+    assert.equal(snapshotWriteCount(runtime.storage) - beforeReplacement, 1);
+    assert.deepEqual(runtime.database.load().activeSession, replacement);
+  }
 });
 
 test('storage failure exposes the error and leaves the previously committed Session readable', () => {

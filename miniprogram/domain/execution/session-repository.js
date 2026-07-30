@@ -12,6 +12,10 @@ function assertDatabase(database) {
   }
 }
 
+function isTerminal(session) {
+  return session.status === 'completed' || session.status === 'aborted';
+}
+
 class SessionRepository {
   constructor({ database }) {
     assertDatabase(database);
@@ -49,12 +53,16 @@ class SessionRepository {
           'SESSION_COMMAND_KEY_REUSED'
         );
       }
-      throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
+      if (!isTerminal(snapshot.activeSession)) {
+        throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
+      }
     }
     const committed = this.database.commit((draft) => {
       if (draft.activeSession !== null) {
         assertWorkoutSession(draft.activeSession);
-        throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
+        if (!isTerminal(draft.activeSession)) {
+          throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
+        }
       }
       draft.activeSession = cloneWorkoutSession(candidate);
     }, snapshot.localRevision);

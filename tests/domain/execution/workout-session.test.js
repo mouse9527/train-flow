@@ -24,6 +24,12 @@ function strengthPlan() {
   return plan;
 }
 
+function threeSetStrengthPlan() {
+  const plan = strengthPlan();
+  plan.steps[0].sets = 3;
+  return plan;
+}
+
 function singleTimedPlan() {
   const plan = timedPlan();
   plan.id = 'plan_timed_fixture';
@@ -218,6 +224,54 @@ test('timer identity must match both current step ID and supported step kind', (
     () => assertWorkoutSession(invalid),
     /timer|kind|mode|strength/i
   );
+});
+
+test('Session status and timer status must form a valid lifecycle state', () => {
+  const initial = startedSession(singleTimedPlan());
+  const stepId = initial.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    initial,
+    command('start_step', 1, 'matrix_start', NOW, { stepId })
+  ).session;
+  const paused = applyWorkoutCommand(
+    running,
+    command('pause', 2, 'matrix_pause', NOW + 1_000, { reason: 'user' })
+  ).session;
+  const pausedWithRunningTimer = structuredClone(running);
+  pausedWithRunningTimer.status = 'paused';
+  const runningWithPausedTimer = structuredClone(paused);
+  runningWithPausedTimer.status = 'in_progress';
+
+  for (const invalid of [pausedWithRunningTimer, runningWithPausedTimer]) {
+    assert.throws(
+      () => assertWorkoutSession(invalid),
+      /session|status|timer|paused|running/i
+    );
+  }
+});
+
+test('setResults must be contiguous and aligned with currentSet', () => {
+  const firstSet = applyWorkoutCommand(
+    startedSession(threeSetStrengthPlan()),
+    command('complete_set', 1, 'integrity_set_1', NOW + 1_000, {
+      stepId: threeSetStrengthPlan().steps[0].id,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+  const skippedFirstSet = structuredClone(firstSet);
+  skippedFirstSet.stepResults[0].setResults[0].setNumber = 2;
+  const jumpedCurrentSet = structuredClone(firstSet);
+  jumpedCurrentSet.currentSet = 3;
+  jumpedCurrentSet.timer.setNumber = 3;
+
+  for (const invalid of [skippedFirstSet, jumpedCurrentSet]) {
+    assert.throws(
+      () => assertWorkoutSession(invalid),
+      /session|setResults|setNumber|contiguous|currentSet/i
+    );
+  }
 });
 
 test('commands require revision and provide replay-safe idempotency without mutating input', () => {

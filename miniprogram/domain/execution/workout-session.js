@@ -248,6 +248,12 @@ function assertWorkoutSession(session) {
   const currentStep = session.planSnapshot.steps[session.currentStepIndex] || null;
   if (session.timer !== null) {
     assertTimerSnapshot(session.timer);
+    if (session.status === 'paused' && session.timer.status !== 'paused') {
+      throw new TypeError('paused session requires a paused timer when a timer exists');
+    }
+    if (session.status === 'in_progress' && session.timer.status === 'paused') {
+      throw new TypeError('in-progress session cannot retain a paused timer');
+    }
     if (!currentStep || session.timer.stepId !== currentStep.id) {
       throw new TypeError('session timer identity must match the current PlanSnapshot step');
     }
@@ -300,8 +306,25 @@ function assertWorkoutSession(session) {
       throw new TypeError('session current stepResult must remain in_progress');
     }
     const resultStep = session.planSnapshot.steps[resultIndex];
+    result.setResults.forEach(({ setNumber }, setIndex) => {
+      if (setNumber !== setIndex + 1) {
+        throw new TypeError('session setResults setNumber values must be contiguous from 1');
+      }
+    });
     if (resultStep.sets !== null && result.setResults.some(({ setNumber }) => setNumber > resultStep.sets)) {
       throw new TypeError('session setResult cannot exceed PlanSnapshot step sets');
+    }
+    const tracksSets = resultStep.kind === 'strength' || resultStep.kind === 'interval';
+    if (tracksSets && result.status === 'completed' && result.setResults.length !== resultStep.sets) {
+      throw new TypeError('completed session stepResult requires every planned set');
+    }
+    if (
+      tracksSets &&
+      !terminal &&
+      resultIndex === session.currentStepIndex &&
+      result.setResults.length !== session.currentSet - 1
+    ) {
+      throw new TypeError('session currentSet must immediately follow contiguous setResults');
     }
     if (
       result.completedAt !== null &&
