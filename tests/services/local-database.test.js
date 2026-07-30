@@ -852,3 +852,131 @@ test('Attack: storage 仅实现 get/set 而没有 remove/clear 时仍必须能�
   assert.equal(committed.sync.outbox[0].opId, 'no-remove-needed');
   assert.equal(backing.get(ACTIVE), 'b');
 });
+
+test('Peer regression: 任一槽暂时不可读时 load 只能只读回退，commit 必须失败关闭且不得覆盖潜在较新槽', () => {
+  const newerA = makeSnapshot({ localRevision: 280, records: [{ id: 'newer-only' }] });
+  const olderB = makeSnapshot({ localRevision: 279, records: [{ id: 'older-only' }] });
+
+  const loadStorage = seedPair({ active: 'a', a: newerA, b: olderB });
+  loadStorage.failNextRead(SLOT_A, new Error('slot a temporarily unavailable'));
+  loadStorage.clearOperations();
+
+  const fallback = createDatabase(loadStorage).load();
+
+  assert.equal(fallback.localRevision, 279);
+  assert.deepEqual(fallback.records.map(({ id }) => id), ['older-only']);
+  loadStorage.assertOnlyKeysWritten([]);
+  assert.equal(loadStorage.peek(ACTIVE), 'a');
+
+  const commitStorage = seedPair({ active: 'a', a: newerA, b: olderB });
+  commitStorage.failNextRead(SLOT_A, new Error('baseline slot a temporarily unavailable'));
+  commitStorage.failNextRead(SLOT_A, new Error('CAS slot a temporarily unavailable'));
+  commitStorage.clearOperations();
+
+  assert.throws(
+    () =>
+      createDatabase(commitStorage).commit((draft) => {
+        draft.records.push({ id: 'must-not-overwrite-newer' });
+      }),
+    /read|unavailable|commit|uncertain/i
+  );
+  commitStorage.assertOnlyKeysWritten([]);
+  assert.deepEqual(commitStorage.peek(SLOT_A), newerA);
+  assert.deepEqual(commitStorage.peek(SLOT_B), olderB);
+  assert.equal(commitStorage.peek(ACTIVE), 'a');
+
+  const casStorage = seedPair({ active: 'a', a: newerA, b: olderB });
+  const originalGetStorageSync = casStorage.getStorageSync.bind(casStorage);
+  let slotAReads = 0;
+  casStorage.getStorageSync = (key) => {
+    if (key === SLOT_A) {
+      slotAReads += 1;
+      if (slotAReads === 2) {
+        throw new Error('CAS slot a temporarily unavailable');
+      }
+    }
+    return originalGetStorageSync(key);
+  };
+  casStorage.clearOperations();
+
+  assert.throws(
+    () =>
+      createDatabase(casStorage).commit((draft) => {
+        draft.records.push({ id: 'must-not-write-after-uncertain-CAS' });
+      }),
+    /read|unavailable|commit|uncertain/i
+  );
+  casStorage.assertOnlyKeysWritten([]);
+  assert.deepEqual(casStorage.peek(SLOT_A), newerA);
+  assert.deepEqual(casStorage.peek(SLOT_B), olderB);
+  assert.equal(casStorage.peek(ACTIVE), 'a');
+});
+
+test('Peer regression: 同一最高 revision 的不同有效快照属于 split brain，load 与 commit 都必须失败关闭', () => {
+  const branchA = makeSnapshot({ localRevision: 290, records: [{ id: 'branch-a' }] });
+  const branchB = makeSnapshot({ localRevision: 290, records: [{ id: 'branch-b' }] });
+  const storage = seedPair({ active: 'invalid-pointer', a: branchA, b: branchB });
+  const database = createDatabase(storage);
+  storage.clearOperations();
+
+  assert.throws(() => database.load(), /split.?brain|ambiguous|divergent|revision/i);
+  assert.throws(
+    () => database.commit((draft) => draft.records.push({ id: 'must-not-select-a-branch' })),
+    /split.?brain|ambiguous|divergent|revision/i
+  );
+  storage.assertOnlyKeysWritten([]);
+  assert.deepEqual(storage.peek(SLOT_A), branchA);
+  assert.deepEqual(storage.peek(SLOT_B), branchB);
+  assert.equal(storage.peek(ACTIVE), 'invalid-pointer');
+});
+
+test('Peer regression: install 必须是 closed schema，身份凭据与任意额外字段不得进入 A/B 快照', () => {
+  const forbiddenFields = ['openId', 'unionId', 'sessionKey', 'appSecret', 'credential', 'extra'];
+
+  for (const field of forbiddenFields) {
+    const install = { deviceId: 'device_fixture', createdAt: FIXED_NOW - 5000, [field]: 'secret' };
+    const storage = new StorageDouble({ 'train_flow:v1:install': install });
+
+    assert.throws(
+      () => createDatabase(storage).commit((draft) => draft.records.push({ id: field })),
+      /install|field|schema|unknown|forbidden|unexpected/i
+    );
+    storage.assertOnlyKeysWritten([]);
+    assert.equal(storage.peek(SLOT_A), undefined);
+    assert.equal(storage.peek(SLOT_B), undefined);
+    assert.equal(storage.peek(ACTIVE), undefined);
+  }
+
+  const cleanA = makeSnapshot({ localRevision: 300 });
+  const cleanB = makeSnapshot({ localRevision: 299 });
+  const commitStorage = seedPair({ active: 'a', a: cleanA, b: cleanB });
+  commitStorage.clearOperations();
+
+  assert.throws(
+    () =>
+      createDatabase(commitStorage).commit((draft) => {
+        draft.install.openId = 'must-not-persist';
+      }),
+    /install|field|schema|unknown|forbidden|unexpected/i
+  );
+  commitStorage.assertOnlyKeysWritten([]);
+  assert.deepEqual(commitStorage.peek(SLOT_A), cleanA);
+  assert.deepEqual(commitStorage.peek(SLOT_B), cleanB);
+
+  const maliciousA = makeSnapshot({
+    localRevision: 310,
+    install: {
+      deviceId: 'device_fixture',
+      createdAt: FIXED_NOW - 5000,
+      openId: 'checksum-valid-but-forbidden'
+    }
+  });
+  const survivorB = makeSnapshot({ localRevision: 309, records: [{ id: 'safe-survivor' }] });
+  const loadStorage = seedPair({ active: 'a', a: maliciousA, b: survivorB });
+  const loaded = createDatabase(loadStorage).load();
+
+  assert.equal(loaded.localRevision, 309);
+  assert.deepEqual(loaded.install, survivorB.install);
+  assert.deepEqual(loaded.records.map(({ id }) => id), ['safe-survivor']);
+  assert.equal(loadStorage.peek(ACTIVE), 'b');
+});

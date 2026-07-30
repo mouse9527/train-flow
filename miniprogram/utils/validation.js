@@ -74,6 +74,9 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   if (checksumRequired && (typeof snapshot.checksum !== 'string' || snapshot.checksum.length === 0)) {
     throw new Error('checksum must be a non-empty string');
   }
+  if (snapshot.install !== null) {
+    assertInstallMetadata(snapshot.install);
+  }
   assertPlainObject(snapshot.settings, 'settings');
   assertNonNegativeInteger(snapshot.settings.schemaVersion, 'settings.schemaVersion');
   if (snapshot.settings.schemaVersion < 1) {
@@ -134,6 +137,11 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
 function assertInstallMetadata(install) {
   assertJsonSafe(install, 'install');
   assertPlainObject(install, 'install');
+  const allowedFields = new Set(['deviceId', 'createdAt']);
+  const unexpectedField = Object.keys(install).find((field) => !allowedFields.has(field));
+  if (unexpectedField) {
+    throw new Error(`install contains unexpected field ${unexpectedField}`);
+  }
   if (typeof install.deviceId !== 'string' || install.deviceId.length === 0) {
     throw new Error('install.deviceId must be a non-empty string');
   }

@@ -1,5 +1,5 @@
 const { cloneAppDatabase, createAppDatabase } = require('../domain/sync/app-database');
-const { computeChecksum } = require('../utils/checksum');
+const { canonicalize, computeChecksum } = require('../utils/checksum');
 const { assertAppDatabaseSnapshot, assertInstallMetadata } = require('../utils/validation');
 
 const SLOT_KEYS = Object.freeze({
@@ -89,6 +89,16 @@ function sameBaseline(left, right) {
   );
 }
 
+function assertWritableState(state) {
+  if (!state.readFailures || state.readFailures.length === 0) {
+    return;
+  }
+  const details = state.readFailures
+    .map(({ slot, readError }) => `${slot}: ${readError.message}`)
+    .join('; ');
+  throw new Error(`LocalDatabase commit is unsafe while a slot is unreadable: ${details}`);
+}
+
 class LocalDatabase {
   constructor({
     storage = createDefaultStorage(),
@@ -133,6 +143,7 @@ class LocalDatabase {
 
   readState() {
     const candidates = ['a', 'b'].map((slot) => this.readSlot(slot));
+    const readFailures = candidates.filter((candidate) => candidate && candidate.readError);
     const validSnapshots = candidates.filter((candidate) => candidate && candidate.snapshot);
     const futureSnapshot = validSnapshots.find(
       ({ snapshot }) => snapshot.schemaVersion > this.currentSchemaVersion
@@ -159,7 +170,22 @@ class LocalDatabase {
           .join('; ');
         throw new Error(`Unable to read a valid AppDatabase snapshot: ${details}`);
       }
-      return { activeSlot: null, snapshot: this.createInitialSnapshot() };
+      return { activeSlot: null, snapshot: this.createInitialSnapshot(), readFailures };
+    }
+
+    const highestRevision = Math.max(
+      ...compatible.map(({ snapshot }) => snapshot.localRevision)
+    );
+    const highestCandidates = compatible.filter(
+      ({ snapshot }) => snapshot.localRevision === highestRevision
+    );
+    if (
+      highestCandidates.length > 1 &&
+      canonicalize(highestCandidates[0].snapshot) !== canonicalize(highestCandidates[1].snapshot)
+    ) {
+      throw new Error(
+        `LocalDatabase split brain: slots share localRevision ${highestRevision} but contain divergent snapshots`
+      );
     }
 
     const pointer = this.storage.getStorageSync(ACTIVE_KEY);
@@ -177,7 +203,7 @@ class LocalDatabase {
       return left.slot.localeCompare(right.slot);
     });
     const selected = compatible[0];
-    return { activeSlot: selected.slot, pointer, snapshot: selected.snapshot };
+    return { activeSlot: selected.slot, pointer, snapshot: selected.snapshot, readFailures };
   }
 
   createInitialSnapshot() {
@@ -211,7 +237,11 @@ class LocalDatabase {
 
   load() {
     const state = this.readState();
-    if (state.activeSlot && state.pointer !== state.activeSlot) {
+    if (
+      state.activeSlot &&
+      state.pointer !== state.activeSlot &&
+      state.readFailures.length === 0
+    ) {
       this.storage.setStorageSync(ACTIVE_KEY, state.activeSlot);
     }
     if (state.snapshot.schemaVersion < this.currentSchemaVersion) {
@@ -254,6 +284,7 @@ class LocalDatabase {
       throw new Error('LocalDatabase commit requires a mutator function');
     }
     const state = this.readState();
+    assertWritableState(state);
     const normalizedExpectedRevision = normalizeExpectedRevision(
       expectedRevision,
       arguments.length >= 2
@@ -279,11 +310,13 @@ class LocalDatabase {
   }
 
   commitSnapshot(state, draft) {
+    assertWritableState(state);
     if (state.snapshot.localRevision >= Number.MAX_SAFE_INTEGER) {
       throw new Error('LocalDatabase localRevision overflow: no safe revision remains');
     }
     assertAppDatabaseSnapshot(draft, { checksumRequired: false });
     const latestState = this.readState();
+    assertWritableState(latestState);
     if (!sameBaseline(state, latestState)) {
       throw new Error(
         `LocalDatabase revision conflict: expected ${state.snapshot.localRevision}, actual ${latestState.snapshot.localRevision}; concurrent baseline changed from ${state.activeSlot || 'empty'}/${state.snapshot.checksum || 'empty'} to ${latestState.activeSlot || 'empty'}/${latestState.snapshot.checksum || 'empty'}`
