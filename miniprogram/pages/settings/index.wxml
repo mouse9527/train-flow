@@ -1,0 +1,67 @@
+<view class="tf-page" wx:if="{{settings}}">
+  <view class="tf-tabs">
+    <view
+      class="tf-tab {{section === 'preferences' ? 'tf-tab-active' : ''}}"
+      data-section="preferences"
+      bindtap="onSwitchSection"
+    >训练偏好</view>
+    <view
+      class="tf-tab {{section === 'about' ? 'tf-tab-active' : ''}}"
+      data-section="about"
+      bindtap="onSwitchSection"
+    >关于与安全</view>
+  </view>
+
+  <view class="tf-section" wx:if="{{section === 'preferences'}}">
+    <view class="tf-section-title">训练偏好</view>
+
+    <view class="tf-row">
+      <text class="tf-row-label">振动提醒</text>
+      <switch checked="{{settings.vibrationEnabled}}" data-field="vibrationEnabled" bindchange="onToggleField" />
+    </view>
+    <view class="tf-row">
+      <text class="tf-row-label">提示音</text>
+      <switch checked="{{settings.soundEnabled}}" data-field="soundEnabled" bindchange="onToggleField" />
+    </view>
+    <view class="tf-row">
+      <text class="tf-row-label">语音提示（预留，暂不提供 TTS）</text>
+      <switch checked="{{settings.voiceEnabled}}" data-field="voiceEnabled" bindchange="onToggleField" />
+    </view>
+    <view class="tf-row">
+      <text class="tf-row-label">训练中保持屏幕常亮</text>
+      <switch checked="{{settings.keepScreenOn}}" data-field="keepScreenOn" bindchange="onToggleField" />
+    </view>
+    <view class="tf-row">
+      <text class="tf-row-label">默认开始时间</text>
+      <text class="tf-caption">{{settings.defaultStartLocalTime}}</text>
+    </view>
+    <view class="tf-row">
+      <text class="tf-row-label">建议结束时间</text>
+      <text class="tf-caption">{{settings.recommendedEndLocalTime}}</text>
+    </view>
+    <view class="tf-row">
+      <text class="tf-row-label">默认组间休息（秒）</text>
+      <slider
+        min="0"
+        max="600"
+        step="5"
+        value="{{settings.defaultRestSeconds}}"
+        show-value="{{true}}"
+        bindchange="onRestSecondsChange"
+      />
+    </view>
+  </view>
+
+  <view class="tf-section" wx:if="{{section === 'about'}}">
+    <view class="tf-section-title">关于与安全</view>
+    <view class="tf-row">
+      <text class="tf-caption">TrainFlow 不提供医疗诊断、治疗建议，也不会判断你是否适合运动。</text>
+    </view>
+    <view class="tf-row">
+      <text class="tf-caption">训练中如出现胸闷、剧烈头晕、关节剧痛或其他异常症状，请立即停止训练。</text>
+    </view>
+    <view class="tf-row">
+      <text class="tf-caption">训练前后请注意补水，避免空腹或身体不适时进行高强度训练。</text>
+    </view>
+  </view>
+</view>
