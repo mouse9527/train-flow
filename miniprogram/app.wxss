@@ -1,0 +1,84 @@
+page {
+  --color-bg: #F5F6F7;
+  --color-surface: #FFFFFF;
+  --color-text-primary: #1F2933;
+  --color-text-secondary: #616E7C;
+  --color-accent: #2D7DD2;
+  --color-danger: #C0392B;
+  --color-border: #E4E7EB;
+
+  --font-size-title: 34rpx;
+  --font-size-body: 28rpx;
+  --font-size-caption: 24rpx;
+
+  --space-sm: 12rpx;
+  --space-md: 24rpx;
+  --space-lg: 36rpx;
+
+  --safe-area-bottom: env(safe-area-inset-bottom);
+
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-body);
+  box-sizing: border-box;
+}
+
+.tf-page {
+  min-height: 100vh;
+  padding: var(--space-md);
+  padding-bottom: calc(var(--space-lg) + var(--safe-area-bottom));
+  box-sizing: border-box;
+}
+
+.tf-section {
+  background-color: var(--color-surface);
+  border-radius: 16rpx;
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.tf-section-title {
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  margin-bottom: var(--space-sm);
+}
+
+.tf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) 0;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.tf-row:last-child {
+  border-bottom: none;
+}
+
+.tf-row-label {
+  font-size: var(--font-size-body);
+  color: var(--color-text-primary);
+}
+
+.tf-caption {
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+}
+
+.tf-btn-primary {
+  min-height: 88rpx;
+  line-height: 88rpx;
+  font-size: var(--font-size-title);
+  border-radius: 16rpx;
+  background-color: var(--color-accent);
+  color: #FFFFFF;
+  text-align: center;
+}
+
+.tf-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-lg) 0;
+  color: var(--color-text-secondary);
+}

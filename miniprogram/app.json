@@ -1,0 +1,42 @@
+{
+  "pages": [
+    "pages/today/index",
+    "pages/plan/index",
+    "pages/workout/index",
+    "pages/record/index",
+    "pages/stats/index",
+    "pages/settings/index"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#1F2933",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "TrainFlow",
+    "backgroundColor": "#F5F6F7"
+  },
+  "tabBar": {
+    "color": "#8792A2",
+    "selectedColor": "#1F2933",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/today/index",
+        "text": "今日"
+      },
+      {
+        "pagePath": "pages/plan/index",
+        "text": "计划"
+      },
+      {
+        "pagePath": "pages/record/index",
+        "text": "记录"
+      },
+      {
+        "pagePath": "pages/settings/index",
+        "text": "设置"
+      }
+    ]
+  },
+  "sitemapLocation": "sitemap.json",
+  "style": "v2"
+}

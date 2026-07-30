@@ -1,0 +1,9 @@
+{
+  "desc": "TrainFlow 私用单用户小程序，不对外提供搜索索引",
+  "rules": [
+    {
+      "action": "disallow",
+      "page": "*"
+    }
+  ]
+}
