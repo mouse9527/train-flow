@@ -296,6 +296,53 @@ test('terminal Sessions reject new transitions while exact command replay remain
   );
 });
 
+test('pause freezes elapsed/timer progress, resume restarts it, and abort is replay-safe terminal', () => {
+  const initial = startedSession();
+  const stepId = initial.planSnapshot.steps[0].id;
+  const started = applyWorkoutCommand(
+    initial,
+    command('start_step', 1, 'pause_start', NOW, { stepId })
+  ).session;
+  const paused = applyWorkoutCommand(
+    started,
+    command('pause', 2, 'pause_session', NOW + 1_000, { reason: 'user' })
+  ).session;
+
+  assert.equal(paused.status, 'paused');
+  assert.equal(paused.elapsedActiveSeconds, 1);
+  assert.equal(paused.timer.status, 'paused');
+  assert.equal(paused.timer.remainingSecondsAtCheckpoint, 299);
+
+  const hidden = applyWorkoutCommand(
+    paused,
+    command('checkpoint', 3, 'paused_hide', NOW + 5_000, { reason: 'hide' })
+  ).session;
+  assert.equal(hidden.elapsedActiveSeconds, 1);
+  assert.equal(hidden.timer.remainingSecondsAtCheckpoint, 299);
+
+  const resumed = applyWorkoutCommand(
+    hidden,
+    command('resume', 4, 'resume_session', NOW + 6_000, { reason: 'user' })
+  ).session;
+  assert.equal(resumed.status, 'in_progress');
+  assert.equal(resumed.timer.status, 'running');
+  assert.equal(resumed.timer.expectedEndAt, NOW + 305_000);
+
+  const abort = command('abort', 5, 'abort_session', NOW + 7_000, { reason: 'user' });
+  const aborted = applyWorkoutCommand(resumed, abort).session;
+  assert.equal(aborted.status, 'aborted');
+  assert.equal(aborted.endedAt, NOW + 7_000);
+  assert.equal(aborted.timer, null);
+  assert.equal(applyWorkoutCommand(aborted, abort).replayed, true);
+  assert.throws(
+    () => applyWorkoutCommand(
+      aborted,
+      command('checkpoint', 6, 'after_abort', NOW + 8_000, { reason: 'hide' })
+    ),
+    (error) => error && error.code === 'SESSION_TERMINAL'
+  );
+});
+
 test('command boundary rejects custom prototypes, unknown fields and unsafe values', () => {
   const session = startedSession();
   const valid = command('checkpoint', 1, 'safe', NOW, { reason: 'hide' });

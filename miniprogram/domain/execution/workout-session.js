@@ -37,6 +37,8 @@ const COMMAND_FIELDS = Object.freeze([
 const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   start_step: Object.freeze(['stepId']),
   checkpoint: Object.freeze(['reason']),
+  pause: Object.freeze(['reason']),
+  resume: Object.freeze(['reason']),
   complete_step: Object.freeze(['stepId']),
   complete_set: Object.freeze(['stepId', 'setNumber', 'reps', 'weightKg']),
   abort: Object.freeze(['reason'])
@@ -311,7 +313,7 @@ function assertCommand(command) {
       throw new TypeError('command.payload.reason is not a supported checkpoint reason');
     }
   }
-  if (command.type === 'abort') {
+  if (command.type === 'abort' || command.type === 'pause' || command.type === 'resume') {
     assertNonEmptyString(command.payload.reason, 'command.payload.reason');
   }
   if (command.type === 'complete_set') {
@@ -389,6 +391,32 @@ function applyTransition(session, command, timerEngine) {
     session.endedAt = command.nowMs;
     session.timer = null;
     session.currentSet = null;
+    return;
+  }
+  if (command.type === 'pause') {
+    if (session.status !== 'in_progress') {
+      throw createSessionError('Only an in-progress Session can pause', 'SESSION_PAUSE_INVALID');
+    }
+    if (session.timer !== null) {
+      if (session.timer.status !== 'running') {
+        throw createSessionError('Only a running timer can pause', 'SESSION_TIMER_PAUSE_INVALID');
+      }
+      session.timer = timerEngine.pause(session.timer, command.nowMs);
+    }
+    session.status = 'paused';
+    return;
+  }
+  if (command.type === 'resume') {
+    if (session.status !== 'paused') {
+      throw createSessionError('Only a paused Session can resume', 'SESSION_RESUME_INVALID');
+    }
+    if (session.timer !== null) {
+      if (session.timer.status !== 'paused') {
+        throw createSessionError('Only a paused timer can resume', 'SESSION_TIMER_RESUME_INVALID');
+      }
+      session.timer = timerEngine.resume(session.timer, command.nowMs);
+    }
+    session.status = 'in_progress';
     return;
   }
   if (command.payload.stepId !== step.id) {
