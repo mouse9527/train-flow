@@ -30,6 +30,15 @@ function assertValidValue(field, value) {
   }
 }
 
+function assertExpectedRevision(expectedRevision, actualRevision) {
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+    throw new Error('expectedRevision must be a non-negative integer');
+  }
+  if (expectedRevision !== actualRevision) {
+    throw new Error(`Settings revision conflict: expected ${expectedRevision}, actual ${actualRevision}`);
+  }
+}
+
 function createSettingsApplicationService({ repository }) {
   if (!repository || typeof repository.load !== 'function' || typeof repository.save !== 'function') {
     throw new Error('createSettingsApplicationService requires a repository with load/save');
@@ -41,19 +50,20 @@ function createSettingsApplicationService({ repository }) {
       return current ? { ...current } : { ...DEFAULT_USER_SETTINGS };
     },
 
-    updateSettings(patch) {
+    updateSettings(patch, expectedRevision) {
       assertKnownFields(patch);
       for (const [field, value] of Object.entries(patch)) {
         assertValidValue(field, value);
       }
 
       const current = repository.load() || { ...DEFAULT_USER_SETTINGS };
+      assertExpectedRevision(expectedRevision, current.revision);
       const next = {
         ...current,
         ...patch,
         revision: current.revision + 1
       };
-      return repository.save(next);
+      return repository.save(next, expectedRevision);
     }
   };
 }

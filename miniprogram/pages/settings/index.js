@@ -21,19 +21,28 @@ Page({
   onToggleField(event) {
     const field = event.currentTarget.dataset.field;
     const current = this.data.settings[field];
-    const updated = settingsService.updateSettings({ [field]: !current });
+    const updated = settingsService.updateSettings(
+      { [field]: !current },
+      this.data.settings.revision
+    );
     this.setData({ settings: updated });
   },
 
   onRestSecondsChange(event) {
     const value = Number(event.detail.value);
-    const updated = settingsService.updateSettings({ defaultRestSeconds: value });
+    const updated = settingsService.updateSettings(
+      { defaultRestSeconds: value },
+      this.data.settings.revision
+    );
     this.setData({ settings: updated });
   },
 
   onTimeChange(event) {
     const field = event.currentTarget.dataset.field;
-    const updated = settingsService.updateSettings({ [field]: event.detail.value });
+    const updated = settingsService.updateSettings(
+      { [field]: event.detail.value },
+      this.data.settings.revision
+    );
     this.setData({ settings: updated });
   },
 

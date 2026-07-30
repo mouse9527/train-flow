@@ -75,16 +75,25 @@ test('settings page golden path: load preferences section then read about/safety
 test('settings page exposes editable time pickers for start and recommended end times', () => {
   const pageSource = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/settings/index.js'), 'utf8');
   const pageWxml = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/settings/index.wxml'), 'utf8');
+  const pickerTags = pageWxml.match(/<picker[\s\S]*?>/g) || [];
 
-  assert.match(
-    pageWxml,
-    /<picker[\s\S]*mode="time"[\s\S]*data-field="defaultStartLocalTime"[\s\S]*bindchange="onTimeChange"/
-  );
-  assert.match(
-    pageWxml,
-    /<picker[\s\S]*mode="time"[\s\S]*data-field="recommendedEndLocalTime"[\s\S]*bindchange="onTimeChange"/
-  );
+  for (const field of ['defaultStartLocalTime', 'recommendedEndLocalTime']) {
+    assert.ok(
+      pickerTags.some(
+        (tag) =>
+          tag.includes('mode="time"') &&
+          tag.includes(`data-field="${field}"`) &&
+          tag.includes('bindchange="onTimeChange"')
+      ),
+      `missing editable time picker for ${field}`
+    );
+  }
   assert.match(pageSource, /onTimeChange\(event\)/);
+  assert.equal(
+    (pageSource.match(/this\.data\.settings\.revision/g) || []).length,
+    3,
+    'every settings mutation handler must send the expected revision'
+  );
 });
 
 test('no identity or health fixture data leaks into the repository (openId, real names, health metrics)', () => {
