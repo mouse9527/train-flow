@@ -126,7 +126,7 @@ function createPersistentPlanningRuntime(storage, { defaultPlanFactory } = {}) {
   return { database, repository, service };
 }
 
-function templateWithSpeedMinimum(min) {
+function templateWithSpeedBound(bound, value) {
   return DEFAULT_PLAN_TEMPLATE.map((plan, planIndex) => ({
     ...plan,
     steps: plan.steps.map((step, stepIndex) => ({
@@ -134,11 +134,15 @@ function templateWithSpeedMinimum(min) {
       targets: planIndex === 0 && stepIndex === 0
         ? {
             ...step.targets,
-            speedKph: { ...step.targets.speedKph, min }
+            speedKph: { ...step.targets.speedKph, [bound]: value }
           }
         : step.targets
     }))
   }));
+}
+
+function templateWithSpeedMinimum(min) {
+  return templateWithSpeedBound('min', min);
 }
 
 test('application service validates and atomically persists all seven defaults through LocalDatabase', () => {
@@ -224,14 +228,42 @@ test('DefaultPlanFactory rejects non-finite targets before persistence without i
 });
 
 test('DefaultPlanFactory continues to accept explicit null target bounds without mutating input', () => {
-  const template = templateWithSpeedMinimum(null);
-  const inputTargets = template[0].steps[0].targets;
+  for (const bound of ['min', 'max']) {
+    const template = templateWithSpeedBound(bound, null);
+    const inputTargets = template[0].steps[0].targets;
 
-  const plans = createDefaultPlans({ template, now: () => FIXED_NOW });
+    const plans = createDefaultPlans({ template, now: () => FIXED_NOW });
 
-  assert.equal(plans[0].steps[0].targets.speedKph.min, null);
-  assert.equal(template[0].steps[0].targets, inputTargets);
-  assert.equal(template[0].steps[0].targets.speedKph.min, null);
+    assert.equal(plans[0].steps[0].targets.speedKph[bound], null);
+    assert.equal(template[0].steps[0].targets, inputTargets);
+    assert.equal(template[0].steps[0].targets.speedKph[bound], null);
+  }
+});
+
+test('DefaultPlanFactory rejects explicit undefined target bounds before persistence without input mutation', () => {
+  for (const bound of ['min', 'max']) {
+    const storage = new StorageDouble();
+    const template = templateWithSpeedBound(bound, undefined);
+    const runtime = createPersistentPlanningRuntime(storage, {
+      defaultPlanFactory: () => createDefaultPlans({ template, now: () => FIXED_NOW })
+    });
+    const before = runtime.database.load();
+    storage.clearOperations();
+
+    assert.throws(
+      () => runtime.service.initializeDefaultPlans(),
+      (error) => (
+        error &&
+        error.code === 'PLAN_VALIDATION_FAILED' &&
+        error.fields.some((field) => field.includes('steps[0].targets.speedKph'))
+      )
+    );
+
+    assert.deepEqual(runtime.database.load(), before);
+    assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+    assert.equal(Object.hasOwn(template[0].steps[0].targets.speedKph, bound), true);
+    assert.equal(template[0].steps[0].targets.speedKph[bound], undefined);
+  }
 });
 
 test('a tombstoned builtin remains deleted and same-version initialization returns active plans only', () => {

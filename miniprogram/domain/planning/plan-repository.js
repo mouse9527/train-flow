@@ -30,6 +30,24 @@ function activePlan(plan) {
   return plan && plan.status !== 'deleted';
 }
 
+function assertUniquePlanIds(records) {
+  const ownerCounts = new Map();
+  for (const record of records) {
+    ownerCounts.set(record.id, (ownerCounts.get(record.id) || 0) + 1);
+  }
+  for (const [planId, ownerCount] of ownerCounts) {
+    if (ownerCount > 1) {
+      const error = createRepositoryError(
+        `Persisted plan ID ${planId} has ${ownerCount} owners`,
+        'PLAN_ID_INTEGRITY_ERROR'
+      );
+      error.planId = planId;
+      error.ownerCount = ownerCount;
+      throw error;
+    }
+  }
+}
+
 function assertPersistedTemplateIntegrity(records, candidates, templateVersion) {
   const candidateIds = new Set(candidates.map(({ id }) => id));
   const candidateOwners = new Map(candidates.map(({ id }) => [id, []]));
@@ -228,6 +246,7 @@ class PlanRepository {
       throw new Error('PlanRepository now must return a finite epoch timestamp');
     }
     const snapshot = this.database.load();
+    assertUniquePlanIds(snapshot.plans);
     const existing = snapshot.plans.find(({ id }) => id === plan.id) || null;
     const actualRevision = existing ? existing.revision : 0;
     if (actualRevision !== expectedRevision) {
@@ -264,6 +283,7 @@ class PlanRepository {
     assertWorkoutPlan(candidate);
 
     const committed = this.database.commit((draft) => {
+      assertUniquePlanIds(draft.plans);
       const index = draft.plans.findIndex(({ id }) => id === candidate.id);
       const current = index === -1 ? null : draft.plans[index];
       const currentRevision = current ? current.revision : 0;
@@ -302,6 +322,7 @@ class PlanRepository {
       throw new Error('PlanRepository now must return a finite epoch timestamp');
     }
     const snapshot = this.database.load();
+    assertUniquePlanIds(snapshot.plans);
     const existing = snapshot.plans.find((plan) => plan.id === id) || null;
     const actualRevision = existing ? existing.revision : 0;
     if (!existing || actualRevision !== expectedRevision || existing.status === 'deleted') {
@@ -320,6 +341,7 @@ class PlanRepository {
     assertWorkoutPlan(tombstone);
 
     const committed = this.database.commit((draft) => {
+      assertUniquePlanIds(draft.plans);
       const index = draft.plans.findIndex((plan) => plan.id === id);
       const current = index === -1 ? null : draft.plans[index];
       const currentRevision = current ? current.revision : 0;

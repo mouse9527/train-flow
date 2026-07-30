@@ -113,7 +113,8 @@ function validateTargets(targets, path, fields) {
       fields.push(`${path}.${key} must be null or a min/max object`);
       continue;
     }
-    const { min = null, max = null } = range;
+    const min = Object.prototype.hasOwnProperty.call(range, 'min') ? range.min : null;
+    const max = Object.prototype.hasOwnProperty.call(range, 'max') ? range.max : null;
     if ((min !== null && !Number.isFinite(min)) || (max !== null && !Number.isFinite(max))) {
       fields.push(`${path}.${key} min/max must be finite numbers or null`);
       continue;

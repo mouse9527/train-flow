@@ -203,18 +203,128 @@ test('PlanRepository save rejects non-finite targets before cloning without writ
 });
 
 test('PlanRepository save continues to accept explicit null target bounds', () => {
-  const { repository } = createPersistentRepository();
-  const plan = makePlan(makeStep('timed', {
-    targets: { speedKph: { min: null, max: 4.5 } }
-  }), {
-    id: 'plan_nullable_target',
-    trainingDate: '2026-08-10'
-  });
+  for (const bound of ['min', 'max']) {
+    const { repository } = createPersistentRepository();
+    const plan = makePlan(makeStep('timed', {
+      targets: { speedKph: { min: 3.5, max: 4.5, [bound]: null } }
+    }), {
+      id: `plan_nullable_${bound}_target`,
+      trainingDate: '2026-08-10'
+    });
 
-  const saved = repository.save(plan, 0);
+    const saved = repository.save(plan, 0);
 
-  assert.equal(saved.steps[0].targets.speedKph.min, null);
-  assert.equal(plan.steps[0].targets.speedKph.min, null);
+    assert.equal(saved.steps[0].targets.speedKph[bound], null);
+    assert.equal(plan.steps[0].targets.speedKph[bound], null);
+  }
+});
+
+test('PlanRepository save rejects explicit undefined target bounds without writes or input mutation', () => {
+  for (const bound of ['min', 'max']) {
+    const { database, repository, storage } = createPersistentRepository();
+    const plan = makePlan(makeStep('timed', {
+      targets: { speedKph: { min: 3.5, max: 4.5, [bound]: undefined } }
+    }), {
+      id: `plan_undefined_${bound}_target`,
+      trainingDate: '2026-08-10'
+    });
+    const before = database.load();
+    storage.clearOperations();
+
+    assert.throws(
+      () => repository.save(plan, 0),
+      (error) => (
+        error &&
+        error.code === 'PLAN_VALIDATION_FAILED' &&
+        error.fields.some((field) => field.includes('steps[0].targets.speedKph'))
+      )
+    );
+
+    assert.deepEqual(database.load(), before);
+    assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+    assert.equal(Object.hasOwn(plan.steps[0].targets.speedKph, bound), true);
+    assert.equal(plan.steps[0].targets.speedKph[bound], undefined);
+  }
+});
+
+test('PlanRepository save and delete fail closed on duplicate persisted plan ID owners without writes', () => {
+  for (const operation of ['save', 'delete']) {
+    const { database, repository, storage } = createPersistentRepository();
+    const first = makePlan(makeStep('manual'), {
+      id: 'duplicate_plan_id',
+      trainingDate: '2026-08-10'
+    });
+    const second = makePlan(makeStep('manual', { id: 'second_owner_step' }), {
+      id: first.id,
+      trainingDate: '2026-08-11'
+    });
+    const snapshot = database.load();
+    database.commit((draft) => {
+      draft.plans.push(first, second);
+    }, snapshot.localRevision);
+    const before = database.load();
+    storage.clearOperations();
+
+    assert.throws(
+      () => operation === 'save'
+        ? repository.save({ ...first, title: 'ambiguous update' }, first.revision)
+        : repository.delete(first.id, first.revision),
+      (error) => (
+        error &&
+        error.code === 'PLAN_ID_INTEGRITY_ERROR' &&
+        error.planId === first.id &&
+        error.ownerCount === 2
+      )
+    );
+
+    assert.deepEqual(database.load(), before);
+    assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+  }
+});
+
+test('PlanRepository save and delete re-check duplicate plan ID owners inside commit CAS', () => {
+  for (const operation of ['save', 'delete']) {
+    const existing = makePlan(makeStep('manual'), {
+      id: 'plan_raced_duplicate',
+      trainingDate: '2026-08-10'
+    });
+    const baseline = {
+      localRevision: 0,
+      plans: [existing]
+    };
+    let committed = false;
+    const repository = createPlanRepository({
+      now: () => SAVE_NOW,
+      database: {
+        load() {
+          return structuredClone(baseline);
+        },
+        commit(mutator) {
+          const draft = structuredClone(baseline);
+          draft.plans.push(makePlan(makeStep('manual', { id: 'raced_owner_step' }), {
+            id: existing.id,
+            trainingDate: '2026-08-11'
+          }));
+          mutator(draft);
+          committed = true;
+          return draft;
+        }
+      }
+    });
+
+    assert.throws(
+      () => operation === 'save'
+        ? repository.save({ ...existing, title: 'raced update' }, existing.revision)
+        : repository.delete(existing.id, existing.revision),
+      (error) => (
+        error &&
+        error.code === 'PLAN_ID_INTEGRITY_ERROR' &&
+        error.planId === existing.id &&
+        error.ownerCount === 2
+      )
+    );
+    assert.equal(committed, false);
+  }
 });
 
 test('PlanRepository rejects stale revisions and duplicate dates without overwriting the winner', () => {
