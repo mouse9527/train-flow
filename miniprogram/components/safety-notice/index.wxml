@@ -1,0 +1,7 @@
+<view class="safety-notice" wx:if="{{notices.length}}">
+  <view class="safety-notice__heading">
+    <text class="safety-notice__mark">!</text>
+    <text class="safety-notice__title">安全提醒</text>
+  </view>
+  <text class="safety-notice__item" wx:for="{{notices}}" wx:key="*this">{{item}}</text>
+</view>

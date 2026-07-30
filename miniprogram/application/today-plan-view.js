@@ -219,6 +219,7 @@ function statePresentation(state, { activeSession, plan, todayRecord }) {
       primaryAction: {
         id: 'continue',
         label: '继续训练',
+        navigationMode: 'navigateTo',
         url: `/pages/workout/index?sessionId=${encodeURIComponent(activeSession.id)}`
       }
     };
@@ -230,6 +231,7 @@ function statePresentation(state, { activeSession, plan, todayRecord }) {
       primaryAction: {
         id: 'view_record',
         label: '查看训练记录',
+        navigationMode: 'switchTab',
         url: `/pages/record/index?recordId=${encodeURIComponent(todayRecord.id)}`
       }
     };
@@ -261,6 +263,7 @@ function statePresentation(state, { activeSession, plan, todayRecord }) {
     primaryAction: {
       id: 'start',
       label: '开始训练',
+      navigationMode: 'navigateTo',
       url: `/pages/workout/index?planId=${encodeURIComponent(plan.id)}`
     }
   };

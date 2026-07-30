@@ -92,6 +92,7 @@ test('scheduled TodayPlanView exposes ordered plan details and only the start ac
   assert.deepEqual(view.primaryAction, {
     id: 'start',
     label: '开始训练',
+    navigationMode: 'navigateTo',
     url: '/pages/workout/index?planId=plan_monday'
   });
   assert.deepEqual(view.steps.map(({ id }) => id), ['step_one', 'step_two']);
@@ -127,6 +128,7 @@ test('active session wins over scheduled state and exposes only continue', () =>
   assert.deepEqual(view.primaryAction, {
     id: 'continue',
     label: '继续训练',
+    navigationMode: 'navigateTo',
     url: '/pages/workout/index?sessionId=session_active'
   });
 });
@@ -145,6 +147,7 @@ test('completed and skipped records produce honest terminal states without a sta
   assert.deepEqual(completed.primaryAction, {
     id: 'view_record',
     label: '查看训练记录',
+    navigationMode: 'switchTab',
     url: '/pages/record/index?recordId=record_monday'
   });
   assert.deepEqual(completed.completedSessionSummary, {

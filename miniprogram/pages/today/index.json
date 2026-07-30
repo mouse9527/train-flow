@@ -1,3 +1,7 @@
 {
-  "navigationBarTitleText": "今日"
+  "navigationBarTitleText": "今日训练",
+  "usingComponents": {
+    "workout-card": "/components/workout-card/index",
+    "safety-notice": "/components/safety-notice/index"
+  }
 }
