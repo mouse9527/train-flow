@@ -2,6 +2,9 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const {
+  createLocalDatabase
+} = require('../../miniprogram/services/local-database');
 
 const ROOT = path.join(__dirname, '..', '..');
 
@@ -55,15 +58,29 @@ function createPageHarness(t) {
     else global.wx = originalWx;
   });
 
-  return { page, navigations };
+  return {
+    page,
+    navigations,
+    database: createLocalDatabase({ now: () => 1785717300000 })
+  };
 }
 
 test('plan page loads the confirmed seven-day week through the application service', (t) => {
   const source = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/plan/index.js'), 'utf8');
   assert.match(source, /plan-application-service/);
+  assert.match(source, /local-record-summary-provider/);
   assert.doesNotMatch(source, /pages\/today|today-application|wx\.getStorageSync|wx\.setStorageSync/);
 
-  const { page } = createPageHarness(t);
+  const { page, database } = createPageHarness(t);
+  database.commit((draft) => {
+    draft.records.push({
+      trainingDate: '2026-08-03',
+      timezone: 'Asia/Shanghai',
+      completed: true,
+      skipped: true,
+      discomfort: true
+    });
+  });
   page.onLoad({});
 
   assert.equal(page.data.week.weekStart, '2026-08-03');
@@ -72,6 +89,9 @@ test('plan page loads the confirmed seven-day week through the application servi
   assert.equal(page.data.week.days[0].weekday, '周一');
   assert.equal(page.data.week.days[6].weekday, '周日');
   assert.equal(page.data.week.selectedDay.trainingDate, '2026-08-03');
+  assert.equal(page.data.week.days[0].completionLabel, '已完成');
+  assert.equal(page.data.week.days[0].skippedLabel, '有跳过');
+  assert.equal(page.data.week.days[0].discomfortLabel, '有不适');
 });
 
 test('plan page navigates to an empty adjacent week without cloning the initial plan', (t) => {
@@ -83,6 +103,7 @@ test('plan page navigates to an empty adjacent week without cloning the initial 
   assert.equal(page.data.week.isEmpty, true);
   assert.equal(page.data.week.days.length, 0);
   assert.equal(page.data.week.emptyMessage, '这一周还没有训练计划');
+  assert.equal(page.data.week.emptyGuidance, '可使用上方按钮切换到有训练安排的周');
 
   page.onPreviousWeek();
   assert.equal(page.data.week.weekStart, '2026-08-03');
@@ -133,4 +154,6 @@ test('plan WXML binds week navigation, seven-day selection, statuses, detail and
   assert.match(wxml, /safetyNotices/);
   assert.match(wxml, /wx:if="\{\{week\.selectedDay\.canStartWorkout\}\}"[^>]*bindtap="onStartWorkout"/);
   assert.match(wxml, /\{\{week\.emptyMessage\}\}/);
+  assert.match(wxml, /\{\{week\.emptyGuidance\}\}/);
+  assert.doesNotMatch(wxml, /返回上一周/);
 });

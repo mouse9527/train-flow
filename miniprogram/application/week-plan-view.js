@@ -1,12 +1,24 @@
 const DEFAULT_WEEK_START = '2026-08-03';
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const { TIMEZONE_PATTERN } = require('../utils/constants');
+
+const RECORD_SUMMARY_FIELDS = Object.freeze([
+  'trainingDate',
+  'timezone',
+  'completed',
+  'skipped',
+  'discomfort'
+]);
+const WEIGHT_TARGET_KEY = 'weightKg';
 
 const TARGET_DISPLAY = Object.freeze({
   speedKph: { label: '速度', suffix: ' km/h' },
   inclinePercent: { label: '坡度', suffix: '%' },
   resistance: { label: '阻力', suffix: '' },
   cadenceSpm: { label: '桨频', suffix: ' 次/分' },
-  durationSeconds: { label: '时长', suffix: '', duration: true }
+  durationSeconds: { label: '时长', suffix: '', duration: true },
+  [WEIGHT_TARGET_KEY]: { label: '重量', suffix: ' kg' },
+  effortRpe: { label: '主观强度', prefix: 'RPE ', suffix: '' }
 });
 
 const SAFETY_NOTICE_COPY = Object.freeze({
@@ -57,7 +69,7 @@ function formatTargetNumber(value, display) {
   if (display.duration) {
     return formatSeconds(value);
   }
-  return `${value}${display.suffix}`;
+  return `${display.prefix || ''}${value}${display.suffix}`;
 }
 
 function mapTarget(key, range) {
@@ -82,7 +94,10 @@ function mapTarget(key, range) {
       value: `${formatTargetNumber(min, display)}–${formatTargetNumber(max, display)}`
     };
   }
-  return { label: display.label, value: `${min}–${max}${display.suffix}` };
+  return {
+    label: display.label,
+    value: `${display.prefix || ''}${min}–${max}${display.suffix}`
+  };
 }
 
 function mapStepMetrics(step) {
@@ -102,7 +117,16 @@ function mapStepMetrics(step) {
     ];
   }
   if (step.kind === 'manual') {
-    return [{ label: '训练', value: `${step.sets} 组 × ${step.reps} 次（手动确认）` }];
+    if (step.sets !== null && step.reps !== null) {
+      return [{ label: '训练', value: `${step.sets} 组 × ${step.reps} 次（手动确认）` }];
+    }
+    if (step.sets !== null) {
+      return [{ label: '训练', value: `${step.sets} 组（手动确认）` }];
+    }
+    if (step.reps !== null) {
+      return [{ label: '训练', value: `${step.reps} 次（手动确认）` }];
+    }
+    return [{ label: '训练', value: '手动确认' }];
   }
   return [{ label: '安排', value: '无需计时，保持日常活动' }];
 }
@@ -129,11 +153,37 @@ function mapSafetyNotice(code) {
 function createRecordSummaryIndex(recordSummaries) {
   const index = new Map();
   for (const summary of recordSummaries) {
-    if (!summary || typeof summary !== 'object') {
-      throw new Error('record summary must be an object');
+    if (
+      !summary ||
+      typeof summary !== 'object' ||
+      Array.isArray(summary) ||
+      Object.getPrototypeOf(summary) !== Object.prototype
+    ) {
+      throw new Error('record summary must be a plain object');
+    }
+    const fields = Object.getOwnPropertyNames(summary);
+    if (
+      Object.getOwnPropertySymbols(summary).length > 0 ||
+      fields.length !== RECORD_SUMMARY_FIELDS.length ||
+      fields.some((field) => !RECORD_SUMMARY_FIELDS.includes(field)) ||
+      RECORD_SUMMARY_FIELDS.some((field) => !Object.prototype.hasOwnProperty.call(summary, field))
+    ) {
+      throw new Error('record summary must use the closed summary schema');
     }
     assertDate(summary.trainingDate, 'record summary trainingDate');
-    index.set(summary.trainingDate, summary);
+    if (typeof summary.timezone !== 'string' || !TIMEZONE_PATTERN.test(summary.timezone)) {
+      throw new Error('record summary timezone must be UTC or an IANA timezone');
+    }
+    for (const field of ['completed', 'skipped', 'discomfort']) {
+      if (typeof summary[field] !== 'boolean') {
+        throw new Error(`record summary ${field} must be a boolean`);
+      }
+    }
+    const key = `${summary.trainingDate}\u0000${summary.timezone}`;
+    if (index.has(key)) {
+      throw new Error('record summary trainingDate and timezone must be unique');
+    }
+    index.set(key, summary);
   }
   return index;
 }
@@ -141,9 +191,9 @@ function createRecordSummaryIndex(recordSummaries) {
 function mapDay(plan, summary, selectedDate) {
   const steps = [...plan.steps].sort((left, right) => left.order - right.order).map(mapStep);
   const isRestDay = steps.length > 0 && steps.every(({ kind }) => kind === 'rest_day');
-  const completed = Boolean(summary && summary.completed);
-  const skipped = Boolean(summary && summary.skipped);
-  const discomfort = Boolean(summary && summary.discomfort);
+  const completed = summary ? summary.completed : false;
+  const skipped = summary ? summary.skipped : false;
+  const discomfort = summary ? summary.discomfort : false;
   const safetyNotices = plan.safetyNoticeCodes.map(mapSafetyNotice);
   const restGuidance = isRestDay
     ? [plan.summary, ...steps.map(({ description }) => description)].filter(Boolean).join(' ')
@@ -177,7 +227,10 @@ function createWeekPlanView({
   plans = [],
   recordSummaries = []
 } = {}) {
-  assertDate(weekStart, 'weekStart');
+  const parsedWeekStart = assertDate(weekStart, 'weekStart');
+  if (parsedWeekStart.getUTCDay() !== 1) {
+    throw new Error('weekStart must be a Monday');
+  }
   if (!Array.isArray(plans)) {
     throw new Error('plans must be an array');
   }
@@ -198,7 +251,7 @@ function createWeekPlanView({
     : plansInWeek[0] ? plansInWeek[0].trainingDate : null;
   const days = plansInWeek.map((plan) => mapDay(
     plan,
-    summariesByDate.get(plan.trainingDate) || null,
+    summariesByDate.get(`${plan.trainingDate}\u0000${plan.timezone}`) || null,
     effectiveSelectedDate
   ));
 
@@ -210,6 +263,7 @@ function createWeekPlanView({
     nextWeekStart: addDays(weekStart, 7),
     isEmpty: days.length === 0,
     emptyMessage: days.length === 0 ? '这一周还没有训练计划' : null,
+    emptyGuidance: days.length === 0 ? '可使用上方按钮切换到有训练安排的周' : null,
     days,
     selectedDay: days.find(({ trainingDate }) => trainingDate === effectiveSelectedDate) || null
   };

@@ -20,7 +20,7 @@
   <view class="tf-empty-state empty-week" wx:if="{{week.isEmpty}}">
     <view class="empty-icon">○</view>
     <text class="empty-title">{{week.emptyMessage}}</text>
-    <text class="tf-caption">可以返回上一周查看已确认的训练安排</text>
+    <text class="tf-caption">{{week.emptyGuidance}}</text>
   </view>
 
   <view class="week-list" wx:else>

@@ -8,6 +8,9 @@ const {
   createPlanApplicationService
 } = require('../../miniprogram/application/plan-application-service');
 const {
+  createLocalRecordSummaryProvider
+} = require('../../miniprogram/services/local-record-summary-provider');
+const {
   createWeekPlanView
 } = require('../../miniprogram/application/week-plan-view');
 const {
@@ -31,6 +34,7 @@ test('WeekPlanView maps the confirmed seven-day week and joins completion, skip 
     recordSummaries: [
       {
         trainingDate: '2026-08-03',
+        timezone: 'Asia/Shanghai',
         completed: true,
         skipped: true,
         discomfort: true
@@ -89,8 +93,68 @@ test('WeekPlanView preserves previous/next week boundaries and returns a useful 
   assert.equal(empty.nextWeekStart, '2026-08-17');
   assert.equal(empty.isEmpty, true);
   assert.equal(empty.emptyMessage, '这一周还没有训练计划');
+  assert.equal(empty.emptyGuidance, '可使用上方按钮切换到有训练安排的周');
   assert.deepEqual(empty.days, []);
   assert.equal(empty.selectedDay, null);
+});
+
+test('WeekPlanView rejects non-Monday week starts and keeps date-only Monday boundaries stable', () => {
+  assert.throws(
+    () => createWeekPlanView({ weekStart: '2026-08-05', plans: [] }),
+    /Monday/
+  );
+
+  const boundary = createWeekPlanView({ weekStart: '2025-12-29', plans: [] });
+  assert.equal(boundary.weekEnd, '2026-01-04');
+  assert.equal(boundary.previousWeekStart, '2025-12-22');
+  assert.equal(boundary.nextWeekStart, '2026-01-05');
+});
+
+test('WeekPlanView enforces a closed strict record-summary schema and joins by trainingDate plus timezone', () => {
+  const plans = defaultPlans();
+  const mismatch = createWeekPlanView({
+    weekStart: '2026-08-03',
+    plans,
+    recordSummaries: [{
+      trainingDate: '2026-08-03',
+      timezone: 'UTC',
+      completed: true,
+      skipped: true,
+      discomfort: true
+    }]
+  });
+  assert.equal(mismatch.days[0].completionLabel, '未完成');
+  assert.equal(mismatch.days[0].skippedLabel, '无跳过');
+  assert.equal(mismatch.days[0].discomfortLabel, '无不适');
+
+  for (const summary of [
+    {
+      trainingDate: '2026-08-03',
+      timezone: 'Asia/Shanghai',
+      completed: 'false',
+      skipped: false,
+      discomfort: false
+    },
+    {
+      trainingDate: '2026-08-03',
+      timezone: 'Asia/Shanghai',
+      completed: false,
+      skipped: false,
+      discomfort: false,
+      unknown: true
+    },
+    {
+      trainingDate: '2026-08-03',
+      timezone: 'Asia/Shanghai',
+      completed: false,
+      skipped: false
+    }
+  ]) {
+    assert.throws(
+      () => createWeekPlanView({ weekStart: '2026-08-03', plans, recordSummaries: [summary] }),
+      /record summary/
+    );
+  }
 });
 
 test('WeekPlanView selects any day and exposes ordered kind-specific step duration, set, target and rest details', () => {
@@ -137,6 +201,43 @@ test('WeekPlanView selects any day and exposes ordered kind-specific step durati
   ]);
 });
 
+test('WeekPlanView maps nullable manual sets/reps and localized weight/RPE targets without null product copy', () => {
+  const repsOnlyPlan = structuredClone(defaultPlans()[2]);
+  repsOnlyPlan.steps = [{
+    ...repsOnlyPlan.steps.find(({ kind }) => kind === 'manual'),
+    order: 10,
+    sets: null,
+    reps: 10,
+    targets: {
+      weightKg: { min: 10, max: 12 },
+      effortRpe: { min: 5, max: 6 }
+    }
+  }];
+  const setsOnlyPlan = structuredClone(repsOnlyPlan);
+  setsOnlyPlan.id = 'plan_manual_sets_only';
+  setsOnlyPlan.steps[0].id = 'step_manual_sets_only';
+  setsOnlyPlan.steps[0].sets = 2;
+  setsOnlyPlan.steps[0].reps = null;
+
+  const repsOnly = createWeekPlanView({
+    weekStart: '2026-08-03',
+    plans: [repsOnlyPlan]
+  }).selectedDay.steps[0];
+  const setsOnly = createWeekPlanView({
+    weekStart: '2026-08-03',
+    plans: [setsOnlyPlan]
+  }).selectedDay.steps[0];
+
+  assert.deepEqual(repsOnly.metrics, [{ label: '训练', value: '10 次（手动确认）' }]);
+  assert.deepEqual(setsOnly.metrics, [{ label: '训练', value: '2 组（手动确认）' }]);
+  assert.doesNotMatch(repsOnly.metrics[0].value, /null/);
+  assert.doesNotMatch(setsOnly.metrics[0].value, /null/);
+  assert.deepEqual(repsOnly.targets, [
+    { label: '重量', value: '10–12 kg' },
+    { label: '主观强度', value: 'RPE 5–6' }
+  ]);
+});
+
 test('WeekPlanView maps Sunday as rest guidance without total timer or start-workout action', () => {
   const view = createWeekPlanView({
     weekStart: '2026-08-03',
@@ -163,14 +264,25 @@ test('PlanApplicationService queries repository week ranges and keeps empty-week
   const storage = new StorageDouble();
   const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
   const repository = createPlanRepository({ database, now: () => FIXED_NOW });
-  const application = createPlanApplicationService({ repository });
+  database.commit((draft) => {
+    draft.records.push({
+      id: 'record_summary_source',
+      trainingDate: '2026-08-06',
+      timezone: 'Asia/Shanghai',
+      completed: true,
+      skipped: false,
+      discomfort: false,
+      sourceOnlyField: 'projected away'
+    });
+  });
+  const recordSummaryProvider = createLocalRecordSummaryProvider({ database });
+  const application = createPlanApplicationService({ repository, recordSummaryProvider });
   application.initializeDefaultPlans();
   storage.clearOperations();
 
   const initial = application.getWeekPlan({
     weekStart: '2026-08-03',
-    selectedDate: '2026-08-06',
-    recordSummaries: [{ trainingDate: '2026-08-06', completed: true }]
+    selectedDate: '2026-08-06'
   });
   const next = application.getWeekPlan({ weekStart: initial.nextWeekStart });
   const restored = application.getWeekPlan({

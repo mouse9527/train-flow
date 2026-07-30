@@ -7,9 +7,14 @@ const {
 const {
   createLocalDatabase
 } = require('../../services/local-database');
+const {
+  createLocalRecordSummaryProvider
+} = require('../../services/local-record-summary-provider');
 
+const database = createLocalDatabase();
 const application = createPlanApplicationService({
-  repository: createPlanRepository({ database: createLocalDatabase() })
+  repository: createPlanRepository({ database }),
+  recordSummaryProvider: createLocalRecordSummaryProvider({ database })
 });
 
 Page({

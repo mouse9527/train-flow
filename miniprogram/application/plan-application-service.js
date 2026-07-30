@@ -9,16 +9,30 @@ const {
   createWeekPlanView
 } = require('./week-plan-view');
 
+const EMPTY_RECORD_SUMMARY_PROVIDER = Object.freeze({
+  findRange() {
+    return [];
+  }
+});
+
 class PlanApplicationService {
-  constructor({ repository, defaultPlanFactory = createDefaultPlans }) {
+  constructor({
+    repository,
+    defaultPlanFactory = createDefaultPlans,
+    recordSummaryProvider = EMPTY_RECORD_SUMMARY_PROVIDER
+  }) {
     if (!repository || typeof repository.initializeDefaults !== 'function') {
       throw new Error('PlanApplicationService requires a PlanRepository');
     }
     if (typeof defaultPlanFactory !== 'function') {
       throw new Error('defaultPlanFactory must be a function');
     }
+    if (!recordSummaryProvider || typeof recordSummaryProvider.findRange !== 'function') {
+      throw new Error('recordSummaryProvider must provide findRange()');
+    }
     this.repository = repository;
     this.defaultPlanFactory = defaultPlanFactory;
+    this.recordSummaryProvider = recordSummaryProvider;
   }
 
   initializeDefaultPlans() {
@@ -28,14 +42,14 @@ class PlanApplicationService {
 
   getWeekPlan({
     weekStart = DEFAULT_WEEK_START,
-    selectedDate = null,
-    recordSummaries = []
+    selectedDate = null
   } = {}) {
     if (typeof this.repository.findRange !== 'function') {
       throw new Error('PlanApplicationService week queries require PlanRepository.findRange');
     }
     const range = createWeekPlanView({ weekStart, plans: [] });
     const plans = this.repository.findRange(range.weekStart, range.weekEnd);
+    const recordSummaries = this.recordSummaryProvider.findRange(range.weekStart, range.weekEnd);
     return createWeekPlanView({ weekStart, selectedDate, plans, recordSummaries });
   }
 }
