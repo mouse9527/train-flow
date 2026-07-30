@@ -13,6 +13,9 @@ const {
   createPlanRepository
 } = require('../../../miniprogram/domain/planning/plan-repository');
 const {
+  createPlanCopyService
+} = require('../../../miniprogram/domain/planning/plan-copy-service');
+const {
   createLocalDatabase
 } = require('../../../miniprogram/services/local-database');
 const { StorageDouble } = require('../../helpers/storage-double');
@@ -212,5 +215,71 @@ test('PlanRepository delete writes a revisioned tombstone and hides it from acti
   assert.deepEqual(
     database.load().plans.find(({ id }) => id === created.id),
     deleted
+  );
+});
+
+test('PlanCopyService deep-copies a plan with fresh plan/step IDs while preserving normalized values', () => {
+  const source = createDefaultPlans({ now: () => FIXED_NOW })[0];
+  let sequence = 0;
+  const service = createPlanCopyService({
+    now: () => SAVE_NOW,
+    idFactory: ({ entity }) => `${entity}_copied_${++sequence}`
+  });
+
+  const copied = service.copy(source, { trainingDate: '2026-08-10' });
+
+  assert.equal(copied.id, 'plan_copied_1');
+  assert.notEqual(copied.id, source.id);
+  assert.deepEqual(
+    copied.steps.map(({ id }) => id),
+    source.steps.map((step, index) => `step_copied_${index + 2}`)
+  );
+  assert.deepEqual(
+    copied.steps.map(({ kind, durationSeconds, sets, reps, restSeconds, targets }) => ({
+      kind,
+      durationSeconds,
+      sets,
+      reps,
+      restSeconds,
+      targets
+    })),
+    source.steps.map(({ kind, durationSeconds, sets, reps, restSeconds, targets }) => ({
+      kind,
+      durationSeconds,
+      sets,
+      reps,
+      restSeconds,
+      targets
+    }))
+  );
+  assert.equal(copied.trainingDate, '2026-08-10');
+  assert.equal(copied.templateSource, null);
+  assert.equal(copied.revision, 1);
+  assert.equal(copied.createdAt, SAVE_NOW);
+  assert.equal(copied.updatedAt, SAVE_NOW);
+
+  copied.safetyNoticeCodes.push('COPY_ONLY');
+  copied.steps[0].targets.speedKph.min = 999;
+  copied.steps[0].alternatives.push('copy only');
+  assert.equal(source.safetyNoticeCodes.includes('COPY_ONLY'), false);
+  assert.notEqual(source.steps[0].targets.speedKph.min, 999);
+  assert.equal(source.steps[0].alternatives.includes('copy only'), false);
+});
+
+test('PlanCopyService rejects ID factories that reuse source or duplicate step IDs', () => {
+  const source = createDefaultPlans({ now: () => FIXED_NOW })[0];
+  const sourceIdService = createPlanCopyService({
+    now: () => SAVE_NOW,
+    idFactory: ({ entity }) => entity === 'plan' ? source.id : 'fresh_step'
+  });
+  assert.throws(() => sourceIdService.copy(source, { trainingDate: '2026-08-10' }), /new plan ID/);
+
+  const duplicateStepService = createPlanCopyService({
+    now: () => SAVE_NOW,
+    idFactory: ({ entity }) => entity === 'plan' ? 'fresh_plan' : 'duplicate_step'
+  });
+  assert.throws(
+    () => duplicateStepService.copy(source, { trainingDate: '2026-08-10' }),
+    /unique new step IDs/
   );
 });
