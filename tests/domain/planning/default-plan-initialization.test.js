@@ -8,6 +8,16 @@ const {
 const {
   createDefaultPlans
 } = require('../../../miniprogram/domain/planning/default-plan-factory');
+const {
+  createPlanApplicationService
+} = require('../../../miniprogram/application/plan-application-service');
+const {
+  createPlanRepository
+} = require('../../../miniprogram/domain/planning/plan-repository');
+const {
+  createLocalDatabase
+} = require('../../../miniprogram/services/local-database');
+const { StorageDouble } = require('../../helpers/storage-double');
 
 const FIXED_NOW = 1785717300000;
 
@@ -107,4 +117,65 @@ test('default plan factory strips unknown identity context before validation', (
   assert.equal(plans[0].ownerId, undefined);
   assert.equal(plans[0].openId, undefined);
   assert.equal(plans[0].steps[0].sessionKey, undefined);
+});
+
+function createPersistentPlanningRuntime(storage, { defaultPlanFactory } = {}) {
+  const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
+  const repository = createPlanRepository({ database, now: () => FIXED_NOW });
+  const service = createPlanApplicationService({ repository, defaultPlanFactory });
+  return { database, repository, service };
+}
+
+test('application service validates and atomically persists all seven defaults through LocalDatabase', () => {
+  const storage = new StorageDouble();
+  const firstRuntime = createPersistentPlanningRuntime(storage);
+
+  const result = firstRuntime.service.initializeDefaultPlans();
+
+  assert.equal(result.created, 7);
+  assert.equal(result.templateVersion, DEFAULT_PLAN_TEMPLATE_VERSION);
+  assert.equal(result.plans.length, 7);
+  assert.equal(firstRuntime.database.load().localRevision, 1);
+
+  const restarted = createPersistentPlanningRuntime(storage);
+  assert.deepEqual(
+    restarted.repository.findRange('2026-08-03', '2026-08-09').map(({ id }) => id),
+    result.plans.map(({ id }) => id)
+  );
+});
+
+test('initializing the same templateVersion twice is an idempotent zero-write no-op', () => {
+  const storage = new StorageDouble();
+  const runtime = createPersistentPlanningRuntime(storage);
+  runtime.service.initializeDefaultPlans();
+  const revisionAfterFirstRun = runtime.database.load().localRevision;
+  storage.clearOperations();
+
+  const second = runtime.service.initializeDefaultPlans();
+
+  assert.equal(second.created, 0);
+  assert.equal(second.plans.length, 7);
+  assert.equal(runtime.database.load().localRevision, revisionAfterFirstRun);
+  assert.deepEqual(
+    storage.operations.filter(({ type }) => type === 'write'),
+    []
+  );
+});
+
+test('an invalid default set fails before LocalDatabase writes any partial plan', () => {
+  const storage = new StorageDouble();
+  const invalidPlans = createDefaultPlans({ now: () => FIXED_NOW });
+  invalidPlans[3].steps[0].kind = 'unknown';
+  const runtime = createPersistentPlanningRuntime(storage, {
+    defaultPlanFactory: () => invalidPlans
+  });
+
+  assert.throws(
+    () => runtime.service.initializeDefaultPlans(),
+    (error) => error && error.code === 'PLAN_VALIDATION_FAILED'
+  );
+  assert.deepEqual(
+    storage.operations.filter(({ type }) => type === 'write'),
+    []
+  );
 });
