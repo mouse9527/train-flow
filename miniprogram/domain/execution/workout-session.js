@@ -239,7 +239,11 @@ function assertWorkoutSession(session) {
   }
   assertSafeInteger(session.currentStepIndex, 'session.currentStepIndex');
   const terminal = session.status === 'completed' || session.status === 'aborted';
-  if (terminal ? session.currentStepIndex > session.planSnapshot.steps.length : session.currentStepIndex >= session.planSnapshot.steps.length) {
+  if (
+    session.status === 'completed'
+      ? session.currentStepIndex !== session.planSnapshot.steps.length
+      : session.currentStepIndex >= session.planSnapshot.steps.length
+  ) {
     throw new TypeError('session.currentStepIndex is outside PlanSnapshot steps');
   }
   if (session.currentSet !== null) {
@@ -277,6 +281,12 @@ function assertWorkoutSession(session) {
     ) {
       throw new TypeError('session rest timer mode is unsupported by the current step kind');
     }
+    const plannedDurationSeconds = session.timer.mode === 'step'
+      ? currentStep.durationSeconds
+      : currentStep.restSeconds;
+    if (session.timer.durationSeconds !== plannedDurationSeconds) {
+      throw new TypeError('session timer duration must match the current PlanSnapshot step');
+    }
   }
   if (!Array.isArray(session.stepResults)) {
     throw new TypeError('session.stepResults must be an array');
@@ -302,7 +312,11 @@ function assertWorkoutSession(session) {
     if (resultIndex < session.currentStepIndex && result.status !== 'completed') {
       throw new TypeError('session prior stepResults must be completed');
     }
-    if (!terminal && resultIndex === session.currentStepIndex && result.status !== 'in_progress') {
+    if (
+      session.status !== 'completed' &&
+      resultIndex === session.currentStepIndex &&
+      result.status !== 'in_progress'
+    ) {
       throw new TypeError('session current stepResult must remain in_progress');
     }
     const resultStep = session.planSnapshot.steps[resultIndex];
@@ -422,6 +436,14 @@ function assertWorkoutSession(session) {
       !session.stepResults.some(({ stepId }) => stepId === currentStep.id)
     ) {
       throw new TypeError('session currentSet after 1 requires the current stepResult');
+    }
+    if (
+      needsSet &&
+      session.currentSet > 1 &&
+      currentStep.restSeconds > 0 &&
+      session.timer === null
+    ) {
+      throw new TypeError('session currentSet after 1 requires its planned rest or step timer');
     }
   }
   return session;

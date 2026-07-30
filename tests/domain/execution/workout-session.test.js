@@ -226,6 +226,81 @@ test('timer identity must match both current step ID and supported step kind', (
   );
 });
 
+test('timer mode and duration must remain bound to the current PlanSnapshot step', () => {
+  const timed = startedSession(singleTimedPlan());
+  const timedStepId = timed.planSnapshot.steps[0].id;
+  const stepRunning = applyWorkoutCommand(
+    timed,
+    command('start_step', 1, 'planned_step_running', NOW, { stepId: timedStepId })
+  ).session;
+  const stepPaused = applyWorkoutCommand(
+    stepRunning,
+    command('pause', 2, 'planned_step_paused', NOW + 1_000, { reason: 'user' })
+  ).session;
+  const stepExpired = applyWorkoutCommand(
+    stepRunning,
+    command('checkpoint', 2, 'planned_step_expired', NOW + 300_000, { reason: 'manual' })
+  ).session;
+  const strength = startedSession(threeSetStrengthPlan());
+  const strengthStepId = strength.planSnapshot.steps[0].id;
+  const restRunning = applyWorkoutCommand(
+    strength,
+    command('complete_set', 1, 'planned_rest_running', NOW + 1_000, {
+      stepId: strengthStepId,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+  const restPaused = applyWorkoutCommand(
+    restRunning,
+    command('pause', 2, 'planned_rest_paused', NOW + 2_000, { reason: 'user' })
+  ).session;
+  const restExpired = applyWorkoutCommand(
+    restRunning,
+    command('checkpoint', 2, 'planned_rest_expired', NOW + 76_000, { reason: 'manual' })
+  ).session;
+  const interval = startedSession(intervalPlan());
+  const intervalStepId = interval.planSnapshot.steps[0].id;
+  const intervalStep = applyWorkoutCommand(
+    interval,
+    command('start_step', 1, 'planned_interval_step', NOW, { stepId: intervalStepId })
+  ).session;
+  const intervalRest = applyWorkoutCommand(
+    intervalStep,
+    command('complete_step', 2, 'planned_interval_rest', NOW + 60_000, {
+      stepId: intervalStepId
+    })
+  ).session;
+
+  for (const source of [
+    stepRunning,
+    stepPaused,
+    stepExpired,
+    restRunning,
+    restPaused,
+    restExpired,
+    intervalStep,
+    intervalRest
+  ]) {
+    const forged = structuredClone(source);
+    forged.timer.durationSeconds = 1;
+    if (forged.timer.status === 'expired') {
+      forged.timer.expirationOccurrenceId = `timer-expiration:${JSON.stringify([
+        forged.timer.mode,
+        forged.timer.stepId,
+        forged.timer.setNumber,
+        forged.timer.durationSeconds,
+        forged.timer.startedAt
+      ])}`;
+    }
+    assert.throws(
+      () => assertWorkoutSession(forged),
+      /session|timer|duration|PlanSnapshot/i
+    );
+  }
+});
+
 test('Session status and timer status must form a valid lifecycle state', () => {
   const initial = startedSession(singleTimedPlan());
   const stepId = initial.planSnapshot.steps[0].id;
@@ -284,6 +359,105 @@ test('set-tracking currentSet after one requires the current in-progress stepRes
   assert.throws(
     () => assertWorkoutSession(missingCurrentResult),
     /session|currentSet|stepResult/i
+  );
+});
+
+test('set-tracking steps cannot omit a required rest boundary after the first set', () => {
+  const strength = startedSession(threeSetStrengthPlan());
+  const strengthAfterSet = applyWorkoutCommand(
+    strength,
+    command('complete_set', 1, 'required_strength_rest', NOW + 1_000, {
+      stepId: strength.planSnapshot.steps[0].id,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+  const interval = startedSession(intervalPlan());
+  const intervalStepId = interval.planSnapshot.steps[0].id;
+  const intervalRunning = applyWorkoutCommand(
+    interval,
+    command('start_step', 1, 'required_interval_start', NOW, { stepId: intervalStepId })
+  ).session;
+  const intervalAfterSet = applyWorkoutCommand(
+    intervalRunning,
+    command('complete_step', 2, 'required_interval_rest', NOW + 60_000, {
+      stepId: intervalStepId
+    })
+  ).session;
+
+  for (const source of [strengthAfterSet, intervalAfterSet]) {
+    assert.equal(source.currentSet, 2);
+    assert.equal(source.timer.mode, 'rest');
+    const missingRest = structuredClone(source);
+    missingRest.timer = null;
+    assert.throws(
+      () => assertWorkoutSession(missingRest),
+      /session|rest|timer|currentSet/i
+    );
+  }
+
+  const noRestPlan = threeSetStrengthPlan();
+  noRestPlan.steps[0].restSeconds = 0;
+  const noRest = startedSession(noRestPlan);
+  const noRestAfterSet = applyWorkoutCommand(
+    noRest,
+    command('complete_set', 1, 'zero_rest_allowed', NOW + 1_000, {
+      stepId: noRest.planSnapshot.steps[0].id,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+  assert.equal(noRestAfterSet.timer, null);
+  assert.equal(assertWorkoutSession(noRestAfterSet), noRestAfterSet);
+});
+
+test('terminal Sessions keep completed and aborted positions/results in canonical shapes', () => {
+  const timed = startedSession(singleTimedPlan());
+  const stepId = timed.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    timed,
+    command('start_step', 1, 'terminal_shape_start', NOW, { stepId })
+  ).session;
+  const completed = applyWorkoutCommand(
+    running,
+    command('complete_step', 2, 'terminal_shape_complete', NOW + 300_000, { stepId })
+  ).session;
+  assert.equal(assertWorkoutSession(completed), completed);
+
+  const forgedCompleted = structuredClone(completed);
+  forgedCompleted.currentStepIndex = 0;
+  forgedCompleted.stepResults[0].status = 'in_progress';
+  forgedCompleted.stepResults[0].completedAt = null;
+  assert.throws(
+    () => assertWorkoutSession(forgedCompleted),
+    /session|completed|currentStepIndex|stepResult/i
+  );
+
+  const strength = startedSession(threeSetStrengthPlan());
+  const partial = applyWorkoutCommand(
+    strength,
+    command('complete_set', 1, 'terminal_shape_partial', NOW + 1_000, {
+      stepId: strength.planSnapshot.steps[0].id,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+  const aborted = applyWorkoutCommand(
+    partial,
+    command('abort', 2, 'terminal_shape_abort', NOW + 2_000, { reason: 'user' })
+  ).session;
+  assert.equal(assertWorkoutSession(aborted), aborted);
+  assert.equal(aborted.stepResults[0].status, 'in_progress');
+
+  const forgedAborted = structuredClone(completed);
+  forgedAborted.status = 'aborted';
+  forgedAborted.currentStepIndex = 0;
+  assert.throws(
+    () => assertWorkoutSession(forgedAborted),
+    /session|aborted|currentStepIndex|stepResult/i
   );
 });
 

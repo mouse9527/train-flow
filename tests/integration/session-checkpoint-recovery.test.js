@@ -378,6 +378,160 @@ test('checksum-valid missing current set history fails startup recovery without 
   assert.deepEqual([...runtime.storage.values.entries()], before);
 });
 
+test('checksum-valid missing rest, forged duration and terminal shape fail recovery without writes', () => {
+  const scenarios = [
+    {
+      name: 'missing-required-rest',
+      prepare() {
+        const runtime = createRuntime();
+        const strengthPlan = clone(runtime.plans[0]);
+        strengthPlan.id = 'plan_required_rest_recovery';
+        strengthPlan.trainingDate = '2026-08-11';
+        strengthPlan.steps = [{ ...strengthPlan.steps[3], order: 1 }];
+        runtime.database.commit((draft) => {
+          draft.plans.push(strengthPlan);
+        });
+        const session = runtime.service.startSession({
+          planId: strengthPlan.id,
+          commandKey: 'required_rest_start',
+          nowMs: NOW
+        });
+        runtime.service.execute({
+          type: 'complete_set',
+          expectedSessionRevision: 1,
+          commandKey: 'required_rest_complete',
+          nowMs: NOW + 1_000,
+          payload: {
+            stepId: session.planSnapshot.steps[0].id,
+            setNumber: 1,
+            reps: 12,
+            weightKg: 20
+          }
+        });
+        runtime.service.checkpointOnHide({
+          expectedSessionRevision: 2,
+          commandKey: 'required_rest_checkpoint',
+          nowMs: NOW + 1_500
+        });
+        return {
+          runtime,
+          expectedSessionRevision: 3,
+          mutate(activeSession) {
+            assert.equal(activeSession.currentSet, 2);
+            assert.equal(activeSession.timer.mode, 'rest');
+            activeSession.timer = null;
+          }
+        };
+      }
+    },
+    {
+      name: 'forged-planned-duration',
+      prepare() {
+        const runtime = createRuntime();
+        const session = start(runtime, { commandKey: 'forged_duration_start' });
+        runtime.service.execute({
+          type: 'start_step',
+          expectedSessionRevision: 1,
+          commandKey: 'forged_duration_timer',
+          nowMs: NOW,
+          payload: { stepId: session.planSnapshot.steps[0].id }
+        });
+        runtime.service.checkpointOnHide({
+          expectedSessionRevision: 2,
+          commandKey: 'forged_duration_checkpoint',
+          nowMs: NOW + 500
+        });
+        return {
+          runtime,
+          expectedSessionRevision: 3,
+          mutate(activeSession) {
+            assert.equal(activeSession.planSnapshot.steps[0].durationSeconds, 300);
+            const timer = activeSession.timer;
+            timer.durationSeconds = 1;
+            timer.expectedEndAt = timer.startedAt + 1_000;
+            timer.remainingSecondsAtCheckpoint = Math.ceil(
+              (timer.expectedEndAt - timer.checkpointAt) / 1_000
+            );
+          }
+        };
+      }
+    },
+    {
+      name: 'forged-completed-position',
+      prepare() {
+        const runtime = createRuntime();
+        const singlePlan = clone(runtime.plans[0]);
+        singlePlan.id = 'plan_terminal_shape_recovery';
+        singlePlan.trainingDate = '2026-08-12';
+        singlePlan.steps = [{ ...singlePlan.steps[0], order: 1 }];
+        runtime.database.commit((draft) => {
+          draft.plans.push(singlePlan);
+        });
+        const session = runtime.service.startSession({
+          planId: singlePlan.id,
+          commandKey: 'terminal_shape_recovery_start',
+          nowMs: NOW
+        });
+        runtime.service.execute({
+          type: 'start_step',
+          expectedSessionRevision: 1,
+          commandKey: 'terminal_shape_recovery_timer',
+          nowMs: NOW,
+          payload: { stepId: session.planSnapshot.steps[0].id }
+        });
+        const terminal = runtime.service.execute({
+          type: 'complete_step',
+          expectedSessionRevision: 2,
+          commandKey: 'terminal_shape_recovery_complete',
+          nowMs: NOW + 300_000,
+          payload: { stepId: session.planSnapshot.steps[0].id }
+        }).session;
+        return {
+          runtime,
+          expectedSessionRevision: 3,
+          mutate(activeSession) {
+            Object.assign(activeSession, clone(terminal));
+            activeSession.currentStepIndex = 0;
+            activeSession.stepResults[0].status = 'in_progress';
+            activeSession.stepResults[0].completedAt = null;
+          }
+        };
+      }
+    }
+  ];
+
+  for (const scenario of scenarios) {
+    const { runtime, expectedSessionRevision, mutate } = scenario.prepare();
+    for (const key of [`${SLOT_PREFIX}a`, `${SLOT_PREFIX}b`]) {
+      const snapshot = clone(runtime.storage.values.get(key));
+      assert.ok(snapshot && snapshot.activeSession, `${scenario.name} requires both active slots`);
+      mutate(snapshot.activeSession);
+      delete snapshot.checksum;
+      snapshot.checksum = computeChecksum(snapshot);
+      runtime.storage.values.set(key, snapshot);
+    }
+    const before = clone([...runtime.storage.values.entries()]);
+    const beforeWrites = snapshotWriteCount(runtime.storage);
+
+    assert.throws(
+      () => runtime.database.load(),
+      /session|timer|rest|duration|completed|currentStepIndex|stepResult/i,
+      scenario.name
+    );
+    const recovered = runtime.service.restoreOnStartup({
+      expectedSessionRevision,
+      commandKey: `${scenario.name}_restore`,
+      nowMs: NOW + 301_000
+    });
+
+    assert.equal(recovered.ok, false, scenario.name);
+    assert.equal(recovered.error.code, 'SESSION_RECOVERY_REQUIRED', scenario.name);
+    assert.equal(recovered.error.recoverable, true, scenario.name);
+    assert.equal(snapshotWriteCount(runtime.storage), beforeWrites, scenario.name);
+    assert.deepEqual([...runtime.storage.values.entries()], before, scenario.name);
+  }
+});
+
 test('application replaces completed and aborted Sessions while terminal commands remain rejected', () => {
   for (const terminalStatus of ['completed', 'aborted']) {
     const ids = [`session_${terminalStatus}`, `session_after_${terminalStatus}`];
