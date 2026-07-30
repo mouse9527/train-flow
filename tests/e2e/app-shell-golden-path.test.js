@@ -15,6 +15,17 @@ test('project.config.json declares a placeholder AppID, never a real one', () =>
   assert.equal(config.appid, 'touristappid');
 });
 
+test('app sitemap resolves inside miniprogramRoot and local DevTools config stays ignored', () => {
+  const projectConfig = readJson('project.config.json');
+  const appJson = readJson('miniprogram/app.json');
+  const sitemapPath = path.join(ROOT, projectConfig.miniprogramRoot, appJson.sitemapLocation);
+
+  assert.ok(fs.existsSync(sitemapPath), `missing sitemap at ${sitemapPath}`);
+
+  const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
+  assert.match(gitignore, /^project\.private\.config\.json$/m);
+});
+
 test('app.json registers every V1 page with a matching page directory and required files', () => {
   const appJson = readJson('miniprogram/app.json');
 
@@ -64,8 +75,7 @@ test('settings page golden path: load preferences section then read about/safety
 test('no identity or health fixture data leaks into the repository (openId, real names, health metrics)', () => {
   const trackedGlobs = [
     'miniprogram',
-    'project.config.json',
-    'sitemap.json'
+    'project.config.json'
   ];
   const forbiddenPatterns = [/openid\s*[:=]/i, /appsecret/i];
 
