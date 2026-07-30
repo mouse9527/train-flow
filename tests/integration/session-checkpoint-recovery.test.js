@@ -198,6 +198,30 @@ test('hide/unload and application rebuild restore the same checkpoint for the or
   assert.equal(restored.session.timer.remainingSecondsAtCheckpoint, 296);
 });
 
+test('sub-second elapsed remainder survives persistence and startup recovery', () => {
+  const runtime = createRuntime();
+  start(runtime);
+  const hidden = runtime.service.checkpointOnHide({
+    expectedSessionRevision: 1,
+    commandKey: 'fractional_hide',
+    nowMs: NOW + 500
+  });
+
+  assert.equal(hidden.session.elapsedActiveSeconds, 0);
+  assert.equal(hidden.session.elapsedRemainderMilliseconds, 500);
+
+  const rebuilt = createRuntime({ storage: runtime.storage });
+  const restored = rebuilt.service.restoreOnStartup({
+    expectedSessionRevision: 2,
+    commandKey: 'fractional_restore',
+    nowMs: NOW + 1_000
+  });
+
+  assert.equal(restored.ok, true);
+  assert.equal(restored.session.elapsedActiveSeconds, 1);
+  assert.equal(restored.session.elapsedRemainderMilliseconds, 0);
+});
+
 test('non-origin device cannot continue and restore returns a recoverable error without writes', () => {
   const runtime = createRuntime();
   start(runtime);

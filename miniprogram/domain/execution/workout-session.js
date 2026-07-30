@@ -18,6 +18,7 @@ const SESSION_FIELDS = Object.freeze([
   'startedAt',
   'endedAt',
   'elapsedActiveSeconds',
+  'elapsedRemainderMilliseconds',
   'currentStepIndex',
   'currentSet',
   'timer',
@@ -232,6 +233,10 @@ function assertWorkoutSession(session) {
     }
   }
   assertSafeInteger(session.elapsedActiveSeconds, 'session.elapsedActiveSeconds');
+  assertSafeInteger(session.elapsedRemainderMilliseconds, 'session.elapsedRemainderMilliseconds');
+  if (session.elapsedRemainderMilliseconds >= 1_000) {
+    throw new TypeError('session.elapsedRemainderMilliseconds must be less than 1000');
+  }
   assertSafeInteger(session.currentStepIndex, 'session.currentStepIndex');
   const terminal = session.status === 'completed' || session.status === 'aborted';
   if (terminal ? session.currentStepIndex > session.planSnapshot.steps.length : session.currentStepIndex >= session.planSnapshot.steps.length) {
@@ -360,8 +365,16 @@ function assertWorkoutSession(session) {
   if (session.lastCheckpointAt < session.startedAt) {
     throw new TypeError('session.lastCheckpointAt cannot be before startedAt');
   }
-  if (session.elapsedActiveSeconds > Math.floor((session.lastCheckpointAt - session.startedAt) / 1_000)) {
-    throw new TypeError('session.elapsedActiveSeconds cannot exceed observed wall-clock time');
+  const observedWallMilliseconds = session.lastCheckpointAt - session.startedAt;
+  const observedWallSeconds = Math.floor(observedWallMilliseconds / 1_000);
+  if (
+    session.elapsedActiveSeconds > observedWallSeconds ||
+    (
+      session.elapsedActiveSeconds === observedWallSeconds &&
+      session.elapsedRemainderMilliseconds > observedWallMilliseconds % 1_000
+    )
+  ) {
+    throw new TypeError('session elapsed active time cannot exceed observed wall-clock time');
   }
   if (terminal !== (session.endedAt !== null)) {
     throw new TypeError('terminal session status and endedAt must agree');
@@ -446,7 +459,11 @@ function materializeCheckpoint(session, nowMs, timerEngine) {
     throw createSessionError('Session checkpoint time cannot move backwards', 'SESSION_CLOCK_ANOMALY');
   }
   if (session.status === 'in_progress') {
-    session.elapsedActiveSeconds += Math.floor((nowMs - session.lastCheckpointAt) / 1_000);
+    const elapsedMilliseconds = nowMs - session.lastCheckpointAt;
+    const remainderMilliseconds = session.elapsedRemainderMilliseconds + elapsedMilliseconds % 1_000;
+    session.elapsedActiveSeconds += Math.floor(elapsedMilliseconds / 1_000) +
+      Math.floor(remainderMilliseconds / 1_000);
+    session.elapsedRemainderMilliseconds = remainderMilliseconds % 1_000;
   }
   session.lastCheckpointAt = nowMs;
   if (session.timer !== null) {
@@ -515,7 +532,14 @@ function applyTransition(session, command, timerEngine) {
   }
   if (command.type === 'start_step') {
     if (session.timer !== null) {
-      throw createSessionError('Current step already has a timer', 'SESSION_TIMER_ALREADY_STARTED');
+      const completedIntervalRest = step.kind === 'interval' &&
+        session.timer.mode === 'rest' &&
+        session.timer.setNumber === session.currentSet &&
+        session.timer.status === 'expired';
+      if (!completedIntervalRest) {
+        throw createSessionError('Current step already has a timer', 'SESSION_TIMER_ALREADY_STARTED');
+      }
+      session.timer = null;
     }
     if (step.kind !== 'timed' && step.kind !== 'interval') {
       throw createSessionError('Current step cannot start a step timer', 'SESSION_TIMER_UNSUPPORTED');
@@ -678,6 +702,7 @@ function createWorkoutSession({
     startedAt: nowMs,
     endedAt: null,
     elapsedActiveSeconds: 0,
+    elapsedRemainderMilliseconds: 0,
     currentStepIndex: 0,
     currentSet: firstStep.kind === 'strength' || firstStep.kind === 'interval' ? 1 : null,
     timer: null,

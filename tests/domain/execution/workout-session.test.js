@@ -31,6 +31,13 @@ function singleTimedPlan() {
   return plan;
 }
 
+function intervalPlan() {
+  const plan = createDefaultPlans({ now: () => NOW })[3];
+  plan.id = 'plan_interval_fixture';
+  plan.steps = [{ ...plan.steps[1], order: 1 }];
+  return plan;
+}
+
 function startedSession(plan = timedPlan()) {
   return createWorkoutSession({
     plan,
@@ -288,6 +295,62 @@ test('checkpoint and step completion atomically advance revision, elapsed time a
     completedAt: NOW + 300_000,
     setResults: []
   });
+});
+
+test('fractional checkpoints accumulate without dropping elapsed milliseconds', () => {
+  const initial = startedSession(singleTimedPlan());
+  const firstHalf = applyWorkoutCommand(
+    initial,
+    command('checkpoint', 1, 'fractional_checkpoint_1', NOW + 500, { reason: 'hide' })
+  ).session;
+  const secondHalf = applyWorkoutCommand(
+    firstHalf,
+    command('checkpoint', 2, 'fractional_checkpoint_2', NOW + 1_000, { reason: 'show' })
+  ).session;
+
+  assert.equal(firstHalf.elapsedActiveSeconds, 0);
+  assert.equal(firstHalf.elapsedRemainderMilliseconds, 500);
+  assert.equal(secondHalf.elapsedActiveSeconds, 1);
+  assert.equal(secondHalf.elapsedRemainderMilliseconds, 0);
+});
+
+test('interval rest expiry starts every next set and completes the full interval step', () => {
+  const initial = startedSession(intervalPlan());
+  const step = initial.planSnapshot.steps[0];
+  let session = initial;
+  let nowMs = NOW;
+
+  for (let setNumber = 1; setNumber <= step.sets; setNumber += 1) {
+    session = applyWorkoutCommand(
+      session,
+      command('start_step', session.sessionRevision, `interval_start_${setNumber}`, nowMs, {
+        stepId: step.id
+      })
+    ).session;
+    assert.equal(session.timer.mode, 'step');
+
+    nowMs = session.timer.expectedEndAt;
+    session = applyWorkoutCommand(
+      session,
+      command('complete_step', session.sessionRevision, `interval_complete_${setNumber}`, nowMs, {
+        stepId: step.id
+      })
+    ).session;
+
+    if (setNumber < step.sets) {
+      assert.equal(session.currentSet, setNumber + 1);
+      assert.equal(session.timer.mode, 'rest');
+      assert.equal(session.timer.setNumber, setNumber + 1);
+      nowMs = session.timer.expectedEndAt;
+    }
+  }
+
+  assert.equal(session.status, 'completed');
+  assert.equal(session.currentStepIndex, 1);
+  assert.deepEqual(
+    session.stepResults[0].setResults.map(({ setNumber }) => setNumber),
+    [1, 2, 3, 4, 5]
+  );
 });
 
 test('set completion rejects double transitions and keeps rest timer identity with next set', () => {
