@@ -175,3 +175,44 @@ test('Attack: checksum 正确但 settings revision 类型损坏的高 revision �
   assert.deepEqual(storage.peek(validKey), validSnapshot);
   assert.deepEqual(storage.peek(corruptKey), corruptSnapshot);
 });
+
+test('Reviewer regression: application/repository save 路径必须拒绝污染的完整 settings 对象且保持零写', () => {
+  const repositoryStorage = new StorageDouble();
+  const repositoryRuntime = createPersistentService(repositoryStorage);
+  repositoryStorage.clearOperations();
+
+  assert.throws(
+    () =>
+      repositoryRuntime.repository.save(
+        { ...DEFAULT_USER_SETTINGS, openId: 'must-not-persist' },
+        DEFAULT_USER_SETTINGS.revision
+      ),
+    /settings|field|schema|unknown|unexpected/i
+  );
+  repositoryStorage.assertOnlyKeysWritten([]);
+  assert.equal(repositoryStorage.peek(SLOT_A), undefined);
+  assert.equal(repositoryStorage.peek(SLOT_B), undefined);
+  assert.equal(repositoryStorage.peek(ACTIVE), undefined);
+
+  const serviceStorage = new StorageDouble();
+  const persistentRuntime = createPersistentService(serviceStorage);
+  const contaminatedRepository = {
+    load() {
+      return { ...persistentRuntime.repository.load(), sessionKey: 'must-not-propagate' };
+    },
+    save(settings, expectedRevision) {
+      return persistentRuntime.repository.save(settings, expectedRevision);
+    }
+  };
+  const service = createSettingsApplicationService({ repository: contaminatedRepository });
+  serviceStorage.clearOperations();
+
+  assert.throws(
+    () => service.updateSettings({ soundEnabled: false }, DEFAULT_USER_SETTINGS.revision),
+    /settings|field|schema|unknown|unexpected/i
+  );
+  serviceStorage.assertOnlyKeysWritten([]);
+  assert.equal(serviceStorage.peek(SLOT_A), undefined);
+  assert.equal(serviceStorage.peek(SLOT_B), undefined);
+  assert.equal(serviceStorage.peek(ACTIVE), undefined);
+});

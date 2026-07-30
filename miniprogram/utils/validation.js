@@ -2,6 +2,7 @@ const {
   LOCAL_TIME_PATTERN,
   MAX_REST_SECONDS,
   MIN_REST_SECONDS,
+  SETTINGS_FIELDS_BY_SCHEMA_VERSION,
   SETTINGS_SCHEMA_VERSION,
   TIMEZONE_PATTERN
 } = require('./constants');
@@ -16,6 +17,12 @@ function assertNonNegativeInteger(value, label) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${label} must be a non-negative safe integer`);
   }
+}
+
+function createValidationError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function assertJsonSafe(value, path = '$', ancestors = new Set()) {
@@ -84,6 +91,16 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   }
   if (snapshot.settings.schemaVersion !== SETTINGS_SCHEMA_VERSION) {
     throw new Error(`Unsupported settings.schemaVersion ${snapshot.settings.schemaVersion}`);
+  }
+  const allowedSettingsFields = SETTINGS_FIELDS_BY_SCHEMA_VERSION[snapshot.settings.schemaVersion];
+  const unexpectedSettingsField = Object.keys(snapshot.settings).find(
+    (field) => !allowedSettingsFields.includes(field)
+  );
+  if (unexpectedSettingsField) {
+    throw createValidationError(
+      `settings contains unexpected field ${unexpectedSettingsField}`,
+      'UNEXPECTED_SETTINGS_FIELD'
+    );
   }
   assertNonNegativeInteger(snapshot.settings.revision, 'settings.revision');
   if (snapshot.settings.revision < 1) {

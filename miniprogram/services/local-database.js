@@ -144,6 +144,17 @@ class LocalDatabase {
   readState() {
     const candidates = ['a', 'b'].map((slot) => this.readSlot(slot));
     const readFailures = candidates.filter((candidate) => candidate && candidate.readError);
+    const unsafeSettingsCandidate = candidates.find(
+      (candidate) =>
+        candidate &&
+        candidate.validationError &&
+        candidate.validationError.code === 'UNEXPECTED_SETTINGS_FIELD'
+    );
+    if (unsafeSettingsCandidate) {
+      throw new Error(
+        `Unsafe AppDatabase settings schema in slot ${unsafeSettingsCandidate.slot}: ${unsafeSettingsCandidate.validationError.message}`
+      );
+    }
     const validSnapshots = candidates.filter((candidate) => candidate && candidate.snapshot);
     const futureSnapshot = validSnapshots.find(
       ({ snapshot }) => snapshot.schemaVersion > this.currentSchemaVersion

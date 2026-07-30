@@ -980,3 +980,57 @@ test('Peer regression: install 必须是 closed schema，身份凭据与任意�
   assert.deepEqual(loaded.records.map(({ id }) => id), ['safe-survivor']);
   assert.equal(loadStorage.peek(ACTIVE), 'b');
 });
+
+test('Reviewer regression: direct commit 必须拒绝 settings 任意额外字段且保持零写', () => {
+  for (const field of ['openId', 'sessionKey', 'extra']) {
+    const oldA = makeSnapshot({ localRevision: 320 });
+    const oldB = makeSnapshot({ localRevision: 319 });
+    const storage = seedPair({ active: 'a', a: oldA, b: oldB });
+    const database = createDatabase(storage);
+    storage.clearOperations();
+
+    assert.throws(
+      () =>
+        database.commit((draft) => {
+          draft.settings[field] = 'must-not-persist';
+        }),
+      /settings|field|schema|unknown|unexpected/i
+    );
+    storage.assertOnlyKeysWritten([]);
+    assert.deepEqual(storage.peek(SLOT_A), oldA);
+    assert.deepEqual(storage.peek(SLOT_B), oldB);
+    assert.equal(storage.peek(ACTIVE), 'a');
+  }
+});
+
+test('Reviewer regression: checksum-valid 恶意 settings 槽必须让 load 与 commit 失败关闭', () => {
+  for (const field of ['openId', 'sessionKey']) {
+    const maliciousA = makeSnapshot({
+      localRevision: 330,
+      settings: {
+        ...makeSnapshot().settings,
+        [field]: 'checksum-valid-but-forbidden'
+      }
+    });
+    const safeB = makeSnapshot({ localRevision: 329, records: [{ id: 'safe-fallback' }] });
+    const storage = seedPair({ active: 'a', a: maliciousA, b: safeB });
+    const database = createDatabase(storage);
+    storage.clearOperations();
+
+    assert.throws(() => database.load(), /settings|field|schema|unknown|unexpected|unsafe/i);
+    storage.assertOnlyKeysWritten([]);
+    assert.deepEqual(storage.peek(SLOT_A), maliciousA);
+    assert.deepEqual(storage.peek(SLOT_B), safeB);
+    assert.equal(storage.peek(ACTIVE), 'a');
+
+    storage.clearOperations();
+    assert.throws(
+      () => database.commit((draft) => draft.records.push({ id: 'must-not-commit' })),
+      /settings|field|schema|unknown|unexpected|unsafe/i
+    );
+    storage.assertOnlyKeysWritten([]);
+    assert.deepEqual(storage.peek(SLOT_A), maliciousA);
+    assert.deepEqual(storage.peek(SLOT_B), safeB);
+    assert.equal(storage.peek(ACTIVE), 'a');
+  }
+});
