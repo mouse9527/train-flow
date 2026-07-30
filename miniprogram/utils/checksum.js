@@ -8,7 +8,7 @@ function canonicalize(value) {
   }
 
   const entries = Object.keys(value)
-    .filter((key) => key !== 'checksum' && value[key] !== undefined)
+    .filter((key) => value[key] !== undefined)
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`);
   return `{${entries.join(',')}}`;
@@ -94,7 +94,16 @@ function sha256(text) {
 }
 
 function computeChecksum(value) {
-  return sha256(canonicalize(value));
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return sha256(canonicalize(value));
+  }
+  const payload = {};
+  for (const key of Object.keys(value)) {
+    if (key !== 'checksum') {
+      payload[key] = value[key];
+    }
+  }
+  return sha256(canonicalize(payload));
 }
 
 module.exports = { canonicalize, computeChecksum };
