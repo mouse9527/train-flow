@@ -209,6 +209,9 @@ function assertWorkoutSession(session) {
   assertNonEmptyString(session.planId, 'session.planId');
   assertSafeInteger(session.planRevision, 'session.planRevision', 1);
   assertWorkoutPlan(session.planSnapshot);
+  if (session.planSnapshot.status !== 'scheduled') {
+    throw new TypeError('session PlanSnapshot must preserve a scheduled workout plan');
+  }
   if (
     session.planSnapshot.id !== session.planId ||
     session.planSnapshot.revision !== session.planRevision ||
@@ -245,6 +248,9 @@ function assertWorkoutSession(session) {
     }
     if (session.timer.mode === 'rest' && session.timer.setNumber !== session.currentSet) {
       throw new TypeError('session rest timer identity must match currentSet');
+    }
+    if (session.timer.mode === 'rest' && session.currentSet < 2) {
+      throw new TypeError('session rest timer requires a completed prior set');
     }
     if (
       session.timer.mode === 'step' &&
@@ -292,8 +298,26 @@ function assertWorkoutSession(session) {
     if (resultStep.sets !== null && result.setResults.some(({ setNumber }) => setNumber > resultStep.sets)) {
       throw new TypeError('session setResult cannot exceed PlanSnapshot step sets');
     }
+    if (
+      result.completedAt !== null &&
+      (result.completedAt < session.startedAt || result.completedAt > session.lastCheckpointAt)
+    ) {
+      throw new TypeError('session stepResult completedAt must be within Session checkpoints');
+    }
+    if (result.setResults.some(
+      ({ completedAt }) => completedAt < session.startedAt || completedAt > session.lastCheckpointAt
+    )) {
+      throw new TypeError('session setResult completedAt must be within Session checkpoints');
+    }
     previousResultIndex = resultIndex;
   });
+  for (let index = 0; index < session.currentStepIndex; index += 1) {
+    if (!session.stepResults.some(
+      ({ stepId, status }) => stepId === session.planSnapshot.steps[index].id && status === 'completed'
+    )) {
+      throw new TypeError('session cannot advance past a step without its completed result');
+    }
+  }
   if (session.status === 'completed' && session.stepResults.length !== session.planSnapshot.steps.length) {
     throw new TypeError('completed session requires a completed result for every step');
   }
@@ -317,15 +341,33 @@ function assertWorkoutSession(session) {
   if (session.processedCommands[0].type !== 'start_session') {
     throw new TypeError('session first command must be start_session');
   }
-  if (session.processedCommands.at(-1).sessionRevision !== session.sessionRevision) {
+  const expectedStartFingerprint = JSON.stringify([
+    'start_session',
+    session.planId,
+    session.planRevision,
+    session.originDeviceId
+  ]);
+  if (session.processedCommands[0].fingerprint !== expectedStartFingerprint) {
+    throw new TypeError('session start command fingerprint must match Session identity');
+  }
+  if (
+    session.processedCommands[session.processedCommands.length - 1].sessionRevision !==
+    session.sessionRevision
+  ) {
     throw new TypeError('session latest command revision must match sessionRevision');
   }
   assertSafeInteger(session.lastCheckpointAt, 'session.lastCheckpointAt');
   if (session.lastCheckpointAt < session.startedAt) {
     throw new TypeError('session.lastCheckpointAt cannot be before startedAt');
   }
+  if (session.elapsedActiveSeconds > Math.floor((session.lastCheckpointAt - session.startedAt) / 1_000)) {
+    throw new TypeError('session.elapsedActiveSeconds cannot exceed observed wall-clock time');
+  }
   if (terminal !== (session.endedAt !== null)) {
     throw new TypeError('terminal session status and endedAt must agree');
+  }
+  if (terminal && session.endedAt !== session.lastCheckpointAt) {
+    throw new TypeError('terminal session endedAt must equal its final checkpoint');
   }
   if (terminal && (session.timer !== null || session.currentSet !== null)) {
     throw new TypeError('terminal session cannot retain timer or currentSet state');
@@ -528,7 +570,8 @@ function applyTransition(session, command, timerEngine) {
       throw createSessionError('complete_set requires a strength step', 'SESSION_SET_UNSUPPORTED');
     }
     if (command.payload.setNumber !== session.currentSet) {
-      const existing = findStepResult(session, step.id)?.setResults
+      const existingResult = findStepResult(session, step.id);
+      const existing = existingResult && existingResult.setResults
         .some(({ setNumber }) => setNumber === command.payload.setNumber);
       throw createSessionError(
         existing ? 'Set was already completed' : 'Set number does not match currentSet',

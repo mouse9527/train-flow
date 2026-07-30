@@ -157,6 +157,27 @@ test('Session boundary rejects custom prototypes, descriptors, unknown and unsaf
     completedAt: NOW,
     setResults: []
   });
+  const deletedSnapshot = structuredClone(valid);
+  deletedSnapshot.planSnapshot.status = 'deleted';
+  deletedSnapshot.planSnapshot.deletedAt = NOW;
+  const excessiveElapsed = structuredClone(valid);
+  excessiveElapsed.elapsedActiveSeconds = 1;
+  const forgedStartFingerprint = structuredClone(valid);
+  forgedStartFingerprint.processedCommands[0].fingerprint = 'forged-but-non-empty';
+
+  const advanced = applyWorkoutCommand(
+    applyWorkoutCommand(
+      valid,
+      command('start_step', 1, 'boundary_start_step', NOW, {
+        stepId: valid.planSnapshot.steps[0].id
+      })
+    ).session,
+    command('complete_step', 2, 'boundary_complete_step', NOW + 300_000, {
+      stepId: valid.planSnapshot.steps[0].id
+    })
+  ).session;
+  const missingPriorResult = structuredClone(advanced);
+  missingPriorResult.stepResults = [];
 
   for (const candidate of [
     Object.assign(Object.create({ inherited: true }), valid),
@@ -166,7 +187,11 @@ test('Session boundary rejects custom prototypes, descriptors, unknown and unsaf
     getter,
     nonEnumerable,
     brokenCommandChain,
-    futureStepResult
+    futureStepResult,
+    deletedSnapshot,
+    excessiveElapsed,
+    forgedStartFingerprint,
+    missingPriorResult
   ]) {
     assert.throws(() => assertWorkoutSession(candidate), /session|JSON|field|prototype|finite|safe|enumerable/i);
   }
