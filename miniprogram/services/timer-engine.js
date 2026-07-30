@@ -4,10 +4,10 @@ const {
   assertTimerSnapshot,
   copyTimerSnapshot,
   createExpirationOccurrenceId,
+  CLOCK_BACKWARD_TOLERANCE_MS,
   TIMER_SNAPSHOT_VERSION
 } = require('../domain/execution/timer-snapshot');
 
-const CLOCK_BACKWARD_TOLERANCE_MS = 5_000;
 const ADJUSTMENT_SECONDS = 30;
 
 function checkedAddMilliseconds(nowMs, seconds, label) {
@@ -23,25 +23,32 @@ function checkedAddMilliseconds(nowMs, seconds, label) {
 }
 
 function start(input, nowMs) {
-  assertStartInput(input);
+  const data = assertStartInput(input);
   assertNowMs(nowMs);
 
   return {
     snapshotVersion: TIMER_SNAPSHOT_VERSION,
-    mode: input.mode,
+    mode: data.mode,
     status: 'running',
-    durationSeconds: input.durationSeconds,
-    remainingSecondsAtCheckpoint: input.durationSeconds,
+    durationSeconds: data.durationSeconds,
+    remainingSecondsAtCheckpoint: data.durationSeconds,
     startedAt: nowMs,
-    expectedEndAt: checkedAddMilliseconds(nowMs, input.durationSeconds, 'durationSeconds'),
+    expectedEndAt: checkedAddMilliseconds(nowMs, data.durationSeconds, 'durationSeconds'),
     checkpointAt: nowMs,
     clockObservedAt: nowMs,
     pausedAt: null,
+    pauseReason: null,
     expiredAt: null,
     adjustmentSeconds: 0,
-    stepId: input.stepId,
-    setNumber: input.setNumber
+    stepId: data.stepId,
+    setNumber: data.setNumber
   };
+}
+
+function assertClockObservation(snapshot, nowMs) {
+  if (snapshot.clockObservedAt - nowMs > CLOCK_BACKWARD_TOLERANCE_MS) {
+    throw new Error('clock anomaly requires confirmation before changing timer state');
+  }
 }
 
 function getRemaining(snapshot, nowMs) {
@@ -54,6 +61,7 @@ function getRemaining(snapshot, nowMs) {
   if (snapshot.status === 'paused') {
     return snapshot.remainingSecondsAtCheckpoint;
   }
+  assertClockObservation(snapshot, nowMs);
   return Math.max(0, Math.ceil((snapshot.expectedEndAt - nowMs) / 1_000));
 }
 
@@ -67,6 +75,7 @@ function pause(snapshot, nowMs) {
   if (snapshot.status !== 'running') {
     throw new Error(`cannot pause timer with status ${snapshot.status}`);
   }
+  assertClockObservation(snapshot, nowMs);
 
   return {
     ...snapshot,
@@ -75,7 +84,8 @@ function pause(snapshot, nowMs) {
     expectedEndAt: null,
     checkpointAt: nowMs,
     clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs),
-    pausedAt: nowMs
+    pausedAt: nowMs,
+    pauseReason: 'user'
   };
 }
 
@@ -89,6 +99,11 @@ function resume(snapshot, nowMs) {
   if (snapshot.status !== 'paused') {
     throw new Error(`cannot resume timer with status ${snapshot.status}`);
   }
+  if (snapshot.pauseReason !== 'clock-anomaly') {
+    assertClockObservation(snapshot, nowMs);
+  } else if (nowMs < snapshot.startedAt) {
+    throw new Error('clock anomaly confirmation requires nowMs at or after startedAt');
+  }
 
   const resumed = {
     ...snapshot,
@@ -99,8 +114,12 @@ function resume(snapshot, nowMs) {
       'remainingSecondsAtCheckpoint'
     ),
     checkpointAt: nowMs,
-    clockObservedAt: nowMs,
-    pausedAt: null
+    clockObservedAt:
+      snapshot.pauseReason === 'clock-anomaly'
+        ? nowMs
+        : Math.max(snapshot.clockObservedAt, nowMs),
+    pausedAt: null,
+    pauseReason: null
   };
   delete resumed.clockAnomaly;
   delete resumed.requiresConfirmation;
@@ -123,6 +142,10 @@ function adjust(snapshot, deltaSeconds, nowMs) {
   if (snapshot.status === 'expired') {
     throw new Error('cannot adjust an expired timer');
   }
+  if (snapshot.pauseReason === 'clock-anomaly') {
+    throw new Error('cannot adjust timer before confirming clock anomaly');
+  }
+  assertClockObservation(snapshot, nowMs);
 
   const adjustmentSeconds = snapshot.adjustmentSeconds + deltaSeconds;
   if (!Number.isSafeInteger(adjustmentSeconds)) {
@@ -146,6 +169,7 @@ function adjust(snapshot, deltaSeconds, nowMs) {
 
   const adjustedDeadline = Math.max(
     nowMs,
+    snapshot.startedAt,
     checkedAddMilliseconds(snapshot.expectedEndAt, deltaSeconds, 'adjusted deadline')
   );
   return {
@@ -184,6 +208,7 @@ function expire(snapshot, nowMs) {
     checkpointAt: nowMs,
     clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs),
     pausedAt: null,
+    pauseReason: null,
     expiredAt: snapshot.expectedEndAt,
     expirationOccurrenceId
   };
@@ -205,6 +230,7 @@ function restore(snapshot, nowMs) {
       checkpointAt: nowMs,
       clockObservedAt: snapshot.clockObservedAt,
       pausedAt: nowMs,
+      pauseReason: 'clock-anomaly',
       clockAnomaly: true,
       requiresConfirmation: true,
       reason: 'clock-anomaly',

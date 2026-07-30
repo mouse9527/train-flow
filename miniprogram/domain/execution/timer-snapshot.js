@@ -1,6 +1,7 @@
 const TIMER_MODES = Object.freeze(['step', 'rest']);
 const TIMER_STATUSES = Object.freeze(['running', 'paused', 'expired']);
 const TIMER_SNAPSHOT_VERSION = 1;
+const CLOCK_BACKWARD_TOLERANCE_MS = 5_000;
 const BASE_SNAPSHOT_FIELDS = Object.freeze([
   'snapshotVersion',
   'mode',
@@ -12,6 +13,7 @@ const BASE_SNAPSHOT_FIELDS = Object.freeze([
   'checkpointAt',
   'clockObservedAt',
   'pausedAt',
+  'pauseReason',
   'expiredAt',
   'adjustmentSeconds',
   'stepId',
@@ -96,8 +98,17 @@ function assertTimerIdentity({ mode, stepId, setNumber }) {
 
 function assertStartInput(input) {
   assertObject(input, 'timer start input');
-  assertTimerIdentity(input);
-  assertSafeInteger(input.durationSeconds, 'timer durationSeconds', { minimum: 1 });
+  assertPlainJsonObject(input, 'timer start input');
+  const inputFields = ['mode', 'durationSeconds', 'stepId', 'setNumber'];
+  assertOwnFields(input, inputFields, 'timer start input');
+  assertClosedFields(input, inputFields, 'timer start input schema');
+  const data = {};
+  for (const field of inputFields) {
+    data[field] = Object.getOwnPropertyDescriptor(input, field).value;
+  }
+  assertTimerIdentity(data);
+  assertSafeInteger(data.durationSeconds, 'timer durationSeconds', { minimum: 1 });
+  return data;
 }
 
 function assertNowMs(nowMs) {
@@ -120,7 +131,8 @@ function assertTimerSnapshot(snapshot) {
     stateFields.push(...EXPIRATION_FIELDS);
     assertOwnFields(snapshot, EXPIRATION_FIELDS, 'expired timer snapshot');
   }
-  const hasClockAnomaly = snapshot.status === 'paused' && hasOwn(snapshot, 'clockAnomaly');
+  const hasClockAnomaly =
+    snapshot.status === 'paused' && snapshot.pauseReason === 'clock-anomaly';
   if (hasClockAnomaly) {
     stateFields.push(...CLOCK_ANOMALY_FIELDS);
     assertOwnFields(snapshot, CLOCK_ANOMALY_FIELDS, 'clock anomaly timer snapshot');
@@ -145,6 +157,9 @@ function assertTimerSnapshot(snapshot) {
   if (snapshot.clockObservedAt < snapshot.checkpointAt) {
     throw new TypeError('timer snapshot clockObservedAt cannot retreat behind checkpointAt');
   }
+  if (snapshot.clockObservedAt < snapshot.startedAt) {
+    throw new TypeError('timer snapshot clockObservedAt cannot be before startedAt');
+  }
   assertNullableSafeInteger(snapshot.expectedEndAt, 'timer snapshot expectedEndAt');
   assertNullableSafeInteger(snapshot.pausedAt, 'timer snapshot pausedAt');
   assertNullableSafeInteger(snapshot.expiredAt, 'timer snapshot expiredAt');
@@ -160,6 +175,12 @@ function assertTimerSnapshot(snapshot) {
     if (snapshot.pausedAt !== null || snapshot.expiredAt !== null) {
       throw new TypeError('running timer snapshot cannot have pausedAt or expiredAt');
     }
+    if (snapshot.pauseReason !== null) {
+      throw new TypeError('running timer snapshot pauseReason must be null');
+    }
+    if (snapshot.expectedEndAt < snapshot.checkpointAt) {
+      throw new TypeError('running timer snapshot deadline cannot be before checkpointAt');
+    }
   }
 
   if (snapshot.status === 'paused') {
@@ -168,6 +189,19 @@ function assertTimerSnapshot(snapshot) {
     }
     if (snapshot.pausedAt === null || snapshot.expiredAt !== null) {
       throw new TypeError('paused timer snapshot requires pausedAt and cannot have expiredAt');
+    }
+    if (snapshot.pausedAt !== snapshot.checkpointAt) {
+      throw new TypeError('paused timer snapshot pausedAt must equal checkpointAt');
+    }
+    if (snapshot.pauseReason !== 'user' && snapshot.pauseReason !== 'clock-anomaly') {
+      throw new TypeError('paused timer snapshot requires a valid pauseReason');
+    }
+    const rollbackMs = snapshot.clockObservedAt - snapshot.checkpointAt;
+    if (
+      (snapshot.pauseReason === 'clock-anomaly') !==
+      (rollbackMs > CLOCK_BACKWARD_TOLERANCE_MS)
+    ) {
+      throw new TypeError('paused timer snapshot clock anomaly discriminator is inconsistent');
     }
   }
 
@@ -180,11 +214,20 @@ function assertTimerSnapshot(snapshot) {
     ) {
       throw new TypeError('expired timer snapshot has an invalid expiration boundary');
     }
+    if (snapshot.pauseReason !== null) {
+      throw new TypeError('expired timer snapshot pauseReason must be null');
+    }
+    if (snapshot.expiredAt < snapshot.startedAt || snapshot.expiredAt > snapshot.checkpointAt) {
+      throw new TypeError('expired timer snapshot has an impossible expiration time');
+    }
     if (
       typeof snapshot.expirationOccurrenceId !== 'string' ||
       snapshot.expirationOccurrenceId.length === 0
     ) {
       throw new TypeError('expired timer snapshot requires an expiration occurrence ID');
+    }
+    if (snapshot.expirationOccurrenceId !== buildExpirationOccurrenceId(snapshot)) {
+      throw new TypeError('expired timer snapshot occurrence ID does not match timer identity');
     }
   }
 
@@ -206,8 +249,7 @@ function copyTimerSnapshot(snapshot) {
   return { ...assertTimerSnapshot(snapshot) };
 }
 
-function createExpirationOccurrenceId(snapshot) {
-  assertTimerSnapshot(snapshot);
+function buildExpirationOccurrenceId(snapshot) {
   return `timer-expiration:${JSON.stringify([
     snapshot.mode,
     snapshot.stepId,
@@ -217,7 +259,13 @@ function createExpirationOccurrenceId(snapshot) {
   ])}`;
 }
 
+function createExpirationOccurrenceId(snapshot) {
+  assertTimerSnapshot(snapshot);
+  return buildExpirationOccurrenceId(snapshot);
+}
+
 module.exports = {
+  CLOCK_BACKWARD_TOLERANCE_MS,
   TIMER_SNAPSHOT_VERSION,
   TIMER_MODES,
   TIMER_STATUSES,

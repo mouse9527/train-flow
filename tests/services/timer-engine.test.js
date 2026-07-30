@@ -461,3 +461,192 @@ test('Attack Round 2: expired 是终态边界，重复 restore/expire 与失败�
   assert.throws(() => engine.resume(expired, END_AT + 240_000), /resume|expired/i);
   assert.deepEqual(expired, before);
 });
+
+test('Attack Round 3: snapshot descriptor 边界必须拒绝 accessor/non-enumerable/null-prototype，同时接受 frozen JSON data', () => {
+  const engine = loadEngine();
+  const valid = timerOf(startStep(engine));
+  let getterCalls = 0;
+  const accessor = { ...valid };
+  Object.defineProperty(accessor, 'expectedEndAt', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return END_AT;
+    }
+  });
+  const nonEnumerable = { ...valid };
+  Object.defineProperty(nonEnumerable, 'checkpointAt', {
+    enumerable: false,
+    value: START_AT
+  });
+  const nullPrototype = Object.assign(Object.create(null), valid);
+
+  for (const snapshot of [accessor, nonEnumerable, nullPrototype, []]) {
+    assert.throws(
+      () => engine.restore(snapshot, START_AT + 1_000),
+      /snapshot|plain|prototype|enumerable|JSON|object/i
+    );
+  }
+  assert.equal(getterCalls, 0, 'validation must inspect descriptors without invoking getters');
+
+  const frozen = Object.freeze({ ...valid });
+  const restored = timerOf(engine.restore(frozen, START_AT + 1_000));
+  assert.equal(restored.status, 'running');
+  assert.equal(restored.remainingSecondsAtCheckpoint, 299);
+  assert.notStrictEqual(restored, frozen);
+});
+
+test('Attack Round 3: start input 也必须是 inert JSON data，不能执行 accessor getter', () => {
+  const engine = loadEngine();
+  let getterCalls = 0;
+  const input = {
+    mode: 'step',
+    stepId: 'step_accessor_attack',
+    setNumber: null
+  };
+  Object.defineProperty(input, 'durationSeconds', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 300;
+    }
+  });
+
+  let accepted;
+  assert.throws(
+    () => {
+      accepted = engine.start(input, START_AT);
+    },
+    /input|plain|JSON|accessor|enumerable|data/i
+  );
+  assert.equal(accepted, undefined);
+  assert.equal(getterCalls, 0, 'pure start validation must not execute caller code');
+});
+
+test('Attack Round 3: expired occurrence ID 必须由 timer identity 重算校验，不能替换为另一 timer 的合法 ID', () => {
+  const engine = loadEngine();
+  const first = timerOf(startStep(engine));
+  const second = timerOf(
+    startStep(engine, { stepId: 'step_occurrence_collision_target' }, START_AT + 1)
+  );
+  const firstExpired = timerOf(engine.expire(first, first.expectedEndAt));
+  const secondExpired = timerOf(engine.expire(second, second.expectedEndAt));
+  const forged = {
+    ...firstExpired,
+    expirationOccurrenceId: secondExpired.expirationOccurrenceId
+  };
+
+  assert.notEqual(firstExpired.expirationOccurrenceId, secondExpired.expirationOccurrenceId);
+  assert.throws(
+    () => engine.restore(forged, END_AT + 60_000),
+    /occurrence|identity|deterministic|mismatch|snapshot/i
+  );
+});
+
+test('Attack Round 3: v1 snapshot 必须拒绝无法由合法转换产生的时间顺序组合', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const paused = timerOf(engine.pause(running, START_AT + 1_000));
+  const expired = timerOf(engine.expire(running, END_AT));
+  const malformed = [
+    ['clockObservedAt before startedAt', {
+      ...running,
+      checkpointAt: START_AT - 1,
+      clockObservedAt: START_AT - 1
+    }],
+    ['running deadline before checkpoint', {
+      ...running,
+      expectedEndAt: START_AT + 999,
+      checkpointAt: START_AT + 1_000,
+      clockObservedAt: START_AT + 1_000
+    }],
+    ['pausedAt differs from checkpointAt', { ...paused, pausedAt: paused.checkpointAt + 1 }],
+    ['expiredAt after checkpointAt', { ...expired, expiredAt: expired.checkpointAt + 1 }],
+    ['expiredAt before startedAt', { ...expired, expiredAt: expired.startedAt - 1 }]
+  ];
+  const accepted = [];
+
+  for (const [label, snapshot] of malformed) {
+    try {
+      engine.restore(snapshot, END_AT + 60_000);
+      accepted.push(label);
+    } catch {
+      // Expected: malformed persisted state fails closed.
+    }
+  }
+
+  assert.deepEqual(accepted, [], `accepted impossible timer states: ${accepted.join(', ')}`);
+});
+
+test('Attack Round 3: 删除 anomaly 标记不得把待确认回拨伪装成普通 paused 后直接 resume', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const anomaly = timerOf(engine.restore(running, START_AT - 6_000));
+  assert.equal(isClockAnomaly(anomaly), true);
+
+  const stripped = { ...anomaly };
+  for (const field of ['clockAnomaly', 'requiresConfirmation', 'reason', 'code']) {
+    delete stripped[field];
+  }
+
+  assert.throws(
+    () => engine.resume(stripped, START_AT + 1_000),
+    /clock|anomaly|confirmation|checkpoint|observed|snapshot/i
+  );
+});
+
+test('Attack Round 3: state-changing command 观察到 anchor 回拨超过 5 秒时不得返回普通 pause/adjust 状态', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const normalResults = [];
+  const commands = [
+    ['pause', () => engine.pause(running, START_AT - 6_000)],
+    ['adjust', () => engine.adjust(running, 30, START_AT - 6_000)]
+  ];
+
+  for (const [label, command] of commands) {
+    try {
+      const result = command();
+      if (statusOf(result) !== 'paused' || !isClockAnomaly(result)) {
+        normalResults.push(label);
+      }
+    } catch {
+      // Rejecting the command also safely prevents the clock-anomaly bypass.
+    }
+  }
+
+  assert.deepEqual(
+    normalResults,
+    [],
+    `commands bypassed the monotonic clock anchor: ${normalResults.join(', ')}`
+  );
+});
+
+test('Attack Round 3: safe-integer 上界与同一 nowMs 重放必须分别 fail closed 和完全确定', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const maxAdjustment =
+    Number.MAX_SAFE_INTEGER - (Number.MAX_SAFE_INTEGER % 30);
+  const nearAdjustmentOverflow = { ...running, adjustmentSeconds: maxAdjustment };
+  const nearDeadlineOverflow = {
+    ...running,
+    expectedEndAt: Number.MAX_SAFE_INTEGER,
+    remainingSecondsAtCheckpoint: Number.MAX_SAFE_INTEGER
+  };
+
+  assert.throws(
+    () => engine.adjust(nearAdjustmentOverflow, 30, START_AT),
+    /adjust|range|safe/i
+  );
+  assert.throws(
+    () => engine.adjust(nearDeadlineOverflow, 30, START_AT),
+    /deadline|range|safe/i
+  );
+
+  const first = timerOf(engine.restore(running, START_AT + 1_234));
+  const second = timerOf(
+    engine.restore(JSON.parse(JSON.stringify(running)), START_AT + 1_234)
+  );
+  assert.deepEqual(first, second);
+  assert.deepEqual(running, timerOf(startStep(engine)));
+});
