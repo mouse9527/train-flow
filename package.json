@@ -1,0 +1,9 @@
+{
+  "name": "train-flow-miniprogram",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TrainFlow native WeChat Mini Program shell — no runtime npm dependencies.",
+  "scripts": {
+    "test": "node --test tests/**/*.test.js"
+  }
+}

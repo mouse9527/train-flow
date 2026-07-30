@@ -1,0 +1,5 @@
+<view class="tf-page">
+  <view class="tf-empty-state">
+    <text class="tf-caption">训练执行页即将上线</text>
+  </view>
+</view>
