@@ -6,6 +6,7 @@ const {
   SETTINGS_SCHEMA_VERSION,
   TIMEZONE_PATTERN
 } = require('./constants');
+const { assertWorkoutSession } = require('../domain/execution/workout-session');
 
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -142,6 +143,9 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   }
   if (!Array.isArray(snapshot.plans) || !Array.isArray(snapshot.records)) {
     throw new Error('plans and records must be arrays');
+  }
+  if (snapshot.activeSession !== null) {
+    assertWorkoutSession(snapshot.activeSession);
   }
   assertPlainObject(snapshot.statisticsProjection, 'statisticsProjection');
   assertPlainObject(snapshot.sync, 'sync');
