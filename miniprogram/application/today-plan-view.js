@@ -180,7 +180,10 @@ function buildWeekSummary(weekPlans, weekRecords, startDate, endDate) {
 function findTodayRecord(weekRecords, selectedDate) {
   return weekRecords
     .filter((candidate) => validRecord(candidate, selectedDate, selectedDate))
-    .sort((left, right) => (right.endedAt || 0) - (left.endedAt || 0))[0] || null;
+    .sort((left, right) => {
+      const completionDelta = Number(right.status === 'completed') - Number(left.status === 'completed');
+      return completionDelta || (right.endedAt || 0) - (left.endedAt || 0);
+    })[0] || null;
 }
 
 function matchesActiveSession(activeSession, plan, selectedDate) {

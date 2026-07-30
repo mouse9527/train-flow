@@ -295,3 +295,32 @@ test('TodayPlanView rejects invalid dates and ignores deleted or out-of-range re
   assert.equal(view.state, 'scheduled');
   assert.equal(view.weekSummary.completedCount, 0);
 });
+
+test('Attack: a completed fact wins over a later skipped record and duplicate sessions count once', () => {
+  const monday = plan();
+  const completed = record({ id: 'record_completed', endedAt: 1785719200000 });
+  const laterSkipped = record({
+    id: 'record_later_skipped',
+    status: 'skipped',
+    elapsedActiveSeconds: 0,
+    endedAt: 1785719500000
+  });
+  const secondCompleted = record({
+    id: 'record_second_completed',
+    elapsedActiveSeconds: 1800,
+    endedAt: 1785719400000
+  });
+
+  const view = buildTodayPlanView({
+    selectedDate: monday.trainingDate,
+    plan: monday,
+    weekPlans: [monday],
+    weekRecords: [completed, laterSkipped, secondCompleted],
+    activeSession: null
+  });
+
+  assert.equal(view.state, 'completed');
+  assert.equal(view.completedSessionSummary.recordId, 'record_second_completed');
+  assert.equal(view.weekSummary.completedCount, 1);
+  assert.equal(view.weekSummary.completionRate, 100);
+});
