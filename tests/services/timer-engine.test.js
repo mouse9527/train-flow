@@ -650,3 +650,187 @@ test('Attack Round 3: safe-integer 上界与同一 nowMs 重放必须分别 fail
   assert.deepEqual(first, second);
   assert.deepEqual(running, timerOf(startStep(engine)));
 });
+
+test('Attack Round 4: clock guard 必须在 exact 5000ms 容差与 5001ms 异常边界保持一致', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const exactTolerance = START_AT - 5_000;
+  const beyondTolerance = START_AT - 5_001;
+
+  assert.equal(remainingOf(engine.getRemaining(running, exactTolerance)), 305);
+  assert.equal(timerOf(engine.pause(running, exactTolerance)).pauseReason, 'user');
+  assert.equal(
+    timerOf(engine.adjust(running, 30, exactTolerance)).clockObservedAt,
+    START_AT
+  );
+
+  for (const command of [
+    () => engine.getRemaining(running, beyondTolerance),
+    () => engine.pause(running, beyondTolerance),
+    () => engine.adjust(running, 30, beyondTolerance)
+  ]) {
+    assert.throws(command, /clock|anomaly|confirmation/i);
+  }
+
+  const restored = timerOf(engine.restore(running, beyondTolerance));
+  assert.equal(restored.status, 'paused');
+  assert.equal(restored.pauseReason, 'clock-anomaly');
+  assert.equal(isClockAnomaly(restored), true);
+});
+
+test('Attack Round 4: 普通 paused timer 遇到回拨必须存在进入 anomaly 并确认恢复的闭环', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const paused = timerOf(engine.pause(running, START_AT + 10_000));
+  const rollbackNow = START_AT + 4_999;
+  let resumed;
+
+  try {
+    resumed = timerOf(engine.resume(paused, rollbackNow));
+  } catch (error) {
+    assert.match(error.message, /clock|anomaly|confirmation/i);
+    const detected = timerOf(engine.restore(paused, rollbackNow));
+    assert.equal(
+      detected.pauseReason,
+      'clock-anomaly',
+      'when resume is blocked, restore must expose a confirmable anomaly state'
+    );
+    assert.equal(isClockAnomaly(detected), true);
+    resumed = timerOf(engine.resume(detected, START_AT + 10_001));
+  }
+
+  assert.equal(resumed.status, 'running');
+  assert.equal(resumed.pauseReason, null);
+  assert.equal(
+    resumed.expectedEndAt,
+    resumed.checkpointAt + paused.remainingSecondsAtCheckpoint * 1_000
+  );
+});
+
+test('Attack Round 4: paused adjust 的返回值必须继续满足 pausedAt/checkpointAt invariant 并可再次使用', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const paused = timerOf(engine.pause(running, START_AT + 1_000));
+  const before = JSON.parse(JSON.stringify(paused));
+  const adjustAt = START_AT + 2_000;
+
+  const adjusted = timerOf(engine.adjust(paused, 30, adjustAt));
+
+  assert.deepEqual(paused, before, 'adjust must not mutate the paused input');
+  assert.equal(adjusted.status, 'paused');
+  assert.equal(adjusted.pauseReason, 'user');
+  assert.equal(adjusted.checkpointAt, adjustAt);
+  assert.equal(adjusted.pausedAt, adjusted.checkpointAt);
+  assert.equal(adjusted.remainingSecondsAtCheckpoint, 329);
+  assert.equal(remainingOf(engine.getRemaining(adjusted, adjustAt + 60_000)), 329);
+  assert.deepEqual(
+    timerOf(engine.restore(JSON.parse(JSON.stringify(adjusted)), adjustAt + 60_000)),
+    adjusted
+  );
+});
+
+test('Attack Round 4: v1 canonical numbers 必须拒绝或规范化 -0，并拒绝无法由 start 产生的 MAX_SAFE duration snapshot', () => {
+  const engine = loadEngine();
+  const violations = [];
+  try {
+    const negativeZero = timerOf(
+      engine.start(
+        { mode: 'step', durationSeconds: 1, stepId: 'step_negative_zero', setNumber: null },
+        -0
+      )
+    );
+    if (
+      Object.is(negativeZero.startedAt, -0) ||
+      Object.is(negativeZero.checkpointAt, -0) ||
+      Object.is(negativeZero.clockObservedAt, -0)
+    ) {
+      violations.push('negative-zero timestamp escaped canonicalization');
+    }
+  } catch {
+    // Rejecting -0 is also canonical and fail closed.
+  }
+
+  const running = timerOf(startStep(engine));
+  try {
+    engine.restore(
+      { ...running, durationSeconds: Number.MAX_SAFE_INTEGER },
+      START_AT + 1_000
+    );
+    violations.push('unsupported MAX_SAFE duration snapshot was accepted');
+  } catch {
+    // Expected: durationSeconds * 1000 cannot be represented safely.
+  }
+
+  assert.deepEqual(violations, [], violations.join('; '));
+});
+
+test('Attack Round 4: repeated -30 调整不得让 running deadline 越过 nowMs 或 startedAt', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine, { durationSeconds: 10 }));
+  const adjustAt = START_AT + 1_001;
+  const original = JSON.parse(JSON.stringify(running));
+
+  const first = timerOf(engine.adjust(running, -30, adjustAt));
+  const second = timerOf(engine.adjust(first, -30, adjustAt));
+  assert.deepEqual(running, original);
+  for (const snapshot of [first, second]) {
+    assert.equal(snapshot.status, 'running');
+    assert.ok(snapshot.expectedEndAt >= adjustAt);
+    assert.ok(snapshot.expectedEndAt >= snapshot.startedAt);
+    assert.equal(remainingOf(engine.getRemaining(snapshot, adjustAt)), 0);
+  }
+
+  const toleratedBackwards = timerOf(engine.adjust(running, -30, START_AT - 5_000));
+  assert.equal(toleratedBackwards.expectedEndAt, START_AT);
+  assert.equal(remainingOf(engine.getRemaining(toleratedBackwards, START_AT - 5_000)), 5);
+});
+
+test('Attack Round 4: Unicode/分隔符 occurrence ID 必须 canonical、无碰撞且 JSON round-trip 稳定', () => {
+  const engine = loadEngine();
+  const identities = [
+    'step_é',
+    'step_e\u0301',
+    'step_["rest",2]:\\n',
+    'step_\\u2028',
+    `step_${'长'.repeat(1024)}`
+  ];
+  const ids = [];
+
+  for (let index = 0; index < identities.length; index += 1) {
+    const timer = timerOf(
+      startStep(engine, { stepId: identities[index] }, START_AT + index)
+    );
+    const expired = timerOf(engine.expire(timer, timer.expectedEndAt));
+    const persisted = JSON.parse(JSON.stringify(expired));
+    const restored = timerOf(engine.restore(persisted, timer.expectedEndAt + 1));
+    assert.equal(restored.expirationOccurrenceId, expired.expirationOccurrenceId);
+    ids.push(expired.expirationOccurrenceId);
+  }
+
+  assert.equal(new Set(ids).size, identities.length);
+});
+
+test('Attack Round 4: 输出 mutation 与非法命令均不得反向污染输入或其他确定性结果', () => {
+  const engine = loadEngine();
+  const running = timerOf(startStep(engine));
+  const original = JSON.parse(JSON.stringify(running));
+  const first = timerOf(engine.restore(running, START_AT + 1_000));
+  const second = timerOf(engine.restore(running, START_AT + 1_000));
+
+  first.stepId = 'mutated-output';
+  first.remainingSecondsAtCheckpoint = 1;
+  assert.deepEqual(running, original);
+  assert.equal(second.stepId, original.stepId);
+  assert.equal(second.remainingSecondsAtCheckpoint, 299);
+
+  const expired = timerOf(engine.expire(running, END_AT));
+  const expiredBefore = JSON.parse(JSON.stringify(expired));
+  for (const command of [
+    () => engine.pause(expired, END_AT + 1),
+    () => engine.resume(expired, END_AT + 1),
+    () => engine.adjust(expired, 30, END_AT + 1)
+  ]) {
+    assert.throws(command, /expired|status/i);
+  }
+  assert.deepEqual(expired, expiredBefore);
+});

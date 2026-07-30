@@ -70,8 +70,15 @@ function assertClosedFields(value, allowedFields, label) {
 }
 
 function assertSafeInteger(value, label, { minimum = Number.MIN_SAFE_INTEGER } = {}) {
-  if (!Number.isSafeInteger(value) || value < minimum) {
+  if (!Number.isSafeInteger(value) || Object.is(value, -0) || value < minimum) {
     throw new TypeError(`${label} must be a finite safe integer`);
+  }
+}
+
+function assertTimerSeconds(value, label, { minimum = 0 } = {}) {
+  assertSafeInteger(value, label, { minimum });
+  if (!Number.isSafeInteger(value * 1_000)) {
+    throw new RangeError(`${label} is outside the supported timer range`);
   }
 }
 
@@ -107,7 +114,7 @@ function assertStartInput(input) {
     data[field] = Object.getOwnPropertyDescriptor(input, field).value;
   }
   assertTimerIdentity(data);
-  assertSafeInteger(data.durationSeconds, 'timer durationSeconds', { minimum: 1 });
+  assertTimerSeconds(data.durationSeconds, 'timer durationSeconds', { minimum: 1 });
   return data;
 }
 
@@ -145,13 +152,16 @@ function assertTimerSnapshot(snapshot) {
     throw new TypeError(`timer snapshot status must be one of: ${TIMER_STATUSES.join(', ')}`);
   }
 
-  assertSafeInteger(snapshot.durationSeconds, 'timer snapshot durationSeconds', { minimum: 1 });
-  assertSafeInteger(
+  assertTimerSeconds(snapshot.durationSeconds, 'timer snapshot durationSeconds', { minimum: 1 });
+  assertTimerSeconds(
     snapshot.remainingSecondsAtCheckpoint,
     'timer snapshot remainingSecondsAtCheckpoint',
     { minimum: 0 }
   );
   assertSafeInteger(snapshot.startedAt, 'timer snapshot startedAt', { minimum: 0 });
+  if (!Number.isSafeInteger(snapshot.startedAt + snapshot.durationSeconds * 1_000)) {
+    throw new RangeError('timer snapshot durationSeconds produces an unsafe initial deadline');
+  }
   assertSafeInteger(snapshot.checkpointAt, 'timer snapshot checkpointAt', { minimum: 0 });
   assertSafeInteger(snapshot.clockObservedAt, 'timer snapshot clockObservedAt', { minimum: 0 });
   if (snapshot.clockObservedAt < snapshot.checkpointAt) {
@@ -180,6 +190,18 @@ function assertTimerSnapshot(snapshot) {
     }
     if (snapshot.expectedEndAt < snapshot.checkpointAt) {
       throw new TypeError('running timer snapshot deadline cannot be before checkpointAt');
+    }
+    const remainingFromDeadline = Math.ceil(
+      (snapshot.expectedEndAt - snapshot.checkpointAt) / 1_000
+    );
+    assertTimerSeconds(
+      remainingFromDeadline,
+      'running timer snapshot expectedEndAt range'
+    );
+    if (snapshot.remainingSecondsAtCheckpoint !== remainingFromDeadline) {
+      throw new TypeError(
+        'running timer snapshot remainingSecondsAtCheckpoint must match its deadline'
+      );
     }
   }
 

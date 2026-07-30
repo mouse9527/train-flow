@@ -51,6 +51,22 @@ function assertClockObservation(snapshot, nowMs) {
   }
 }
 
+function toClockAnomaly(snapshot, nowMs) {
+  return {
+    ...snapshot,
+    status: 'paused',
+    expectedEndAt: null,
+    checkpointAt: nowMs,
+    clockObservedAt: snapshot.clockObservedAt,
+    pausedAt: nowMs,
+    pauseReason: 'clock-anomaly',
+    clockAnomaly: true,
+    requiresConfirmation: true,
+    reason: 'clock-anomaly',
+    code: 'CLOCK_ANOMALY'
+  };
+}
+
 function getRemaining(snapshot, nowMs) {
   assertTimerSnapshot(snapshot);
   assertNowMs(nowMs);
@@ -163,6 +179,7 @@ function adjust(snapshot, deltaSeconds, nowMs) {
       remainingSecondsAtCheckpoint: adjustedRemaining,
       checkpointAt: nowMs,
       clockObservedAt: Math.max(snapshot.clockObservedAt, nowMs),
+      pausedAt: nowMs,
       adjustmentSeconds
     };
   }
@@ -218,24 +235,16 @@ function restore(snapshot, nowMs) {
   assertTimerSnapshot(snapshot);
   assertNowMs(nowMs);
 
-  if (snapshot.status === 'expired' || snapshot.status === 'paused') {
+  if (snapshot.status === 'expired' || snapshot.pauseReason === 'clock-anomaly') {
     return copyTimerSnapshot(snapshot);
   }
 
   if (snapshot.clockObservedAt - nowMs > CLOCK_BACKWARD_TOLERANCE_MS) {
-    return {
-      ...snapshot,
-      status: 'paused',
-      expectedEndAt: null,
-      checkpointAt: nowMs,
-      clockObservedAt: snapshot.clockObservedAt,
-      pausedAt: nowMs,
-      pauseReason: 'clock-anomaly',
-      clockAnomaly: true,
-      requiresConfirmation: true,
-      reason: 'clock-anomaly',
-      code: 'CLOCK_ANOMALY'
-    };
+    return toClockAnomaly(snapshot, nowMs);
+  }
+
+  if (snapshot.status === 'paused') {
+    return copyTimerSnapshot(snapshot);
   }
 
   const remainingSecondsAtCheckpoint = getRemaining(snapshot, nowMs);
