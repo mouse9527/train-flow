@@ -179,3 +179,100 @@ test('an invalid default set fails before LocalDatabase writes any partial plan'
     []
   );
 });
+
+test('a tombstoned builtin remains deleted and same-version initialization returns active plans only', () => {
+  const storage = new StorageDouble();
+  const runtime = createPersistentPlanningRuntime(storage);
+  runtime.service.initializeDefaultPlans();
+  const monday = runtime.repository.findByDate('2026-08-03');
+  runtime.repository.delete(monday.id, monday.revision);
+  storage.clearOperations();
+
+  const rerun = runtime.service.initializeDefaultPlans();
+
+  assert.equal(rerun.created, 0);
+  assert.equal(rerun.plans.length, 6);
+  assert.equal(rerun.plans.some(({ id }) => id === monday.id), false);
+  assert.equal(runtime.repository.findById(monday.id), null);
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('a truly missing builtin is repaired even when its date has only a historical tombstone', () => {
+  const storage = new StorageDouble();
+  const runtime = createPersistentPlanningRuntime(storage);
+  runtime.service.initializeDefaultPlans();
+  const snapshot = runtime.database.load();
+  runtime.database.commit((draft) => {
+    const missing = draft.plans.find(({ id }) => id === 'plan_20260803_builtin');
+    draft.plans = draft.plans.filter(({ id }) => id !== missing.id);
+    draft.plans.push({
+      ...missing,
+      id: 'historical_plan_20260803',
+      status: 'deleted',
+      deletedAt: FIXED_NOW,
+      templateSource: null
+    });
+  }, snapshot.localRevision);
+  storage.clearOperations();
+
+  const repaired = runtime.service.initializeDefaultPlans();
+
+  assert.equal(repaired.created, 1);
+  assert.equal(repaired.plans.length, 7);
+  assert.equal(runtime.repository.findByDate('2026-08-03').id, 'plan_20260803_builtin');
+  assert.equal(
+    runtime.database.load().plans.find(({ id }) => id === 'historical_plan_20260803').status,
+    'deleted'
+  );
+});
+
+test('same-version initialization preserves a structurally valid user edit without writing', () => {
+  const storage = new StorageDouble();
+  const runtime = createPersistentPlanningRuntime(storage);
+  runtime.service.initializeDefaultPlans();
+  const monday = runtime.repository.findByDate('2026-08-03');
+  runtime.repository.save({ ...monday, title: '用户编辑后的计划' }, monday.revision);
+  storage.clearOperations();
+
+  const rerun = runtime.service.initializeDefaultPlans();
+
+  assert.equal(rerun.created, 0);
+  assert.equal(rerun.plans.find(({ id }) => id === monday.id).title, '用户编辑后的计划');
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('same-version initialization fails closed on duplicate builtin IDs without writing', () => {
+  const storage = new StorageDouble();
+  const runtime = createPersistentPlanningRuntime(storage);
+  runtime.service.initializeDefaultPlans();
+  const snapshot = runtime.database.load();
+  runtime.database.commit((draft) => {
+    draft.plans.push(structuredClone(draft.plans[0]));
+  }, snapshot.localRevision);
+  storage.clearOperations();
+
+  assert.throws(
+    () => runtime.service.initializeDefaultPlans(),
+    (error) => error && error.code === 'PLAN_TEMPLATE_INTEGRITY_ERROR'
+  );
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('same-version initialization fails closed on a structurally corrupt builtin without writing', () => {
+  const storage = new StorageDouble();
+  const runtime = createPersistentPlanningRuntime(storage);
+  runtime.service.initializeDefaultPlans();
+  const snapshot = runtime.database.load();
+  runtime.database.commit((draft) => {
+    const monday = draft.plans.find(({ id }) => id === 'plan_20260803_builtin');
+    monday.title = '';
+    monday.steps = [];
+  }, snapshot.localRevision);
+  storage.clearOperations();
+
+  assert.throws(
+    () => runtime.service.initializeDefaultPlans(),
+    (error) => error && error.code === 'PLAN_TEMPLATE_INTEGRITY_ERROR'
+  );
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+});

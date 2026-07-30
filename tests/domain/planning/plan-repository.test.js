@@ -218,6 +218,101 @@ test('PlanRepository delete writes a revisioned tombstone and hides it from acti
   );
 });
 
+test('PlanRepository preserves a tombstone while allowing a new plan ID on the same date', () => {
+  const { database, repository } = createPersistentRepository();
+  const first = repository.save(makePlan(makeStep('manual'), {
+    id: 'plan_first',
+    trainingDate: '2026-08-10'
+  }), 0);
+  const tombstone = repository.delete(first.id, first.revision);
+
+  const replacement = repository.save(makePlan(makeStep('manual'), {
+    id: 'plan_replacement',
+    trainingDate: first.trainingDate,
+    title: 'replacement'
+  }), 0);
+
+  assert.equal(repository.findByDate(first.trainingDate).id, replacement.id);
+  assert.equal(repository.findById(first.id), null);
+  assert.deepEqual(
+    database.load().plans.find(({ id }) => id === first.id),
+    tombstone
+  );
+});
+
+test('PlanRepository commit re-check still rejects a newly active date owner after the pre-check', () => {
+  const requested = makePlan(makeStep('manual'), {
+    id: 'plan_requested',
+    trainingDate: '2026-08-10'
+  });
+  const baseline = {
+    localRevision: 0,
+    plans: []
+  };
+  let committed = false;
+  const repository = createPlanRepository({
+    now: () => SAVE_NOW,
+    database: {
+      load() {
+        return structuredClone(baseline);
+      },
+      commit(mutator) {
+        const draft = structuredClone(baseline);
+        draft.plans.push(makePlan(makeStep('manual'), {
+          id: 'concurrent_owner',
+          trainingDate: requested.trainingDate
+        }));
+        mutator(draft);
+        committed = true;
+        return draft;
+      }
+    }
+  });
+
+  assert.throws(
+    () => repository.save(requested, 0),
+    (error) => error && error.code === 'PLAN_DATE_CONFLICT'
+  );
+  assert.equal(committed, false);
+});
+
+test('PlanRepository commit re-check ignores a historical tombstone added after the pre-check', () => {
+  const requested = makePlan(makeStep('manual'), {
+    id: 'plan_requested',
+    trainingDate: '2026-08-10'
+  });
+  const baseline = {
+    localRevision: 0,
+    plans: []
+  };
+  const historical = makePlan(makeStep('manual'), {
+    id: 'historical_owner',
+    trainingDate: requested.trainingDate,
+    status: 'deleted',
+    deletedAt: SAVE_NOW,
+    revision: 2
+  });
+  const repository = createPlanRepository({
+    now: () => SAVE_NOW,
+    database: {
+      load() {
+        return structuredClone(baseline);
+      },
+      commit(mutator) {
+        const draft = structuredClone(baseline);
+        draft.plans.push(structuredClone(historical));
+        mutator(draft);
+        return draft;
+      }
+    }
+  });
+
+  const saved = repository.save(requested, 0);
+
+  assert.equal(saved.id, requested.id);
+  assert.equal(saved.status, 'scheduled');
+});
+
 test('PlanCopyService deep-copies a plan with fresh plan/step IDs while preserving normalized values', () => {
   const source = createDefaultPlans({ now: () => FIXED_NOW })[0];
   let sequence = 0;

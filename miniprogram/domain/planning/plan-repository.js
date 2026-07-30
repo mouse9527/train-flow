@@ -30,6 +30,28 @@ function activePlan(plan) {
   return plan && plan.status !== 'deleted';
 }
 
+function assertPersistedTemplateIntegrity(records, candidateIds, templateVersion) {
+  const seenIds = new Set();
+  for (const record of records) {
+    if (!candidateIds.has(record.id) || seenIds.has(record.id)) {
+      throw createRepositoryError(
+        `Persisted template ${templateVersion} has unexpected or duplicate plan ID ${record.id}`,
+        'PLAN_TEMPLATE_INTEGRITY_ERROR'
+      );
+    }
+    seenIds.add(record.id);
+    try {
+      assertWorkoutPlan(record);
+    } catch (error) {
+      throw createRepositoryError(
+        `Persisted template ${templateVersion} contains invalid plan ${record.id}: ${error.message}`,
+        'PLAN_TEMPLATE_INTEGRITY_ERROR'
+      );
+    }
+  }
+  return seenIds;
+}
+
 function validateDefaultSet(plans, templateVersion) {
   if (!Array.isArray(plans) || plans.length === 0) {
     throw new Error('Default plans must be a non-empty array');
@@ -70,21 +92,35 @@ class PlanRepository {
       ({ templateSource }) => templateSource === templateVersion
     );
     const candidateIds = new Set(candidates.map(({ id }) => id));
+    const persistedTemplateIds = assertPersistedTemplateIntegrity(
+      existingFromTemplate,
+      candidateIds,
+      templateVersion
+    );
+    for (const candidate of candidates) {
+      const sameId = snapshot.plans.find(({ id }) => id === candidate.id);
+      if (sameId && sameId.templateSource !== templateVersion) {
+        throw createRepositoryError(
+          `Plan ID ${candidate.id} is owned by a different template source`,
+          'PLAN_TEMPLATE_INTEGRITY_ERROR'
+        );
+      }
+    }
     if (
       existingFromTemplate.length === candidates.length &&
-      existingFromTemplate.every(({ id }) => candidateIds.has(id))
+      persistedTemplateIds.size === candidateIds.size
     ) {
       return {
         created: 0,
         templateVersion,
-        plans: clone(existingFromTemplate).sort((left, right) => (
+        plans: clone(existingFromTemplate).filter(activePlan).sort((left, right) => (
           left.trainingDate.localeCompare(right.trainingDate)
         ))
       };
     }
 
     const existingIds = new Set(snapshot.plans.map(({ id }) => id));
-    const existingDates = new Set(snapshot.plans.map(({ trainingDate }) => trainingDate));
+    const existingDates = new Set(snapshot.plans.filter(activePlan).map(({ trainingDate }) => trainingDate));
     const missing = candidates.filter(({ id }) => !existingIds.has(id));
     for (const plan of missing) {
       if (existingDates.has(plan.trainingDate)) {
@@ -96,9 +132,18 @@ class PlanRepository {
     }
 
     const committed = this.database.commit((draft) => {
+      const activeDates = new Set(draft.plans.filter(activePlan).map(({ trainingDate }) => trainingDate));
+      for (const plan of missing) {
+        if (activeDates.has(plan.trainingDate)) {
+          throw createRepositoryError(
+            `Plan already exists for trainingDate ${plan.trainingDate}`,
+            'PLAN_DATE_CONFLICT'
+          );
+        }
+      }
       draft.plans.push(...clone(missing));
     }, snapshot.localRevision);
-    const persisted = committed.plans.filter(({ id }) => candidateIds.has(id));
+    const persisted = committed.plans.filter((plan) => candidateIds.has(plan.id) && activePlan(plan));
     return {
       created: missing.length,
       templateVersion,
@@ -158,7 +203,9 @@ class PlanRepository {
       throw createRepositoryError(`Plan ${plan.id} is deleted`, 'PLAN_DELETED');
     }
     const dateOwner = snapshot.plans.find(
-      ({ id, trainingDate }) => id !== plan.id && trainingDate === plan.trainingDate
+      ({ id, trainingDate, status }) => (
+        id !== plan.id && status !== 'deleted' && trainingDate === plan.trainingDate
+      )
     );
     if (dateOwner) {
       throw createRepositoryError(
@@ -188,7 +235,9 @@ class PlanRepository {
         );
       }
       if (draft.plans.some(
-        ({ id, trainingDate }) => id !== candidate.id && trainingDate === candidate.trainingDate
+        ({ id, trainingDate, status }) => (
+          id !== candidate.id && status !== 'deleted' && trainingDate === candidate.trainingDate
+        )
       )) {
         throw createRepositoryError(
           `Plan already exists for trainingDate ${candidate.trainingDate}`,
