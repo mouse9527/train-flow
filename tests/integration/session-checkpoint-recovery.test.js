@@ -320,6 +320,64 @@ test('checksum-valid impossible Session state fails load and startup recovery wi
   assert.deepEqual([...runtime.storage.values.entries()], before);
 });
 
+test('checksum-valid missing current set history fails startup recovery without rewriting data', () => {
+  const runtime = createRuntime();
+  const strengthPlan = clone(runtime.plans[0]);
+  strengthPlan.id = 'plan_strength_recovery';
+  strengthPlan.trainingDate = '2026-08-10';
+  strengthPlan.steps = [{ ...strengthPlan.steps[3], order: 1 }];
+  runtime.database.commit((draft) => {
+    draft.plans.push(strengthPlan);
+  });
+  const session = runtime.service.startSession({
+    planId: strengthPlan.id,
+    commandKey: 'missing_set_history_start',
+    nowMs: NOW
+  });
+  runtime.service.execute({
+    type: 'complete_set',
+    expectedSessionRevision: 1,
+    commandKey: 'missing_set_history_complete',
+    nowMs: NOW + 1_000,
+    payload: {
+      stepId: session.planSnapshot.steps[0].id,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    }
+  });
+  runtime.service.checkpointOnHide({
+    expectedSessionRevision: 2,
+    commandKey: 'missing_set_history_checkpoint',
+    nowMs: NOW + 1_500
+  });
+
+  for (const key of [`${SLOT_PREFIX}a`, `${SLOT_PREFIX}b`]) {
+    const snapshot = clone(runtime.storage.values.get(key));
+    assert.equal(snapshot.activeSession.currentSet, 2);
+    assert.equal(snapshot.activeSession.timer.mode, 'rest');
+    snapshot.activeSession.stepResults = [];
+    delete snapshot.checksum;
+    snapshot.checksum = computeChecksum(snapshot);
+    runtime.storage.values.set(key, snapshot);
+  }
+  const before = clone([...runtime.storage.values.entries()]);
+  const beforeWrites = snapshotWriteCount(runtime.storage);
+
+  assert.throws(() => runtime.database.load(), /session|currentSet|stepResult/i);
+  const recovered = runtime.service.restoreOnStartup({
+    expectedSessionRevision: 3,
+    commandKey: 'missing_set_history_restore',
+    nowMs: NOW + 2_000
+  });
+
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.error.code, 'SESSION_RECOVERY_REQUIRED');
+  assert.equal(recovered.error.recoverable, true);
+  assert.equal(snapshotWriteCount(runtime.storage), beforeWrites);
+  assert.deepEqual([...runtime.storage.values.entries()], before);
+});
+
 test('application replaces completed and aborted Sessions while terminal commands remain rejected', () => {
   for (const terminalStatus of ['completed', 'aborted']) {
     const ids = [`session_${terminalStatus}`, `session_after_${terminalStatus}`];

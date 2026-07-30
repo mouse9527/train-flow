@@ -416,6 +416,13 @@ function assertWorkoutSession(session) {
     if (session.currentSet !== null && session.currentSet > currentStep.sets) {
       throw new TypeError('session.currentSet cannot exceed current step sets');
     }
+    if (
+      needsSet &&
+      session.currentSet > 1 &&
+      !session.stepResults.some(({ stepId }) => stepId === currentStep.id)
+    ) {
+      throw new TypeError('session currentSet after 1 requires the current stepResult');
+    }
   }
   return session;
 }

@@ -274,6 +274,19 @@ test('setResults must be contiguous and aligned with currentSet', () => {
   }
 });
 
+test('set-tracking currentSet after one requires the current in-progress stepResult', () => {
+  const initialStrength = startedSession(threeSetStrengthPlan());
+  const missingCurrentResult = structuredClone(initialStrength);
+  missingCurrentResult.currentSet = 2;
+
+  assert.equal(assertWorkoutSession(initialStrength), initialStrength);
+  assert.equal(assertWorkoutSession(startedSession(singleTimedPlan())).currentSet, null);
+  assert.throws(
+    () => assertWorkoutSession(missingCurrentResult),
+    /session|currentSet|stepResult/i
+  );
+});
+
 test('commands require revision and provide replay-safe idempotency without mutating input', () => {
   const initial = startedSession();
   const start = command(
