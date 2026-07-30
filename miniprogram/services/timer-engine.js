@@ -81,6 +81,13 @@ function getRemaining(snapshot, nowMs) {
   return Math.max(0, Math.ceil((snapshot.expectedEndAt - nowMs) / 1_000));
 }
 
+function materializeExpiredRunning(snapshot, nowMs) {
+  if (snapshot.status === 'running' && nowMs > snapshot.expectedEndAt) {
+    return expire(snapshot, nowMs);
+  }
+  return null;
+}
+
 function pause(snapshot, nowMs) {
   assertTimerSnapshot(snapshot);
   assertNowMs(nowMs);
@@ -90,6 +97,10 @@ function pause(snapshot, nowMs) {
   }
   if (snapshot.status !== 'running') {
     throw new Error(`cannot pause timer with status ${snapshot.status}`);
+  }
+  const expired = materializeExpiredRunning(snapshot, nowMs);
+  if (expired !== null) {
+    return expired;
   }
   assertClockObservation(snapshot, nowMs);
 
@@ -110,7 +121,7 @@ function resume(snapshot, nowMs) {
   assertNowMs(nowMs);
 
   if (snapshot.status === 'running') {
-    return copyTimerSnapshot(snapshot);
+    return materializeExpiredRunning(snapshot, nowMs) || copyTimerSnapshot(snapshot);
   }
   if (snapshot.status !== 'paused') {
     throw new Error(`cannot resume timer with status ${snapshot.status}`);
@@ -160,6 +171,10 @@ function adjust(snapshot, deltaSeconds, nowMs) {
   }
   if (snapshot.pauseReason === 'clock-anomaly') {
     throw new Error('cannot adjust timer before confirming clock anomaly');
+  }
+  const expired = materializeExpiredRunning(snapshot, nowMs);
+  if (expired !== null) {
+    return expired;
   }
   assertClockObservation(snapshot, nowMs);
 
@@ -247,6 +262,10 @@ function restore(snapshot, nowMs) {
     return copyTimerSnapshot(snapshot);
   }
 
+  const expired = materializeExpiredRunning(snapshot, nowMs);
+  if (expired !== null) {
+    return expired;
+  }
   const remainingSecondsAtCheckpoint = getRemaining(snapshot, nowMs);
   if (remainingSecondsAtCheckpoint === 0) {
     return expire(snapshot, nowMs);
