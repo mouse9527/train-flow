@@ -239,6 +239,94 @@ test('timer identity must match both current step ID and supported step kind', (
   );
 });
 
+test('timed execution commands adjust the current timer with revisioned plus or minus 30 second intents', () => {
+  const session = startedSession(singleTimedPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+  const started = applyWorkoutCommand(
+    session,
+    command('start_step', 1, 'timed_adjust_start', NOW, { stepId })
+  ).session;
+
+  const extended = applyWorkoutCommand(
+    started,
+    command('adjust_timer', 2, 'timed_adjust_plus', NOW + 10_000, { deltaSeconds: 30 })
+  ).session;
+  assert.equal(extended.timer.remainingSecondsAtCheckpoint, 320);
+  assert.equal(extended.timer.adjustmentSeconds, 30);
+  assert.equal(extended.sessionRevision, 3);
+
+  const shortened = applyWorkoutCommand(
+    extended,
+    command('adjust_timer', 3, 'timed_adjust_minus', NOW + 10_000, { deltaSeconds: -30 })
+  ).session;
+  assert.equal(shortened.timer.remainingSecondsAtCheckpoint, 290);
+  assert.equal(shortened.timer.adjustmentSeconds, 0);
+  assert.equal(shortened.sessionRevision, 4);
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      shortened,
+      command('adjust_timer', 4, 'timed_adjust_invalid', NOW + 10_000, { deltaSeconds: 15 })
+    ),
+    /30|delta/i
+  );
+});
+
+test('skip and early complete advance a running timed step without pretending the timer expired', () => {
+  const base = startedSession(timedPlan());
+  const firstStepId = base.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    base,
+    command('start_step', 1, 'timed_advance_start', NOW, { stepId: firstStepId })
+  ).session;
+
+  const skipped = applyWorkoutCommand(
+    running,
+    command('skip_step', 2, 'timed_advance_skip', NOW + 10_000, { stepId: firstStepId })
+  ).session;
+  assert.equal(skipped.currentStepIndex, 1);
+  assert.equal(skipped.timer, null);
+  assert.equal(skipped.stepResults[0].status, 'skipped');
+  assert.equal(skipped.stepResults[0].completedAt, NOW + 10_000);
+
+  const secondStepId = skipped.planSnapshot.steps[1].id;
+  const secondRunning = applyWorkoutCommand(
+    skipped,
+    command('start_step', 3, 'timed_advance_second_start', NOW + 10_000, { stepId: secondStepId })
+  ).session;
+  const completed = applyWorkoutCommand(
+    secondRunning,
+    command('early_complete_step', 4, 'timed_advance_early', NOW + 20_000, { stepId: secondStepId })
+  ).session;
+  assert.equal(completed.currentStepIndex, 2);
+  assert.equal(completed.timer, null);
+  assert.equal(completed.stepResults[1].status, 'completed');
+  assert.equal(completed.sessionRevision, 5);
+});
+
+test('previous step command reopens the prior timed result while retaining a revision audit record', () => {
+  const base = startedSession(timedPlan());
+  const firstStepId = base.planSnapshot.steps[0].id;
+  const advanced = applyWorkoutCommand(
+    applyWorkoutCommand(
+      base,
+      command('start_step', 1, 'previous_start', NOW, { stepId: firstStepId })
+    ).session,
+    command('early_complete_step', 2, 'previous_complete', NOW + 10_000, { stepId: firstStepId })
+  ).session;
+
+  const reopened = applyWorkoutCommand(
+    advanced,
+    command('previous_step', 3, 'previous_reopen', NOW + 20_000)
+  ).session;
+  assert.equal(reopened.currentStepIndex, 0);
+  assert.equal(reopened.timer, null);
+  assert.equal(reopened.stepResults[0].status, 'in_progress');
+  assert.equal(reopened.stepResults[0].completedAt, null);
+  assert.equal(reopened.processedCommands.at(-1).type, 'previous_step');
+  assert.equal(reopened.sessionRevision, 4);
+});
+
 test('timer mode and duration must remain bound to the current PlanSnapshot step', () => {
   const timed = startedSession(singleTimedPlan());
   const timedStepId = timed.planSnapshot.steps[0].id;

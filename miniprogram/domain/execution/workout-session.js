@@ -40,13 +40,20 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   checkpoint: Object.freeze(['reason']),
   pause: Object.freeze(['reason']),
   resume: Object.freeze(['reason']),
+  adjust_timer: Object.freeze(['deltaSeconds']),
   complete_step: Object.freeze(['stepId']),
+  early_complete_step: Object.freeze(['stepId']),
+  skip_step: Object.freeze(['stepId']),
+  previous_step: Object.freeze([]),
   complete_set: Object.freeze(['stepId', 'setNumber', 'reps', 'weightKg']),
   abort: Object.freeze(['reason'])
 });
 const BUSINESS_PROGRESSION_COMMANDS = Object.freeze([
   'start_step',
   'complete_step',
+  'early_complete_step',
+  'skip_step',
+  'previous_step',
   'complete_set'
 ]);
 const STEP_RESULT_FIELDS = Object.freeze(['stepId', 'status', 'completedAt', 'setResults']);
@@ -187,13 +194,13 @@ function assertStepResult(result, index) {
   const label = `session.stepResults[${index}]`;
   assertClosedObject(result, STEP_RESULT_FIELDS, label);
   assertNonEmptyString(result.stepId, `${label}.stepId`);
-  if (result.status !== 'completed' && result.status !== 'in_progress') {
-    throw new TypeError(`${label}.status must be completed or in_progress`);
+  if (!['completed', 'skipped', 'in_progress'].includes(result.status)) {
+    throw new TypeError(`${label}.status must be completed, skipped or in_progress`);
   }
   if (result.completedAt !== null) {
     assertSafeInteger(result.completedAt, `${label}.completedAt`);
   }
-  if ((result.status === 'completed') !== (result.completedAt !== null)) {
+  if ((result.status !== 'in_progress') !== (result.completedAt !== null)) {
     throw new TypeError(`${label} status and completedAt must agree`);
   }
   if (!Array.isArray(result.setResults)) {
@@ -314,8 +321,8 @@ function assertWorkoutSession(session) {
     if (resultIndex > session.currentStepIndex) {
       throw new TypeError('session.stepResults cannot contain future PlanSnapshot steps');
     }
-    if (resultIndex < session.currentStepIndex && result.status !== 'completed') {
-      throw new TypeError('session prior stepResults must be completed');
+    if (resultIndex < session.currentStepIndex && result.status === 'in_progress') {
+      throw new TypeError('session prior stepResults must be terminal');
     }
     if (
       session.status !== 'completed' &&
@@ -360,9 +367,9 @@ function assertWorkoutSession(session) {
   });
   for (let index = 0; index < session.currentStepIndex; index += 1) {
     if (!session.stepResults.some(
-      ({ stepId, status }) => stepId === session.planSnapshot.steps[index].id && status === 'completed'
+      ({ stepId, status }) => stepId === session.planSnapshot.steps[index].id && status !== 'in_progress'
     )) {
-      throw new TypeError('session cannot advance past a step without its completed result');
+      throw new TypeError('session cannot advance past a step without its terminal result');
     }
   }
   if (session.status === 'completed' && session.stepResults.length !== session.planSnapshot.steps.length) {
@@ -482,6 +489,11 @@ function assertCommand(command) {
     assertSafeInteger(command.payload.reps, 'command.payload.reps', 1);
     assertNullableMeasurement(command.payload.weightKg, 'command.payload.weightKg');
   }
+  if (command.type === 'adjust_timer') {
+    if (command.payload.deltaSeconds !== 30 && command.payload.deltaSeconds !== -30) {
+      throw new TypeError('command.payload.deltaSeconds must be either 30 or -30');
+    }
+  }
   return command;
 }
 
@@ -561,9 +573,9 @@ function materializeCheckpoint(session, nowMs, timerEngine) {
   session.lastCheckpointAt = nowMs;
 }
 
-function advanceAfterStep(session, stepId, nowMs) {
+function advanceAfterStep(session, stepId, nowMs, status = 'completed') {
   const result = ensureStepResult(session, stepId);
-  result.status = 'completed';
+  result.status = status;
   result.completedAt = nowMs;
   session.timer = null;
   session.currentStepIndex += 1;
@@ -626,6 +638,40 @@ function applyTransition(session, command, timerEngine) {
     session.status = 'in_progress';
     return;
   }
+  if (command.type === 'adjust_timer') {
+    if (session.timer === null) {
+      throw createSessionError('Current step has no timer to adjust', 'SESSION_TIMER_MISSING');
+    }
+    session.timer = timerEngine.adjust(
+      session.timer,
+      command.payload.deltaSeconds,
+      transitionNowMs
+    );
+    return;
+  }
+  if (command.type === 'previous_step') {
+    if (session.currentStepIndex === 0) {
+      throw createSessionError('Session is already at the first step', 'SESSION_PREVIOUS_UNAVAILABLE');
+    }
+    const previousIndex = session.currentStepIndex - 1;
+    const previousStep = session.planSnapshot.steps[previousIndex];
+    if (previousStep.kind === 'strength' || previousStep.kind === 'interval') {
+      throw createSessionError(
+        'Set-tracking steps require a dedicated correction flow',
+        'SESSION_PREVIOUS_UNSUPPORTED'
+      );
+    }
+    const previousResult = findStepResult(session, previousStep.id);
+    if (!previousResult || previousResult.status === 'in_progress') {
+      throw createSessionError('Previous step has no terminal result', 'SESSION_PREVIOUS_UNAVAILABLE');
+    }
+    session.timer = null;
+    session.currentStepIndex = previousIndex;
+    session.currentSet = null;
+    previousResult.status = 'in_progress';
+    previousResult.completedAt = null;
+    return;
+  }
   if (command.payload.stepId !== step.id) {
     throw createSessionError('Command stepId does not match current step', 'SESSION_STEP_MISMATCH');
   }
@@ -686,6 +732,20 @@ function applyTransition(session, command, timerEngine) {
       });
     }
     advanceAfterStep(session, step.id, transitionNowMs);
+    return;
+  }
+  if (command.type === 'early_complete_step') {
+    if (step.kind !== 'timed') {
+      throw createSessionError(
+        'Early completion is only available for timed steps',
+        'SESSION_EARLY_COMPLETE_UNSUPPORTED'
+      );
+    }
+    advanceAfterStep(session, step.id, transitionNowMs);
+    return;
+  }
+  if (command.type === 'skip_step') {
+    advanceAfterStep(session, step.id, transitionNowMs, 'skipped');
     return;
   }
   if (command.type === 'complete_set') {
