@@ -949,6 +949,68 @@ test('page lifecycle delegates to the runtime while interval refresh never mutat
   );
 });
 
+test('develop strength mode selects the deterministic fixture while release and planId navigation stay production-backed', () => {
+  const calls = [];
+  const productionRuntime = {
+    load(input) {
+      calls.push(['production.load', input]);
+      return pageView();
+    }
+  };
+  const fixtureRuntime = {
+    load(input) {
+      calls.push(['fixture.load', input]);
+      return pageView();
+    }
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const makePage = (envVersion) => {
+    const definition = createWorkoutPageDefinition({
+      runtimeFactory(options) {
+        calls.push(['production.factory', options]);
+        return productionRuntime;
+      },
+      fixtureRuntimeFactory(options) {
+        calls.push(['fixture.factory', options]);
+        return fixtureRuntime;
+      },
+      getWx: () => ({
+        getAccountInfoSync() {
+          return { miniProgram: { envVersion } };
+        },
+        setKeepScreenOn() {}
+      }),
+      setIntervalFn: () => 1,
+      clearIntervalFn() {},
+      setTimeoutFn: () => 1,
+      clearTimeoutFn() {}
+    });
+    return {
+      ...definition,
+      data: clone(definition.data),
+      setData(next) { this.data = { ...this.data, ...next }; }
+    };
+  };
+
+  makePage('develop').onLoad({ mode: 'strength', state: 'rest' });
+  assert.equal(calls[0][0], 'fixture.factory');
+  assert.equal(calls[0][1].mode, 'strength');
+  assert.equal(calls[0][1].state, 'rest');
+  assert.deepEqual(calls[1], ['fixture.load', { planId: undefined }]);
+
+  calls.length = 0;
+  makePage('release').onLoad({ mode: 'strength', state: 'expired' });
+  assert.equal(calls[0][0], 'production.factory');
+  assert.deepEqual(calls[1], ['production.load', { planId: undefined }]);
+
+  calls.length = 0;
+  makePage('develop').onLoad({ planId: 'plan_normal_navigation' });
+  assert.equal(calls[0][0], 'production.factory');
+  assert.deepEqual(calls[1], ['production.load', { planId: 'plan_normal_navigation' }]);
+});
+
 test('destructive and irreversible page controls require explicit confirmation', () => {
   const confirmed = createPageHarness({ confirm: true });
   confirmed.page.onLoad({});
@@ -966,6 +1028,256 @@ test('destructive and irreversible page controls require explicit confirmation',
   assert.equal(cancelled.calls.some(([method]) => method === 'endWorkout'), false);
 });
 
+test('Attack: repeated Skip taps share one pending confirmation and cannot skip the following exercise', () => {
+  const calls = [];
+  const pendingModals = [];
+  const runtime = {
+    load() { return pageView(); },
+    skip() {
+      calls.push('skip');
+      return pageView();
+    }
+  };
+  const wxApi = {
+    showModal(options) { pendingModals.push(options); },
+    setKeepScreenOn() {}
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => wxApi,
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({});
+
+  page.onSkip();
+  page.onSkip();
+  assert.equal(
+    pendingModals.length,
+    1,
+    'a second tap while confirmation is pending must not create a second destructive intent'
+  );
+  pendingModals[0].success({ confirm: true, cancel: false });
+  assert.deepEqual(calls, ['skip']);
+});
+
+test('Attack: an unloaded page invalidates pending Skip callbacks before they can mutate Session state', () => {
+  const calls = [];
+  const pendingModals = [];
+  const runtime = {
+    load() { return pageView(); },
+    onUnload() {
+      calls.push('onUnload');
+      return pageView();
+    },
+    skip() {
+      calls.push('skip');
+      return pageView();
+    }
+  };
+  const wxApi = {
+    showModal(options) { pendingModals.push(options); },
+    setKeepScreenOn() {}
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => wxApi,
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({});
+  page.onSkip();
+  assert.equal(pendingModals.length, 1);
+
+  page.onUnload();
+  pendingModals[0].success({ confirm: true, cancel: false });
+  pendingModals[0].complete();
+  assert.deepEqual(
+    calls,
+    ['onUnload'],
+    'a late modal callback from a destroyed page must not execute a destructive runtime command'
+  );
+});
+
+test('Attack: repeated zero-rest strength taps keep the original step, set and revision intent with zero second write', () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const database = createLocalDatabase({ storage, now: () => clock });
+  const sourcePlan = createDefaultPlans({ now: () => START_AT })
+    .find(({ steps }) => steps.some(({ kind }) => kind === 'strength'));
+  const sourceStrength = sourcePlan.steps.find(({ kind }) => kind === 'strength');
+  const plan = {
+    ...clone(sourcePlan),
+    id: 'plan_strength_zero_rest_double_tap_page',
+    trainingDate: '2026-08-10',
+    title: '力量零休息双击页面夹具',
+    templateSource: null,
+    steps: [{
+      ...clone(sourceStrength),
+      id: 'strength_zero_rest_double_tap',
+      order: 1,
+      sets: 2,
+      restSeconds: 0
+    }]
+  };
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_strength_zero_rest_page', createdAt: START_AT };
+    draft.plans.push(plan);
+  });
+  let sequence = 0;
+  const runtime = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_strength_zero_rest_page',
+    commandKeyFactory: (type) => `strength_zero_rest_${type}_${++sequence}`
+  });
+  const toasts = [];
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => ({
+      setKeepScreenOn() {},
+      showToast(options) { toasts.push(options.title); }
+    }),
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({ planId: plan.id });
+  const originalIntent = {
+    currentTarget: {
+      dataset: {
+        stepId: page.data.view.step.id,
+        setNumber: page.data.view.strength.currentSet,
+        sessionRevision: page.data.view.sessionRevision
+      }
+    }
+  };
+
+  page.onCompleteSet(originalIntent);
+  const afterFirst = database.load();
+  assert.equal(afterFirst.activeSession.currentSet, 2);
+  assert.equal(afterFirst.activeSession.stepResults[0].setResults.length, 1);
+  clock += 1;
+  page.onCompleteSet(originalIntent);
+
+  const afterSecond = database.load();
+  assert.equal(afterSecond.localRevision, afterFirst.localRevision, 'stale second tap must perform zero write');
+  assert.equal(afterSecond.activeSession.status, 'in_progress');
+  assert.equal(afterSecond.activeSession.currentSet, 2);
+  assert.deepEqual(
+    afterSecond.activeSession.stepResults[0].setResults.map(({ setNumber }) => setNumber),
+    [1]
+  );
+  assert.equal(
+    afterSecond.activeSession.processedCommands.filter(({ type }) => type === 'complete_set').length,
+    1
+  );
+  assert.equal(toasts.length, 1, 'the stale strength intent should fail visibly');
+});
+
+test('Attack: repeated manual taps keep the original step and revision intent instead of completing the next action', () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const database = createLocalDatabase({ storage, now: () => clock });
+  const sourcePlan = createDefaultPlans({ now: () => START_AT })
+    .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+  const sourceManual = sourcePlan.steps.find(({ kind }) => kind === 'manual');
+  const plan = {
+    ...clone(sourcePlan),
+    id: 'plan_manual_double_tap_page',
+    trainingDate: '2026-08-10',
+    title: '手动双击页面夹具',
+    templateSource: null,
+    steps: [
+      { ...clone(sourceManual), id: 'manual_double_tap_1', order: 1 },
+      { ...clone(sourceManual), id: 'manual_double_tap_2', order: 2 }
+    ]
+  };
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_manual_double_tap_page', createdAt: START_AT };
+    draft.plans.push(plan);
+  });
+  let sequence = 0;
+  const runtime = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_manual_double_tap_page',
+    commandKeyFactory: (type) => `manual_double_tap_${type}_${++sequence}`
+  });
+  const toasts = [];
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => ({
+      setKeepScreenOn() {},
+      showToast(options) { toasts.push(options.title); }
+    }),
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({ planId: plan.id });
+  const originalIntent = {
+    currentTarget: {
+      dataset: {
+        stepId: page.data.view.step.id,
+        sessionRevision: page.data.view.sessionRevision
+      }
+    }
+  };
+
+  page.onCompleteManual(originalIntent);
+  clock += 1;
+  page.onCompleteManual(originalIntent);
+
+  const persisted = database.load().activeSession;
+  assert.equal(persisted.status, 'in_progress');
+  assert.equal(persisted.currentStepIndex, 1);
+  assert.equal(
+    persisted.processedCommands.filter(({ type }) => type === 'complete_step').length,
+    1,
+    'the stale second tap must not complete the newly rendered manual step'
+  );
+  assert.equal(toasts.length, 1, 'the stale second intent should fail visibly without mutating Session');
+});
+
 test('workout page declares native timer components, large timer states and thumb-safe controls', () => {
   const root = path.resolve(__dirname, '../..');
   const pageJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.json'), 'utf8'));
@@ -981,6 +1293,12 @@ test('workout page declares native timer components, large timer states and thum
   assert.match(wxml, /requiresConfirmation/);
   assert.match(wxml, /确认时间后继续/);
   assert.match(wxml, /bindtap="onConfirmClockAnomaly"/);
+  assert.match(
+    wxml,
+    /bindtap="onCompleteSet"[^>]*data-step-id="\{\{view\.step\.id\}\}"[^>]*data-set-number="\{\{view\.strength\.currentSet\}\}"[^>]*data-session-revision="\{\{view\.sessionRevision\}\}"/
+  );
+  assert.match(wxml, /data-step-id="\{\{view\.step\.id\}\}"/);
+  assert.match(wxml, /data-session-revision="\{\{view\.sessionRevision\}\}"/);
   assert.match(wxss, /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/);
   assert.match(wxss, /min-height:\s*96rpx/);
 

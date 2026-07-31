@@ -420,7 +420,7 @@ test('expired step rejects previous correction and preserves the current occurre
   assert.equal(expired.timer.status, 'expired');
 });
 
-test('expired strength rest rejects generic progression while complete_set retains explicit set intent', () => {
+test('expired strength rest requires explicit start_set before completing the next set', () => {
   const session = startedSession(threeSetStrengthPlan());
   const stepId = session.planSnapshot.steps[0].id;
   const resting = applyWorkoutCommand(
@@ -440,7 +440,6 @@ test('expired strength rest rejects generic progression while complete_set retai
   ).session;
 
   for (const [type, code] of [
-    ['skip_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
     ['early_complete_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
     ['complete_step', 'SESSION_CONFIRM_NEXT_REQUIRED']
   ]) {
@@ -453,16 +452,47 @@ test('expired strength rest rejects generic progression while complete_set retai
     );
   }
 
-  const secondSet = applyWorkoutCommand(
+  const skipped = applyWorkoutCommand(
     expired,
-    command('complete_set', 3, 'strength_rest_set_two', expired.lastCheckpointAt, {
+    command('skip_step', 3, 'strength_rest_skip_remaining', expired.lastCheckpointAt, { stepId })
+  ).session;
+  assert.equal(skipped.status, 'completed');
+  assert.equal(skipped.stepResults[0].status, 'skipped');
+  assert.equal(skipped.stepResults[0].setResults.length, 1);
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      expired,
+      command('complete_set', 3, 'strength_rest_set_two_before_start', expired.lastCheckpointAt, {
+        stepId,
+        setNumber: 2,
+        reps: 10,
+        weightKg: 22.5
+      })
+    ),
+    (error) => error && error.code === 'SESSION_SET_NOT_STARTED'
+  );
+
+  const startedSecondSet = applyWorkoutCommand(
+    expired,
+    command('start_set', 3, 'strength_rest_start_set_two', expired.lastCheckpointAt, {
+      stepId,
+      setNumber: 2
+    })
+  ).session;
+  assert.equal(startedSecondSet.timer, null);
+  assert.equal(startedSecondSet.currentSet, 2);
+
+  const secondSet = applyWorkoutCommand(
+    startedSecondSet,
+    command('complete_set', 4, 'strength_rest_set_two', expired.lastCheckpointAt, {
       stepId,
       setNumber: 2,
       reps: 10,
       weightKg: 22.5
     })
   ).session;
-  assert.equal(secondSet.sessionRevision, 4);
+  assert.equal(secondSet.sessionRevision, 5);
   assert.equal(secondSet.currentSet, 3);
   assert.equal(secondSet.timer.mode, 'rest');
   assert.equal(secondSet.timer.status, 'running');
@@ -1124,6 +1154,39 @@ test('set completion rejects double transitions and keeps rest timer identity wi
       })
     ),
     (error) => error && error.code === 'SESSION_SET_ALREADY_COMPLETED'
+  );
+});
+
+test('strength set-count adjustments are revisioned and cannot remove the active or completed boundary', () => {
+  const initial = startedSession(threeSetStrengthPlan());
+  const stepId = initial.planSnapshot.steps[0].id;
+  const reduced = applyWorkoutCommand(
+    initial,
+    command('reduce_set', 1, 'reduce_future_set', NOW + 1_000, { stepId })
+  ).session;
+
+  assert.equal(initial.planSnapshot.steps[0].sets, 3, 'the input Session remains immutable');
+  assert.equal(reduced.planSnapshot.steps[0].sets, 3);
+  assert.equal(reduced.setTargetOverrides[stepId], 2);
+  assert.equal(reduced.sessionRevision, 2);
+
+  const expanded = applyWorkoutCommand(
+    reduced,
+    command('add_set', 2, 'add_future_set', NOW + 2_000, { stepId })
+  ).session;
+  assert.equal(expanded.planSnapshot.steps[0].sets, 3);
+  assert.equal(expanded.setTargetOverrides[stepId], 3);
+  assert.equal(expanded.processedCommands.at(-1).type, 'add_set');
+
+  const oneSet = startedSession(singleSetStrengthPlan());
+  assert.throws(
+    () => applyWorkoutCommand(
+      oneSet,
+      command('reduce_set', 1, 'cannot_remove_active_set', NOW + 1_000, {
+        stepId: oneSet.planSnapshot.steps[0].id
+      })
+    ),
+    (error) => error && error.code === 'SESSION_SET_ADJUSTMENT_INVALID'
   );
 });
 

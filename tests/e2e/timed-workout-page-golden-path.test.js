@@ -92,3 +92,39 @@ test('golden path: expired worked sample remains on the current step until expli
   page.onUnload();
   delete global.wx;
 });
+
+test('golden path: develop strength mode renders active set, running rest and expired rest without personal storage', () => {
+  const storageWrites = [];
+  const wxApi = {
+    getAccountInfoSync() {
+      return { miniProgram: { envVersion: 'develop' } };
+    },
+    getStorageSync() { return undefined; },
+    getStorageInfoSync() { return { keys: [] }; },
+    setStorageSync(key) { storageWrites.push(key); },
+    removeStorageSync(key) { storageWrites.push(key); },
+    setKeepScreenOn() {},
+    vibrateLong({ success }) { success(); },
+    showToast({ success }) { success(); }
+  };
+
+  const expected = {
+    active: 'ready',
+    rest: 'running',
+    expired: 'rest-expired-awaiting-start-set'
+  };
+  for (const [state, expectedViewState] of Object.entries(expected)) {
+    const page = instantiate(loadPageDefinition(wxApi));
+    page.onLoad(state === 'active' ? { mode: 'strength' } : { mode: 'strength', state });
+    assert.equal(page.data.view.state, expectedViewState);
+    assert.equal(page.data.view.step.kind, 'strength');
+    assert.ok(page.data.view.strength);
+    if (state === 'expired') {
+      assert.equal(page.data.view.showStartSetConfirmation, true);
+      assert.equal(page.data.view.controls.startSet.disabled, false);
+    }
+    page.onUnload();
+  }
+  assert.deepEqual(storageWrites, []);
+  delete global.wx;
+});

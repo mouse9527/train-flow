@@ -9,6 +9,7 @@
 
 .workout-hero,
 .target-card,
+.strength-card,
 .expiry-card,
 .clock-anomaly-card,
 .control-panel,
@@ -46,6 +47,36 @@
 .target-card { margin-top: 22rpx; padding: 24rpx 28rpx; }
 .target-card__label { display: block; }
 .target-card__value { display: block; margin-top: 8rpx; font-size: 30rpx; font-weight: 700; }
+
+.strength-card { margin-top: 22rpx; padding: 26rpx; }
+.strength-card__header,
+.strength-card__history,
+.strength-card__inputs,
+.strength-card__set-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+.strength-card__eyebrow { display: block; color: #23745b; font-size: 24rpx; font-weight: 700; }
+.strength-card__set { display: block; margin-top: 8rpx; font-size: 34rpx; font-weight: 800; }
+.strength-card__target { color: #52635c; font-size: 26rpx; font-weight: 700; }
+.strength-card__history { margin-top: 20rpx; color: #64736d; font-size: 23rpx; }
+.strength-card__inputs { align-items: stretch; margin-top: 22rpx; }
+.strength-input { flex: 1; color: #52635c; font-size: 23rpx; }
+.strength-input input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 88rpx;
+  margin-top: 10rpx;
+  padding: 18rpx 20rpx;
+  border: 1rpx solid #cfdad5;
+  border-radius: 18rpx;
+  background: #f7faf8;
+  color: #17231f;
+  font-size: 28rpx;
+}
+.strength-card__set-controls { margin-top: 16rpx; justify-content: flex-end; }
 
 .expiry-card { margin-top: 22rpx; padding: 26rpx; border-color: rgba(218, 136, 37, 0.24); background: #fff9ed; }
 .clock-anomaly-card { margin-top: 22rpx; padding: 26rpx; border-color: rgba(49, 95, 154, 0.22); background: #f1f6ff; }

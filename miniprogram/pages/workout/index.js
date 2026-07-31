@@ -19,6 +19,34 @@ function developerFixturesEnabled(wxApi) {
   }
 }
 
+function progressionIntent(event, view) {
+  const dataset = event && event.currentTarget && event.currentTarget.dataset
+    ? event.currentTarget.dataset
+    : {};
+  const sessionRevision = Number(dataset.sessionRevision);
+  return {
+    stepId: typeof dataset.stepId === 'string' && dataset.stepId.length > 0
+      ? dataset.stepId
+      : view.step.id,
+    sessionRevision: Number.isSafeInteger(sessionRevision) && sessionRevision > 0
+      ? sessionRevision
+      : view.sessionRevision
+  };
+}
+
+function strengthSetIntent(event, view) {
+  const dataset = event && event.currentTarget && event.currentTarget.dataset
+    ? event.currentTarget.dataset
+    : {};
+  const setNumber = Number(dataset.setNumber);
+  return {
+    ...progressionIntent(event, view),
+    setNumber: Number.isSafeInteger(setNumber) && setNumber > 0
+      ? setNumber
+      : view.strength.currentSet
+  };
+}
+
 function callWxApi(wxApi, methodName, options = {}) {
   if (typeof wxApi[methodName] !== 'function') {
     return Promise.resolve();
@@ -60,18 +88,26 @@ function createWorkoutPageDefinition({
   return {
     data: {
       view: null,
-      busy: false
+      busy: false,
+      actualReps: '',
+      actualLoad: ''
     },
 
     onLoad(query = {}) {
       this.isVisible = true;
       const wxApi = getWx();
-      const useFixture = developerFixturesEnabled(wxApi) && query.fixture === 'worked-sample';
+      const useFixture = developerFixturesEnabled(wxApi) && (
+        query.fixture === 'worked-sample' || query.mode === 'strength'
+      );
       const runtimeOptions = {
         notifyExpired: () => notifyWorkoutExpired(wxApi)
       };
       this.runtime = useFixture
-        ? fixtureRuntimeFactory({ state: query.state || 'running', ...runtimeOptions })
+        ? fixtureRuntimeFactory({
+          mode: query.mode === 'strength' ? 'strength' : 'timed',
+          state: query.state || (query.mode === 'strength' ? 'active' : 'running'),
+          ...runtimeOptions
+        })
         : runtimeFactory(runtimeOptions);
       if (typeof wxApi.setKeepScreenOn === 'function') {
         wxApi.setKeepScreenOn({ keepScreenOn: true });
@@ -99,6 +135,7 @@ function createWorkoutPageDefinition({
 
     onUnload() {
       this.isVisible = false;
+      this.pendingConfirmation = null;
       this.stopRefreshLoop();
       if (this.runtime) {
         this.syncView(this.runtime.onUnload());
@@ -110,7 +147,20 @@ function createWorkoutPageDefinition({
     },
 
     syncView(view) {
-      this.setData({ view, busy: false });
+      const inputKey = view && view.strength
+        ? `${view.sessionId}:${view.step.id}:${view.strength.currentSet}`
+        : null;
+      const nextData = { view, busy: false };
+      if (inputKey !== this.strengthInputKey) {
+        this.strengthInputKey = inputKey;
+        nextData.actualReps = view && view.strength
+          ? String(view.strength.actualReps)
+          : '';
+        nextData.actualLoad = view && view.strength && view.strength.actualWeightKg !== null
+          ? String(view.strength.actualWeightKg)
+          : '';
+      }
+      this.setData(nextData);
       if (this.isVisible) {
         this.scheduleDeadline(view);
       }
@@ -173,20 +223,38 @@ function createWorkoutPageDefinition({
 
     confirm({ title, content, confirmText = '确认', controlName, method }) {
       const control = this.data.view && this.data.view.controls && this.data.view.controls[controlName];
-      if (!control || control.disabled) {
+      if (!control || control.disabled || this.pendingConfirmation) {
         return;
       }
-      getWx().showModal({
-        title,
-        content,
-        confirmText,
-        cancelText: '取消',
-        success: ({ confirm }) => {
-          if (confirm) {
-            this.invoke(controlName, method);
-          }
+      const intent = { controlName, method };
+      this.pendingConfirmation = intent;
+      const settle = (confirmed) => {
+        if (this.pendingConfirmation !== intent) {
+          return;
         }
-      });
+        this.pendingConfirmation = null;
+        if (confirmed) {
+          this.invoke(controlName, method);
+        }
+      };
+      try {
+        getWx().showModal({
+          title,
+          content,
+          confirmText,
+          cancelText: '取消',
+          success: ({ confirm }) => settle(confirm === true),
+          fail: () => settle(false),
+          complete: () => {
+            if (this.pendingConfirmation === intent) {
+              settle(false);
+            }
+          }
+        });
+      } catch (error) {
+        settle(false);
+        throw error;
+      }
     },
 
     onStart() { this.invoke('start', 'start'); },
@@ -197,6 +265,24 @@ function createWorkoutPageDefinition({
     },
     onPrevious() { this.invoke('previous', 'previous'); },
     onNext() { this.invoke('next', 'confirmNext'); },
+    onStartSet() { this.invoke('startSet', 'startSet'); },
+    onActualRepsInput({ detail }) { this.setData({ actualReps: detail.value }); },
+    onActualWeightInput({ detail }) { this.setData({ actualLoad: detail.value }); },
+    onCompleteSet(event) {
+      this.invoke('completeSet', 'completeSet', {
+        reps: Number(this.data.actualReps),
+        loadKg: this.data.actualLoad === '' ? null : Number(this.data.actualLoad)
+      }, strengthSetIntent(event, this.data.view));
+    },
+    onAddSet() { this.invoke('addSet', 'addSet'); },
+    onReduceSet() { this.invoke('reduceSet', 'reduceSet'); },
+    onCompleteManual(event) {
+      this.invoke(
+        'complete',
+        'completeManual',
+        progressionIntent(event, this.data.view)
+      );
+    },
     onSubtract30() { this.invoke('subtract30', 'adjustTimer', -30); },
     onAdd30() { this.invoke('add30', 'adjustTimer', 30); },
 
