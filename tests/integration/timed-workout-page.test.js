@@ -98,6 +98,8 @@ test('08:35 start, 08:37 hide and 08:41 show expires only the current step and n
   assert.equal(expired.timerLabel, '00:00');
   assert.equal(expired.showNextConfirmation, true);
   assert.equal(expired.controls.next.disabled, false);
+  assert.equal(expired.controls.skip.disabled, true);
+  assert.equal(expired.controls.earlyComplete.disabled, true);
   assert.equal(harness.notifications.length, 1);
 
   harness.setNow(START_AT + 6 * 60_000 + 5_000);

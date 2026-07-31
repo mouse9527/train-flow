@@ -42,6 +42,7 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   resume: Object.freeze(['reason']),
   adjust_timer: Object.freeze(['deltaSeconds']),
   complete_step: Object.freeze(['stepId']),
+  confirm_next: Object.freeze(['stepId']),
   early_complete_step: Object.freeze(['stepId']),
   skip_step: Object.freeze(['stepId']),
   previous_step: Object.freeze([]),
@@ -51,6 +52,7 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
 const BUSINESS_PROGRESSION_COMMANDS = Object.freeze([
   'start_step',
   'complete_step',
+  'confirm_next',
   'early_complete_step',
   'skip_step',
   'previous_step',
@@ -697,7 +699,30 @@ function applyTransition(session, command, timerEngine) {
     }, transitionNowMs);
     return;
   }
-  if (command.type === 'complete_step') {
+  if (
+    session.timer !== null &&
+    session.timer.mode === 'step' &&
+    session.timer.status === 'expired' &&
+    (command.type === 'skip_step' || command.type === 'early_complete_step')
+  ) {
+    throw createSessionError(
+      'Expired step requires explicit next confirmation',
+      'SESSION_EXPIRED_CONFIRMATION_REQUIRED'
+    );
+  }
+  if (command.type === 'complete_step' && step.kind === 'timed') {
+    throw createSessionError(
+      'Timed step completion requires confirm_next',
+      'SESSION_CONFIRM_NEXT_REQUIRED'
+    );
+  }
+  if (command.type === 'complete_step' || command.type === 'confirm_next') {
+    if (command.type === 'confirm_next' && step.kind === 'manual') {
+      throw createSessionError(
+        'Manual step does not have an expired timer to confirm',
+        'SESSION_CONFIRM_NEXT_INVALID'
+      );
+    }
     if (step.kind !== 'manual') {
       if (session.timer === null || session.timer.mode !== 'step') {
         throw createSessionError('Timed step requires its matching timer', 'SESSION_TIMER_MISSING');
@@ -739,6 +764,12 @@ function applyTransition(session, command, timerEngine) {
       throw createSessionError(
         'Early completion is only available for timed steps',
         'SESSION_EARLY_COMPLETE_UNSUPPORTED'
+      );
+    }
+    if (session.timer === null || session.timer.mode !== 'step') {
+      throw createSessionError(
+        'Early completion requires a started step timer',
+        'SESSION_TIMER_MISSING'
       );
     }
     advanceAfterStep(session, step.id, transitionNowMs);

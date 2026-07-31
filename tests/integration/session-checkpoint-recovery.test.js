@@ -596,7 +596,7 @@ test('checksum-valid missing rest, forged duration and terminal shape fail recov
           payload: { stepId: session.planSnapshot.steps[0].id }
         });
         const terminal = runtime.service.execute({
-          type: 'complete_step',
+          type: 'confirm_next',
           expectedSessionRevision: 2,
           commandKey: 'terminal_shape_recovery_complete',
           nowMs: NOW + 300_000,
@@ -674,7 +674,7 @@ test('application replaces completed and aborted Sessions while terminal command
         payload: { stepId: started.planSnapshot.steps[0].id }
       });
       terminal = runtime.service.execute({
-        type: 'complete_step',
+        type: 'confirm_next',
         expectedSessionRevision: 2,
         commandKey: 'terminal_completed_step_finish',
         nowMs: NOW + 300_000,

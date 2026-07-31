@@ -117,6 +117,7 @@ function buildTimedWorkoutView(session, {
     ? session.planSnapshot.steps[session.currentStepIndex - 1]
     : null;
   const canProgress = session.status === 'in_progress' && !terminal;
+  const canAlternativeProgress = canProgress && state !== 'expired-awaiting-confirmation';
   const canAdjust = Boolean(
     session.timer &&
     (session.timer.status === 'running' || session.timer.status === 'paused')
@@ -160,9 +161,9 @@ function buildTimedWorkoutView(session, {
         previousStep.kind !== 'interval'
       )),
       next: control('进入下一步', state !== 'expired-awaiting-confirmation', 'primary'),
-      skip: control('跳过', !canProgress, 'quiet'),
+      skip: control('跳过', !canAlternativeProgress, 'quiet'),
       earlyComplete: control('提前完成', !(
-        canProgress && step && step.kind === 'timed' && session.timer !== null
+        canAlternativeProgress && step && step.kind === 'timed' && session.timer !== null
       ), 'quiet'),
       subtract30: control('-30 秒', !canAdjust, 'quiet'),
       add30: control('+30 秒', !canAdjust, 'quiet'),

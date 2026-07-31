@@ -198,7 +198,7 @@ test('Session boundary rejects custom prototypes, descriptors, unknown and unsaf
         stepId: valid.planSnapshot.steps[0].id
       })
     ).session,
-    command('complete_step', 2, 'boundary_complete_step', NOW + 300_000, {
+    command('confirm_next', 2, 'boundary_complete_step', NOW + 300_000, {
       stepId: valid.planSnapshot.steps[0].id
     })
   ).session;
@@ -302,6 +302,56 @@ test('skip and early complete advance a running timed step without pretending th
   assert.equal(completed.timer, null);
   assert.equal(completed.stepResults[1].status, 'completed');
   assert.equal(completed.sessionRevision, 5);
+});
+
+test('expired timed step rejects conflicting progression and only confirm_next may advance', () => {
+  const base = startedSession(timedPlan());
+  const stepId = base.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    base,
+    command('start_step', 1, 'expired_guard_start', NOW, { stepId })
+  ).session;
+  const expired = applyWorkoutCommand(
+    running,
+    command('checkpoint', 2, 'expired_guard_checkpoint', NOW + 300_000, { reason: 'show' })
+  ).session;
+  assert.equal(expired.timer.status, 'expired');
+
+  for (const [type, code] of [
+    ['skip_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['early_complete_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['complete_step', 'SESSION_CONFIRM_NEXT_REQUIRED']
+  ]) {
+    assert.throws(
+      () => applyWorkoutCommand(
+        expired,
+        command(type, 3, `expired_guard_${type}`, NOW + 301_000, { stepId })
+      ),
+      (error) => error && error.code === code
+    );
+  }
+
+  const confirmed = applyWorkoutCommand(
+    expired,
+    command('confirm_next', 3, 'expired_guard_confirm', NOW + 301_000, { stepId })
+  ).session;
+  assert.equal(confirmed.currentStepIndex, 1);
+  assert.equal(confirmed.stepResults[0].status, 'completed');
+});
+
+test('early completion requires a started non-expired timed occurrence', () => {
+  const session = startedSession(timedPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      session,
+      command('early_complete_step', 1, 'early_without_start', NOW + 1_000, { stepId })
+    ),
+    (error) => error && error.code === 'SESSION_TIMER_MISSING'
+  );
+  assert.equal(session.currentStepIndex, 0);
+  assert.equal(session.timer, null);
 });
 
 test('previous step command reopens the prior timed result while retaining a revision audit record', () => {
@@ -726,7 +776,7 @@ test('terminal Sessions keep completed and aborted positions/results in canonica
   ).session;
   const completed = applyWorkoutCommand(
     running,
-    command('complete_step', 2, 'terminal_shape_complete', NOW + 300_000, { stepId })
+    command('confirm_next', 2, 'terminal_shape_complete', NOW + 300_000, { stepId })
   ).session;
   assert.equal(assertWorkoutSession(completed), completed);
 
@@ -822,14 +872,14 @@ test('checkpoint and step completion atomically advance revision, elapsed time a
   assert.throws(
     () => applyWorkoutCommand(
       checkpointed,
-      command('complete_step', 3, 'early_complete', NOW + 3_000, { stepId })
+      command('confirm_next', 3, 'early_complete', NOW + 3_000, { stepId })
     ),
     (error) => error && error.code === 'SESSION_TIMER_NOT_EXPIRED'
   );
 
   const completed = applyWorkoutCommand(
     checkpointed,
-    command('complete_step', 3, 'complete_step', NOW + 300_000, { stepId })
+    command('confirm_next', 3, 'confirm_next', NOW + 300_000, { stepId })
   ).session;
   assert.equal(completed.sessionRevision, 4);
   assert.equal(completed.currentStepIndex, 1);
@@ -942,7 +992,7 @@ test('terminal Sessions reject new transitions while exact command replay remain
     initial,
     command('start_step', 1, 'terminal_start', NOW, { stepId })
   ).session;
-  const finish = command('complete_step', 2, 'terminal_finish', NOW + 300_000, { stepId });
+  const finish = command('confirm_next', 2, 'terminal_finish', NOW + 300_000, { stepId });
   const terminal = applyWorkoutCommand(started, finish).session;
 
   assert.equal(terminal.status, 'completed');

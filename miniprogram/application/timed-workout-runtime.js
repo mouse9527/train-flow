@@ -193,7 +193,7 @@ class TimedWorkoutRuntime {
   }
 
   confirmNext() {
-    const view = this.execute('complete_step', { stepId: this.currentStep().id });
+    const view = this.execute('confirm_next', { stepId: this.currentStep().id });
     return this.autoStartNext(view);
   }
 
