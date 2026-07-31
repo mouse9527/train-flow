@@ -1,5 +1,107 @@
-<view class="tf-page">
-  <view class="tf-empty-state">
-    <text class="tf-caption">一周计划即将上线</text>
+<view class="tf-page" wx:if="{{week}}">
+  <view class="plan-hero">
+    <view>
+      <text class="plan-kicker">TRAINFLOW · 本周安排</text>
+      <view class="plan-title">一周计划</view>
+      <text class="plan-range">{{week.weekRangeLabel}}</text>
+    </view>
+    <view class="plan-count" wx:if="{{!week.isEmpty}}">
+      <text class="plan-count-number">{{week.days.length}}</text>
+      <text class="plan-count-label">天安排</text>
+    </view>
+  </view>
+
+  <view class="week-nav">
+    <button class="week-nav-button" bindtap="onPreviousWeek">‹ 上一周</button>
+    <text class="week-nav-current">{{week.weekStart}}</text>
+    <button class="week-nav-button" bindtap="onNextWeek">下一周 ›</button>
+  </view>
+
+  <view class="tf-empty-state empty-week" wx:if="{{week.isEmpty}}">
+    <view class="empty-icon">○</view>
+    <text class="empty-title">{{week.emptyMessage}}</text>
+    <text class="tf-caption">{{week.emptyGuidance}}</text>
+  </view>
+
+  <view class="week-list" wx:else>
+    <view
+      class="day-row {{day.selected ? 'day-row-selected' : ''}}"
+      wx:for="{{week.days}}"
+      wx:for-item="day"
+      wx:key="trainingDate"
+      data-date="{{day.trainingDate}}"
+      bindtap="onSelectDay"
+    >
+      <view class="day-date">
+        <text class="day-weekday">{{day.weekday}}</text>
+        <text class="day-number">{{day.dateLabel}}</text>
+      </view>
+      <view class="day-main">
+        <view class="day-heading">
+          <text class="day-title">{{day.title}}</text>
+          <text class="day-duration {{day.isRestDay ? 'day-duration-rest' : ''}}">{{day.durationLabel}}</text>
+        </view>
+        <view class="day-statuses">
+          <text class="status-chip status-primary">{{day.completionLabel}}</text>
+          <text class="status-chip">{{day.skippedLabel}}</text>
+          <text class="status-chip {{day.discomfortLabel === '有不适' ? 'status-alert' : ''}}">{{day.discomfortLabel}}</text>
+        </view>
+      </view>
+      <text class="day-chevron">›</text>
+    </view>
+  </view>
+
+  <view class="detail-card" wx:if="{{week.selectedDay}}">
+    <view class="detail-header">
+      <view>
+        <text class="detail-date">{{week.selectedDay.weekday}} · {{week.selectedDay.dateLabel}}</text>
+        <view class="detail-title">{{week.selectedDay.title}}</view>
+      </view>
+      <text class="detail-duration" wx:if="{{week.selectedDay.totalDurationLabel}}">{{week.selectedDay.totalDurationLabel}}</text>
+      <text class="detail-duration detail-rest" wx:else>恢复日</text>
+    </view>
+    <text class="detail-summary">{{week.selectedDay.summary}}</text>
+
+    <view class="rest-guidance" wx:if="{{week.selectedDay.isRestDay}}">
+      <text class="rest-guidance-label">今日重点</text>
+      <text class="rest-guidance-copy">{{week.selectedDay.restGuidance}}</text>
+    </view>
+
+    <button
+      class="start-workout"
+      wx:if="{{week.selectedDay.canStartWorkout}}"
+      bindtap="onStartWorkout"
+    >开始训练</button>
+
+    <view class="step-list">
+      <view class="step-card" wx:for="{{week.selectedDay.steps}}" wx:key="id" wx:for-item="step">
+        <view class="step-topline">
+          <text class="step-order">{{step.order}}</text>
+          <view class="step-name-wrap">
+            <text class="step-name">{{step.name}}</text>
+            <text class="step-kind">{{step.kind}}</text>
+          </view>
+          <text class="optional-chip" wx:if="{{step.optional}}">可选</text>
+        </view>
+        <text class="step-description">{{step.description}}</text>
+
+        <view class="metric-grid" wx:if="{{step.metrics.length}}">
+          <view class="metric" wx:for="{{step.metrics}}" wx:key="label" wx:for-item="metric">
+            <text class="metric-label">{{metric.label}}</text>
+            <text class="metric-value">{{metric.value}}</text>
+          </view>
+        </view>
+        <view class="target-row" wx:for="{{step.targets}}" wx:key="label" wx:for-item="target">
+          <text class="target-label">{{target.label}}</text>
+          <text class="target-value">{{target.value}}</text>
+        </view>
+        <view class="step-safety" wx:for="{{step.safetyNotices}}" wx:key="*this" wx:for-item="notice">· {{notice}}</view>
+      </view>
+    </view>
+
+    <view class="safety-panel" wx:if="{{week.selectedDay.safetyNotices.length}}">
+      <text class="safety-title">安全提醒</text>
+      <text class="safety-copy" wx:for="{{week.selectedDay.safetyNotices}}" wx:key="*this" wx:for-item="notice">{{notice}}</text>
+    </view>
   </view>
 </view>
