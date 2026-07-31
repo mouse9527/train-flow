@@ -21,6 +21,7 @@ const SESSION_FIELDS = Object.freeze([
   'elapsedRemainderMilliseconds',
   'currentStepIndex',
   'currentSet',
+  'activeSetStartedAt',
   'timer',
   'stepResults',
   'processedCommands',
@@ -50,6 +51,7 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   skip_step: Object.freeze(['stepId']),
   skip_step_and_start_next: Object.freeze(['stepId']),
   previous_step: Object.freeze([]),
+  start_set: Object.freeze(['stepId', 'setNumber']),
   complete_set: Object.freeze(['stepId', 'setNumber', 'reps', 'weightKg']),
   abort: Object.freeze(['reason'])
 });
@@ -63,6 +65,7 @@ const BUSINESS_PROGRESSION_COMMANDS = Object.freeze([
   'skip_step',
   'skip_step_and_start_next',
   'previous_step',
+  'start_set',
   'complete_set'
 ]);
 const AUTO_START_PROGRESSION_COMMANDS = Object.freeze({
@@ -139,7 +142,7 @@ function assertInertJson(value, path = 'value', ancestors = new Set()) {
   ancestors.delete(value);
 }
 
-function assertClosedObject(value, allowedFields, label) {
+function assertClosedObject(value, allowedFields, label, optionalFields = []) {
   assertInertJson(value, label);
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError(`${label} must be an object`);
@@ -150,7 +153,11 @@ function assertClosedObject(value, allowedFields, label) {
       throw new TypeError(`${label} contains unknown field ${field}`);
     }
   }
+  const optional = new Set(optionalFields);
   for (const field of allowedFields) {
+    if (optional.has(field)) {
+      continue;
+    }
     if (!hasOwn(value, field)) {
       throw new TypeError(`${label} requires own field ${field}`);
     }
@@ -228,7 +235,7 @@ function assertStepResult(result, index) {
 }
 
 function assertWorkoutSession(session) {
-  assertClosedObject(session, SESSION_FIELDS, 'session');
+  assertClosedObject(session, SESSION_FIELDS, 'session', ['activeSetStartedAt']);
   if (session.schemaVersion !== SESSION_SCHEMA_VERSION) {
     throw new TypeError(`session.schemaVersion must equal ${SESSION_SCHEMA_VERSION}`);
   }
@@ -275,6 +282,15 @@ function assertWorkoutSession(session) {
   if (session.currentSet !== null) {
     assertSafeInteger(session.currentSet, 'session.currentSet', 1);
   }
+  const activeSetStartedAt = hasOwn(session, 'activeSetStartedAt')
+    ? session.activeSetStartedAt
+    : null;
+  if (activeSetStartedAt !== null) {
+    assertSafeInteger(activeSetStartedAt, 'session.activeSetStartedAt');
+    if (activeSetStartedAt < session.startedAt || activeSetStartedAt > session.lastCheckpointAt) {
+      throw new TypeError('session.activeSetStartedAt must be within Session checkpoints');
+    }
+  }
   const currentStep = session.planSnapshot.steps[session.currentStepIndex] || null;
   if (session.timer !== null) {
     assertTimerSnapshot(session.timer);
@@ -292,6 +308,9 @@ function assertWorkoutSession(session) {
     }
     if (session.timer.mode === 'rest' && session.currentSet < 2) {
       throw new TypeError('session rest timer requires a completed prior set');
+    }
+    if (session.timer.mode === 'rest' && activeSetStartedAt !== null) {
+      throw new TypeError('session cannot start a set while its rest timer exists');
     }
     if (
       session.timer.mode === 'step' &&
@@ -448,6 +467,9 @@ function assertWorkoutSession(session) {
   if (terminal && (session.timer !== null || session.currentSet !== null)) {
     throw new TypeError('terminal session cannot retain timer or currentSet state');
   }
+  if (terminal && activeSetStartedAt !== null) {
+    throw new TypeError('terminal session cannot retain active set state');
+  }
   if (!terminal && currentStep) {
     const needsSet = currentStep.kind === 'strength' || currentStep.kind === 'interval';
     if (needsSet !== (session.currentSet !== null)) {
@@ -467,9 +489,16 @@ function assertWorkoutSession(session) {
       needsSet &&
       session.currentSet > 1 &&
       currentStep.restSeconds > 0 &&
-      session.timer === null
+      session.timer === null &&
+      activeSetStartedAt === null
     ) {
-      throw new TypeError('session currentSet after 1 requires its planned rest or step timer');
+      throw new TypeError('session currentSet after 1 requires its planned rest or explicit set start');
+    }
+    if (
+      activeSetStartedAt !== null &&
+      (currentStep.kind !== 'strength' || session.timer !== null)
+    ) {
+      throw new TypeError('session active set state requires a strength step without a timer');
     }
   }
   return session;
@@ -509,8 +538,10 @@ function assertCommand(command) {
   ) {
     throw new TypeError('confirm_clock_anomaly requires reason clock-confirmed');
   }
-  if (command.type === 'complete_set') {
+  if (command.type === 'start_set' || command.type === 'complete_set') {
     assertSafeInteger(command.payload.setNumber, 'command.payload.setNumber', 1);
+  }
+  if (command.type === 'complete_set') {
     assertSafeInteger(command.payload.reps, 'command.payload.reps', 1);
     assertNullableMeasurement(command.payload.weightKg, 'command.payload.weightKg');
   }
@@ -546,6 +577,16 @@ function ensureStepResult(session, stepId) {
     session.stepResults.push(result);
   }
   return result;
+}
+
+function isCurrentStrengthSetStarted(session, step) {
+  if (step.kind !== 'strength') {
+    return false;
+  }
+  if (hasOwn(session, 'activeSetStartedAt')) {
+    return session.activeSetStartedAt !== null;
+  }
+  return session.currentSet === 1 || step.restSeconds === 0;
 }
 
 function assertBusinessProgressionStatus(session, command) {
@@ -603,6 +644,7 @@ function advanceAfterStep(session, stepId, nowMs, status = 'completed') {
   result.status = status;
   result.completedAt = nowMs;
   session.timer = null;
+  session.activeSetStartedAt = null;
   session.currentStepIndex += 1;
   if (session.currentStepIndex === session.planSnapshot.steps.length) {
     session.status = 'completed';
@@ -612,6 +654,7 @@ function advanceAfterStep(session, stepId, nowMs, status = 'completed') {
   }
   const nextStep = currentStepFor(session);
   session.currentSet = nextStep.kind === 'strength' || nextStep.kind === 'interval' ? 1 : null;
+  session.activeSetStartedAt = nextStep.kind === 'strength' ? nowMs : null;
 }
 
 function startCurrentTimedStep(session, nowMs, timerEngine) {
@@ -656,6 +699,7 @@ function applyTransition(session, command, timerEngine) {
     session.status = 'aborted';
     session.endedAt = transitionNowMs;
     session.timer = null;
+    session.activeSetStartedAt = null;
     session.currentSet = null;
     return;
   }
@@ -742,6 +786,7 @@ function applyTransition(session, command, timerEngine) {
       throw createSessionError('Previous step has no terminal result', 'SESSION_PREVIOUS_UNAVAILABLE');
     }
     session.timer = null;
+    session.activeSetStartedAt = null;
     session.currentStepIndex = previousIndex;
     session.currentSet = null;
     previousResult.status = 'in_progress';
@@ -750,6 +795,30 @@ function applyTransition(session, command, timerEngine) {
   }
   if (command.payload.stepId !== step.id) {
     throw createSessionError('Command stepId does not match current step', 'SESSION_STEP_MISMATCH');
+  }
+  if (command.type === 'start_set') {
+    if (step.kind !== 'strength') {
+      throw createSessionError('start_set requires a strength step', 'SESSION_SET_UNSUPPORTED');
+    }
+    if (command.payload.setNumber !== session.currentSet) {
+      throw createSessionError('Set number does not match currentSet', 'SESSION_SET_MISMATCH');
+    }
+    if (
+      session.timer === null ||
+      session.timer.mode !== 'rest' ||
+      session.timer.setNumber !== session.currentSet
+    ) {
+      throw createSessionError(
+        'Current set is not waiting on an expired rest',
+        'SESSION_REST_START_REQUIRED'
+      );
+    }
+    if (session.timer.status !== 'expired') {
+      throw createSessionError('Rest timer must expire before next set', 'SESSION_REST_NOT_EXPIRED');
+    }
+    session.timer = null;
+    session.activeSetStartedAt = transitionNowMs;
+    return;
   }
   if (command.type === 'start_step') {
     if (session.timer !== null) {
@@ -789,6 +858,17 @@ function applyTransition(session, command, timerEngine) {
     throw createSessionError(
       'Timed step completion requires confirm_next',
       'SESSION_CONFIRM_NEXT_REQUIRED'
+    );
+  }
+  if (
+    progressionType === 'confirm_next' &&
+    hasExpiredTimer &&
+    step.kind === 'strength' &&
+    session.timer.mode === 'rest'
+  ) {
+    throw createSessionError(
+      'Expired strength rest requires explicit start_set',
+      'SESSION_REST_START_REQUIRED'
     );
   }
   if (progressionType === 'complete_step' || progressionType === 'confirm_next') {
@@ -884,7 +964,13 @@ function applyTransition(session, command, timerEngine) {
       ) {
         throw createSessionError('Rest timer must expire before next set', 'SESSION_REST_NOT_EXPIRED');
       }
-      session.timer = null;
+      throw createSessionError(
+        'Next set requires explicit start_set after rest expiry',
+        'SESSION_SET_NOT_STARTED'
+      );
+    }
+    if (!isCurrentStrengthSetStarted(session, step)) {
+      throw createSessionError('Current set has not been started', 'SESSION_SET_NOT_STARTED');
     }
     const result = ensureStepResult(session, step.id);
     if (result.setResults.some(({ setNumber }) => setNumber === command.payload.setNumber)) {
@@ -901,6 +987,7 @@ function applyTransition(session, command, timerEngine) {
       return;
     }
     session.currentSet += 1;
+    session.activeSetStartedAt = step.restSeconds > 0 ? null : transitionNowMs;
     session.timer = step.restSeconds > 0 ? timerEngine.start({
       mode: 'rest',
       durationSeconds: step.restSeconds,
@@ -979,6 +1066,7 @@ function createWorkoutSession({
     elapsedRemainderMilliseconds: 0,
     currentStepIndex: 0,
     currentSet: firstStep.kind === 'strength' || firstStep.kind === 'interval' ? 1 : null,
+    activeSetStartedAt: firstStep.kind === 'strength' ? nowMs : null,
     timer: null,
     stepResults: [],
     processedCommands: [{

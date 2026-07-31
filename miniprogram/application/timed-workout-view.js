@@ -78,11 +78,14 @@ function deriveRemaining(session, step, nowMs, timerEngine) {
   return session.timer.remainingSecondsAtCheckpoint;
 }
 
-function deriveState(session) {
+function deriveState(session, step) {
   if (session.status === 'completed' || session.status === 'aborted') {
     return session.status;
   }
   if (session.timer && session.timer.status === 'expired') {
+    if (session.timer.mode === 'rest' && step && step.kind === 'strength') {
+      return 'rest-expired-awaiting-start-set';
+    }
     return 'expired-awaiting-confirmation';
   }
   if (
@@ -120,13 +123,17 @@ function buildTimedWorkoutView(session, {
     0,
     Math.min(100, Math.round((1 - remainingSeconds / timerDuration) * 100))
   );
-  const state = deriveState(session);
+  const state = deriveState(session, step);
   const requiresConfirmation = state === 'clock-anomaly-awaiting-confirmation';
+  const requiresStartSet = state === 'rest-expired-awaiting-start-set';
   const previousStep = session.currentStepIndex > 0
     ? session.planSnapshot.steps[session.currentStepIndex - 1]
     : null;
   const canProgress = session.status === 'in_progress' && !terminal;
-  const canAlternativeProgress = canProgress && state !== 'expired-awaiting-confirmation';
+  const canAlternativeProgress = canProgress && ![
+    'expired-awaiting-confirmation',
+    'rest-expired-awaiting-start-set'
+  ].includes(state);
   const canAdjust = Boolean(
     session.timer &&
     !requiresConfirmation &&
@@ -161,6 +168,7 @@ function buildTimedWorkoutView(session, {
     ),
     requiresConfirmation,
     showNextConfirmation: state === 'expired-awaiting-confirmation',
+    showStartSetConfirmation: requiresStartSet,
     controls: {
       start: control('开始', !(state === 'ready' && step && ['timed', 'interval'].includes(step.kind))),
       pause: control('暂停', state !== 'running'),
@@ -173,6 +181,11 @@ function buildTimedWorkoutView(session, {
         previousStep.kind !== 'interval'
       )),
       next: control('进入下一步', state !== 'expired-awaiting-confirmation', 'primary'),
+      startSet: control(
+        `开始第 ${session.currentSet || 1} 组`,
+        !requiresStartSet,
+        'primary'
+      ),
       skip: control('跳过', !canAlternativeProgress, 'quiet'),
       earlyComplete: control('提前完成', !(
         canAlternativeProgress && step && step.kind === 'timed' && session.timer !== null

@@ -319,6 +319,13 @@ class TimedWorkoutRuntime {
     return this.execute('confirm_next_and_start_next', { stepId: this.currentStep().id });
   }
 
+  startSet() {
+    return this.execute('start_set', {
+      stepId: this.currentStep().id,
+      setNumber: this.session.currentSet
+    });
+  }
+
   endWorkout() {
     return this.execute('abort', { reason: 'user-ended-workout' });
   }

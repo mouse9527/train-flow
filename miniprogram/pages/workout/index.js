@@ -197,6 +197,7 @@ function createWorkoutPageDefinition({
     },
     onPrevious() { this.invoke('previous', 'previous'); },
     onNext() { this.invoke('next', 'confirmNext'); },
+    onStartSet() { this.invoke('startSet', 'startSet'); },
     onSubtract30() { this.invoke('subtract30', 'adjustTimer', -30); },
     onAdd30() { this.invoke('add30', 'adjustTimer', 30); },
 

@@ -38,6 +38,13 @@
       <button class="control control--primary control--wide" bindtap="onNext" disabled="{{view.controls.next.disabled || busy}}">进入下一步</button>
     </view>
 
+    <view class="expiry-card" wx:if="{{view.showStartSetConfirmation}}">
+      <text class="expiry-card__eyebrow">组间休息结束</text>
+      <text class="expiry-card__title">下一组等待开始</text>
+      <text class="expiry-card__copy">确认后才会进入当前组，不会自动记录完成结果。</text>
+      <button class="control control--primary control--wide" bindtap="onStartSet" disabled="{{view.controls.startSet.disabled || busy}}">{{view.controls.startSet.label}}</button>
+    </view>
+
     <view class="clock-anomaly-card" wx:if="{{view.requiresConfirmation}}">
       <text class="clock-anomaly-card__eyebrow">检测到设备时间变化</text>
       <text class="clock-anomaly-card__title">计时已安全暂停</text>
