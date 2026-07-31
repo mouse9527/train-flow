@@ -5,6 +5,9 @@ const {
   createSessionError,
   createWorkoutSession
 } = require('./workout-session');
+const {
+  ensureTerminalTrainingRecord
+} = require('./training-record');
 
 function assertDatabase(database) {
   if (!database || typeof database.load !== 'function' || typeof database.commit !== 'function') {
@@ -63,6 +66,7 @@ class SessionRepository {
         if (!isTerminal(draft.activeSession)) {
           throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
         }
+        ensureTerminalTrainingRecord(draft.records, draft.activeSession);
       }
       draft.activeSession = cloneWorkoutSession(candidate);
     }, snapshot.localRevision);
@@ -97,6 +101,9 @@ class SessionRepository {
         throw createSessionError('Concurrent command already consumed this key', 'SESSION_COMMAND_RACE');
       }
       draft.activeSession = cloneWorkoutSession(applied.session);
+      if (isTerminal(applied.session)) {
+        ensureTerminalTrainingRecord(draft.records, applied.session);
+      }
     }, snapshot.localRevision);
     assertWorkoutSession(committed.activeSession);
     return { session: cloneWorkoutSession(committed.activeSession), replayed: false };
