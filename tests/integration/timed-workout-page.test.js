@@ -113,6 +113,35 @@ test('08:35 start, 08:37 hide and 08:41 show expires only the current step and n
   assert.equal(next.timerLabel, '12:00');
 });
 
+test('expired occurrence notification stays deduplicated after runtime and page reconstruction', () => {
+  const harness = createHarness();
+  harness.runtime.load({ planId: harness.plans[0].id });
+  harness.runtime.start();
+  harness.setNow(START_AT + 6 * 60_000);
+
+  const expired = harness.runtime.onShow();
+  assert.equal(expired.state, 'expired-awaiting-confirmation');
+  assert.equal(harness.notifications.length, 1);
+
+  let rebuiltSequence = 0;
+  const rebuilt = createTimedWorkoutRuntime({
+    database: createLocalDatabase({
+      storage: harness.storage,
+      now: () => START_AT + 6 * 60_000 + 1_000
+    }),
+    now: () => START_AT + 6 * 60_000 + 1_000,
+    idFactory: () => 'must_restore_existing_session',
+    commandKeyFactory: (type) => `rebuilt_${type}_${++rebuiltSequence}`,
+    notifyExpired: (occurrenceId) => harness.notifications.push(occurrenceId)
+  });
+
+  const restored = rebuilt.load({});
+  assert.equal(restored.state, 'expired-awaiting-confirmation');
+  assert.equal(restored.currentStepIndex, 0);
+  assert.equal(harness.notifications.length, 1);
+  assert.equal(new Set(harness.notifications).size, 1);
+});
+
 test('skip, previous, early complete and end workout preserve command revisions and valid states', () => {
   const harness = createHarness();
   harness.runtime.load({ planId: harness.plans[0].id });

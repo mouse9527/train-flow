@@ -116,6 +116,22 @@ class TimedWorkoutRuntime {
     if (!occurrenceId || this.notifiedOccurrences.has(occurrenceId)) {
       return;
     }
+    const snapshot = this.database.load();
+    const persistedOccurrences = snapshot.notifications
+      ? snapshot.notifications.expiredOccurrences
+      : [];
+    if (persistedOccurrences.includes(occurrenceId)) {
+      this.notifiedOccurrences.add(occurrenceId);
+      return;
+    }
+    this.database.commit((draft) => {
+      if (!draft.notifications) {
+        draft.notifications = { expiredOccurrences: [] };
+      }
+      if (!draft.notifications.expiredOccurrences.includes(occurrenceId)) {
+        draft.notifications.expiredOccurrences.push(occurrenceId);
+      }
+    }, snapshot.localRevision);
     this.notifiedOccurrences.add(occurrenceId);
     this.notifyExpired(occurrenceId);
   }

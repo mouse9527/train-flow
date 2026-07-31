@@ -147,6 +147,24 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   if (snapshot.activeSession !== null) {
     assertWorkoutSession(snapshot.activeSession);
   }
+  if (snapshot.notifications !== undefined) {
+    assertPlainObject(snapshot.notifications, 'notifications');
+    if (!Array.isArray(snapshot.notifications.expiredOccurrences)) {
+      throw new Error('notifications.expiredOccurrences must be an array');
+    }
+    const invalidOccurrence = snapshot.notifications.expiredOccurrences.find(
+      (occurrenceId) => typeof occurrenceId !== 'string' || occurrenceId.length === 0
+    );
+    if (invalidOccurrence !== undefined) {
+      throw new Error('notifications.expiredOccurrences must contain non-empty strings');
+    }
+    if (
+      new Set(snapshot.notifications.expiredOccurrences).size !==
+      snapshot.notifications.expiredOccurrences.length
+    ) {
+      throw new Error('notifications.expiredOccurrences must be unique');
+    }
+  }
   assertPlainObject(snapshot.statisticsProjection, 'statisticsProjection');
   assertPlainObject(snapshot.sync, 'sync');
   if (!Array.isArray(snapshot.sync.outbox) || !Array.isArray(snapshot.sync.conflicts)) {

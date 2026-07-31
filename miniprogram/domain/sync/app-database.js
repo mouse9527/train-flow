@@ -14,6 +14,9 @@ function createAppDatabase({ now = Date.now, install = null, schemaVersion = 1 }
     settings: { ...DEFAULT_USER_SETTINGS },
     plans: [],
     activeSession: null,
+    notifications: {
+      expiredOccurrences: []
+    },
     records: [],
     statisticsProjection: {},
     sync: {
