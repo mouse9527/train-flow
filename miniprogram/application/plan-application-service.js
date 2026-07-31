@@ -235,12 +235,18 @@ class PlanApplicationService {
   recalculateDraftDuration(draft, session) {
     const recalculated = createPlanDraft(draft);
     const modeledSeconds = estimateModeledSeconds(recalculated.steps);
-    recalculated.estimatedDurationSeconds = session.isNew
-      ? modeledSeconds
-      : Math.max(
+    const isRestDay = recalculated.steps.length > 0 &&
+      recalculated.steps.every(({ kind }) => kind === 'rest_day');
+    if (isRestDay) {
+      recalculated.estimatedDurationSeconds = 0;
+    } else if (session.isNew) {
+      recalculated.estimatedDurationSeconds = modeledSeconds;
+    } else {
+      recalculated.estimatedDurationSeconds = Math.max(
         0,
         session.originalEstimatedDurationSeconds + modeledSeconds - session.originalModeledSeconds
       );
+    }
     return recalculated;
   }
 

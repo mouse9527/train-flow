@@ -372,6 +372,34 @@ test('saving recalculates estimated duration from kind-specific modeled seconds 
   assert.equal(savedNew.plan.estimatedDurationSeconds, 420);
 });
 
+test('replacing an existing workout with only rest_day steps forces estimated duration to zero', () => {
+  const runtime = createRuntime();
+  const editor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+
+  for (const step of [...editor.draft.steps]) {
+    runtime.application.removePlanDraftStep({
+      editorSessionId: editor.editorSessionId,
+      draft: editor.draft,
+      stepId: step.id
+    });
+  }
+  runtime.application.addPlanDraftStep({
+    editorSessionId: editor.editorSessionId,
+    draft: editor.draft,
+    kind: 'rest_day',
+    name: '休息与日常活动'
+  });
+
+  const saved = runtime.application.savePlanDraft({
+    editorSessionId: editor.editorSessionId,
+    draft: editor.draft,
+    expectedRevision: editor.expectedRevision
+  });
+
+  assert.equal(saved.ok, true);
+  assert.equal(saved.plan.estimatedDurationSeconds, 0);
+});
+
 test('copy uses the detached editor draft including unsaved nested edits and recalculated duration', () => {
   const runtime = createRuntime();
   const editor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
