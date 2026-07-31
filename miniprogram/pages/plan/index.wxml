@@ -67,11 +67,14 @@
       <text class="rest-guidance-copy">{{week.selectedDay.restGuidance}}</text>
     </view>
 
-    <button
-      class="start-workout"
-      wx:if="{{week.selectedDay.canStartWorkout}}"
-      bindtap="onStartWorkout"
-    >开始训练</button>
+    <view class="detail-actions">
+      <button class="edit-plan" bindtap="onEditPlan">编辑 / 复制计划</button>
+      <button
+        class="start-workout"
+        wx:if="{{week.selectedDay.canStartWorkout}}"
+        bindtap="onStartWorkout"
+      >开始训练</button>
+    </view>
 
     <view class="step-list">
       <view class="step-card" wx:for="{{week.selectedDay.steps}}" wx:key="id" wx:for-item="step">

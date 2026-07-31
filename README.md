@@ -35,6 +35,15 @@ These query parameters are enabled only when the Mini Program environment is
 real `currentTrainingDate`. Fixtures are read-only view inputs; they do not
 commit records or sessions to the local database.
 
+## Plan editor verification
+
+Open `pages/plan/edit/index?planId=plan_20260803_builtin` in WeChat DevTools to
+exercise the plan editor. It supports kind-specific duration/set/rep/rest and
+equipment-target fields, step add/delete/reorder, field-level validation, and a
+copy-to-date flow. Copying over an existing date always shows a confirmation
+with the target plan revision; saving an edited plan only affects future workout
+starts because an active Session keeps its own deep `PlanSnapshot`.
+
 ## Privacy
 
 The public repository contains no real identities, health data, training

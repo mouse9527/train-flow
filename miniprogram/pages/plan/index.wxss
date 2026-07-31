@@ -259,14 +259,33 @@
   line-height: 1.6;
 }
 
-.start-workout {
-  margin: 24rpx 0;
+.detail-actions {
+  display: flex;
+  margin: 24rpx -6rpx;
+}
+
+.start-workout,
+.edit-plan {
+  flex: 1;
+  margin: 0 6rpx;
   border-radius: 14rpx;
-  background: #2d7dd2;
-  color: #ffffff;
   font-size: 28rpx;
   font-weight: 600;
   line-height: 82rpx;
+}
+
+.start-workout {
+  background: #2d7dd2;
+  color: #ffffff;
+}
+
+.edit-plan {
+  background: #eef6ff;
+  color: #2468a6;
+}
+
+.edit-plan::after {
+  border: none;
 }
 
 .rest-guidance {

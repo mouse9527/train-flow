@@ -2,6 +2,7 @@
   "pages": [
     "pages/today/index",
     "pages/plan/index",
+    "pages/plan/edit/index",
     "pages/workout/index",
     "pages/record/index",
     "pages/stats/index",

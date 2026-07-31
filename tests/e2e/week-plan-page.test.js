@@ -203,6 +203,17 @@ test('Sunday renders rest guidance and cannot launch a workout', (t) => {
   assert.deepEqual(navigations, []);
 });
 
+test('selected plan can navigate to its editor', (t) => {
+  const { page, navigations } = createPageHarness(t);
+  page.onLoad({});
+
+  page.onEditPlan();
+
+  assert.deepEqual(navigations, [
+    '/pages/plan/edit/index?planId=plan_20260803_builtin'
+  ]);
+});
+
 test('plan WXML binds week navigation, seven-day selection, statuses, detail and conditional start action', () => {
   const wxml = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/plan/index.wxml'), 'utf8');
   const dayLoopTag = wxml.match(/<view\b(?=[^>]*wx:for="\{\{week\.days\}\}")[^>]*>/s);
@@ -220,6 +231,7 @@ test('plan WXML binds week navigation, seven-day selection, statuses, detail and
   assert.match(wxml, /step\.metrics/);
   assert.match(wxml, /step\.targets/);
   assert.match(wxml, /safetyNotices/);
+  assert.match(wxml, /bindtap="onEditPlan"/);
   assert.match(wxml, /wx:if="\{\{week\.selectedDay\.canStartWorkout\}\}"[^>]*bindtap="onStartWorkout"/);
   assert.match(wxml, /\{\{week\.emptyMessage\}\}/);
   assert.match(wxml, /\{\{week\.emptyGuidance\}\}/);
