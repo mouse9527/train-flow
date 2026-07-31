@@ -85,6 +85,14 @@ function deriveState(session) {
   if (session.timer && session.timer.status === 'expired') {
     return 'expired-awaiting-confirmation';
   }
+  if (
+    session.timer &&
+    session.timer.status === 'paused' &&
+    session.timer.pauseReason === 'clock-anomaly' &&
+    session.timer.requiresConfirmation === true
+  ) {
+    return 'clock-anomaly-awaiting-confirmation';
+  }
   if (session.status === 'paused') {
     return 'paused';
   }
@@ -113,6 +121,7 @@ function buildTimedWorkoutView(session, {
     Math.min(100, Math.round((1 - remainingSeconds / timerDuration) * 100))
   );
   const state = deriveState(session);
+  const requiresConfirmation = state === 'clock-anomaly-awaiting-confirmation';
   const previousStep = session.currentStepIndex > 0
     ? session.planSnapshot.steps[session.currentStepIndex - 1]
     : null;
@@ -120,6 +129,7 @@ function buildTimedWorkoutView(session, {
   const canAlternativeProgress = canProgress && state !== 'expired-awaiting-confirmation';
   const canAdjust = Boolean(
     session.timer &&
+    !requiresConfirmation &&
     (session.timer.status === 'running' || session.timer.status === 'paused')
   );
 
@@ -149,11 +159,13 @@ function buildTimedWorkoutView(session, {
     deadlineReached: Boolean(
       session.timer && session.timer.status === 'running' && remainingSeconds === 0
     ),
+    requiresConfirmation,
     showNextConfirmation: state === 'expired-awaiting-confirmation',
     controls: {
       start: control('开始', !(state === 'ready' && step && ['timed', 'interval'].includes(step.kind))),
       pause: control('暂停', state !== 'running'),
       resume: control('继续', state !== 'paused'),
+      confirmClock: control('确认时间后继续', !requiresConfirmation, 'primary'),
       previous: control('上一步', !(
         canProgress &&
         previousStep &&

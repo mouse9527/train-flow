@@ -610,9 +610,22 @@ test('Session checkpoints preserve TimerEngine rollback boundaries and fail clos
   assert.equal(anomalous.elapsedActiveSeconds, anchored.elapsedActiveSeconds);
 
   const confirmationAt = anchored.lastCheckpointAt + 5_000;
+  assert.throws(
+    () => applyWorkoutCommand(
+      anomalous,
+      command('resume', 4, 'rollback_timer_plain_resume', confirmationAt, { reason: 'user' })
+    ),
+    (error) => error && error.code === 'SESSION_CLOCK_CONFIRMATION_REQUIRED'
+  );
   const confirmed = applyWorkoutCommand(
     anomalous,
-    command('resume', 4, 'rollback_timer_confirm', confirmationAt, { reason: 'clock-confirmed' })
+    command(
+      'confirm_clock_anomaly',
+      4,
+      'rollback_timer_confirm',
+      confirmationAt,
+      { reason: 'clock-confirmed' }
+    )
   ).session;
   assert.equal(confirmed.status, 'in_progress');
   assert.equal(confirmed.timer.status, 'running');

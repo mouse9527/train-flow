@@ -38,6 +38,13 @@
       <button class="control control--primary control--wide" bindtap="onNext" disabled="{{view.controls.next.disabled || busy}}">进入下一步</button>
     </view>
 
+    <view class="clock-anomaly-card" wx:if="{{view.requiresConfirmation}}">
+      <text class="clock-anomaly-card__eyebrow">检测到设备时间变化</text>
+      <text class="clock-anomaly-card__title">计时已安全暂停</text>
+      <text class="clock-anomaly-card__copy">请确认当前时间可信后再继续，本页面不会自动恢复计时。</text>
+      <button class="control control--primary control--wide" bindtap="onConfirmClockAnomaly" disabled="{{view.controls.confirmClock.disabled || busy}}">确认时间后继续</button>
+    </view>
+
     <view class="control-panel" wx:if="{{view.state !== 'completed' && view.state !== 'aborted'}}">
       <view class="control-panel__primary">
         <button class="control control--primary" bindtap="onStart" disabled="{{view.controls.start.disabled || busy}}">开始</button>

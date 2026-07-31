@@ -170,6 +170,9 @@ function createWorkoutPageDefinition({
     onStart() { this.invoke('start', 'start'); },
     onPause() { this.invoke('pause', 'pause'); },
     onResume() { this.invoke('resume', 'resume'); },
+    onConfirmClockAnomaly() {
+      this.invoke('confirmClock', 'confirmClockAnomaly');
+    },
     onPrevious() { this.invoke('previous', 'previous'); },
     onNext() { this.invoke('next', 'confirmNext'); },
     onSubtract30() { this.invoke('subtract30', 'adjustTimer', -30); },

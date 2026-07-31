@@ -10,6 +10,7 @@
 .workout-hero,
 .target-card,
 .expiry-card,
+.clock-anomaly-card,
 .control-panel,
 .terminal-card,
 .recovery-card {
@@ -47,10 +48,14 @@
 .target-card__value { display: block; margin-top: 8rpx; font-size: 30rpx; font-weight: 700; }
 
 .expiry-card { margin-top: 22rpx; padding: 26rpx; border-color: rgba(218, 136, 37, 0.24); background: #fff9ed; }
+.clock-anomaly-card { margin-top: 22rpx; padding: 26rpx; border-color: rgba(49, 95, 154, 0.22); background: #f1f6ff; }
+.clock-anomaly-card__eyebrow { color: #315f9a; font-size: 24rpx; font-weight: 700; letter-spacing: 1rpx; }
 .expiry-card__title,
+.clock-anomaly-card__title,
 .terminal-card__title,
 .recovery-card__title { display: block; margin-top: 8rpx; font-size: 34rpx; font-weight: 800; }
 .expiry-card__copy,
+.clock-anomaly-card__copy,
 .terminal-card__copy,
 .recovery-card__message,
 .recovery-card__hint { display: block; margin-top: 10rpx; color: #6d6252; font-size: 25rpx; line-height: 1.55; }

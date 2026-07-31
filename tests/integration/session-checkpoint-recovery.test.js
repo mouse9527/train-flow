@@ -331,7 +331,7 @@ test('startup recovery persists TimerEngine rollback tolerance and clock anomaly
     assert.equal(restored.session.timer.pauseReason, 'clock-anomaly');
     assert.equal(restored.session.timer.requiresConfirmation, true);
     const confirmed = rebuilt.service.execute({
-      type: 'resume',
+      type: 'confirm_clock_anomaly',
       expectedSessionRevision: 4,
       commandKey: 'rollback_integration_confirm',
       nowMs: restoreAt,

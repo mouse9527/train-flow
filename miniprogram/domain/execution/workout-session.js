@@ -40,6 +40,7 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   checkpoint: Object.freeze(['reason']),
   pause: Object.freeze(['reason']),
   resume: Object.freeze(['reason']),
+  confirm_clock_anomaly: Object.freeze(['reason']),
   adjust_timer: Object.freeze(['deltaSeconds']),
   complete_step: Object.freeze(['stepId']),
   confirm_next: Object.freeze(['stepId']),
@@ -494,8 +495,19 @@ function assertCommand(command) {
       throw new TypeError('command.payload.reason is not a supported checkpoint reason');
     }
   }
-  if (command.type === 'abort' || command.type === 'pause' || command.type === 'resume') {
+  if (
+    command.type === 'abort' ||
+    command.type === 'pause' ||
+    command.type === 'resume' ||
+    command.type === 'confirm_clock_anomaly'
+  ) {
     assertNonEmptyString(command.payload.reason, 'command.payload.reason');
+  }
+  if (
+    command.type === 'confirm_clock_anomaly' &&
+    command.payload.reason !== 'clock-confirmed'
+  ) {
+    throw new TypeError('confirm_clock_anomaly requires reason clock-confirmed');
   }
   if (command.type === 'complete_set') {
     assertSafeInteger(command.payload.setNumber, 'command.payload.setNumber', 1);
@@ -629,7 +641,7 @@ function applyTransition(session, command, timerEngine) {
     command.type
   );
   const confirmsClockAnomaly =
-    command.type === 'resume' &&
+    command.type === 'confirm_clock_anomaly' &&
     session.timer !== null &&
     session.timer.pauseReason === 'clock-anomaly';
   const transitionNowMs = confirmsClockAnomaly
@@ -667,8 +679,31 @@ function applyTransition(session, command, timerEngine) {
       if (session.timer.status !== 'paused') {
         throw createSessionError('Only a paused timer can resume', 'SESSION_TIMER_RESUME_INVALID');
       }
+      if (session.timer.pauseReason === 'clock-anomaly') {
+        throw createSessionError(
+          'Clock anomaly requires explicit confirmation',
+          'SESSION_CLOCK_CONFIRMATION_REQUIRED'
+        );
+      }
       session.timer = timerEngine.resume(session.timer, transitionNowMs);
     }
+    session.status = 'in_progress';
+    return;
+  }
+  if (command.type === 'confirm_clock_anomaly') {
+    if (
+      session.status !== 'paused' ||
+      session.timer === null ||
+      session.timer.status !== 'paused' ||
+      session.timer.pauseReason !== 'clock-anomaly' ||
+      session.timer.requiresConfirmation !== true
+    ) {
+      throw createSessionError(
+        'Session has no clock anomaly awaiting confirmation',
+        'SESSION_CLOCK_CONFIRMATION_INVALID'
+      );
+    }
+    session.timer = timerEngine.resume(session.timer, transitionNowMs);
     session.status = 'in_progress';
     return;
   }

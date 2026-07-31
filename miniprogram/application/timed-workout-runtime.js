@@ -164,6 +164,10 @@ class TimedWorkoutRuntime {
     return this.execute('resume', { reason: 'user' });
   }
 
+  confirmClockAnomaly() {
+    return this.execute('confirm_clock_anomaly', { reason: 'clock-confirmed' });
+  }
+
   adjustTimer(deltaSeconds) {
     return this.execute('adjust_timer', { deltaSeconds });
   }

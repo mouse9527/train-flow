@@ -272,6 +272,31 @@ test('atomic next-step command leaves no half progression after back-half storag
   );
 });
 
+test('clock rollback is visible, disables ordinary resume and requires explicit confirmation command', () => {
+  const harness = createHarness();
+  harness.runtime.load({ planId: harness.plans[0].id });
+  harness.runtime.start();
+  harness.setNow(START_AT + 10_000);
+  harness.runtime.onHide();
+  harness.setNow(START_AT + 4_999);
+
+  const anomaly = harness.runtime.onShow();
+  assert.equal(anomaly.state, 'clock-anomaly-awaiting-confirmation');
+  assert.equal(anomaly.requiresConfirmation, true);
+  assert.equal(anomaly.controls.resume.disabled, true);
+  assert.equal(anomaly.controls.confirmClock.disabled, false);
+  assert.throws(
+    () => harness.runtime.resume(),
+    (error) => error && error.code === 'SESSION_CLOCK_CONFIRMATION_REQUIRED'
+  );
+
+  harness.setNow(START_AT + 11_000);
+  const confirmed = harness.runtime.confirmClockAnomaly();
+  assert.equal(confirmed.state, 'running');
+  assert.equal(confirmed.requiresConfirmation, false);
+  assert.equal(confirmed.controls.confirmClock.disabled, true);
+});
+
 test('skip, previous, early complete and end workout preserve command revisions and valid states', () => {
   const harness = createHarness();
   harness.runtime.load({ planId: harness.plans[0].id });
@@ -379,7 +404,7 @@ function createPageHarness({ confirm = true } = {}) {
   const runtime = {};
   for (const method of [
     'load', 'render', 'start', 'pause', 'resume', 'previous', 'confirmNext',
-    'skip', 'earlyComplete', 'adjustTimer', 'endWorkout', 'onHide', 'onShow',
+    'confirmClockAnomaly', 'skip', 'earlyComplete', 'adjustTimer', 'endWorkout', 'onHide', 'onShow',
     'onUnload', 'materializeDeadline'
   ]) {
     runtime[method] = (...args) => {
@@ -483,6 +508,9 @@ test('workout page declares native timer components, large timer states and thum
     assert.match(wxml, new RegExp(copy.replace('+', '\\+')));
   }
   assert.match(wxml, /expired-awaiting-confirmation/);
+  assert.match(wxml, /requiresConfirmation/);
+  assert.match(wxml, /确认时间后继续/);
+  assert.match(wxml, /bindtap="onConfirmClockAnomaly"/);
   assert.match(wxss, /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/);
   assert.match(wxss, /min-height:\s*96rpx/);
 
