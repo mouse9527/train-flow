@@ -14,8 +14,18 @@ const {
   createWechatDeviceAdapter
 } = require('../../miniprogram/services/wechat-device-adapter');
 const {
+  createTimedWorkoutRuntime
+} = require('../../miniprogram/application/timed-workout-runtime');
+const {
+  createWorkoutSummaryRuntime
+} = require('../../miniprogram/application/workout-summary-runtime');
+const {
   createDefaultPlans
 } = require('../../miniprogram/domain/planning/default-plan-factory');
+const {
+  createLocalDatabase
+} = require('../../miniprogram/services/local-database');
+const { StorageDouble, clone } = require('../helpers/storage-double');
 
 const START_AT = 1785717300000;
 
@@ -186,4 +196,109 @@ test('alarm pain selection returns stop-and-seek-help guidance without diagnosis
   assert.match(feedback.safetyAdvice, /停止训练/);
   assert.match(feedback.safetyAdvice, /寻求.*帮助/);
   assert.doesNotMatch(feedback.safetyAdvice, /诊断|确诊|疾病/);
+});
+
+function createRuntimeHarness({ keepScreenOn = true } = {}) {
+  let clock = START_AT;
+  let sequence = 0;
+  const deviceCalls = [];
+  const database = createLocalDatabase({ storage: new StorageDouble(), now: () => clock });
+  const plan = manualPlan();
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_completion_runtime', createdAt: START_AT };
+    draft.settings.keepScreenOn = keepScreenOn;
+    draft.plans.push(clone(plan));
+  });
+  const runtime = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_completion_runtime',
+    commandKeyFactory: (type) => `completion_${type}_${++sequence}`,
+    deviceAdapterFactory(settings) {
+      assert.equal(settings.keepScreenOn, keepScreenOn);
+      return {
+        setKeepScreen(enabled) {
+          deviceCalls.push(['screen', enabled]);
+          return Promise.resolve({ supported: true });
+        },
+        notify(input) {
+          deviceCalls.push(['notify', input]);
+          return Promise.resolve({ delivered: true, degraded: false });
+        }
+      };
+    }
+  });
+  return {
+    database,
+    deviceCalls,
+    plan,
+    runtime,
+    setNow(value) { clock = value; }
+  };
+}
+
+test('runtime honors keep-screen settings and releases on hide, terminal completion and unload', async () => {
+  const harness = createRuntimeHarness();
+  harness.runtime.load({ planId: harness.plan.id });
+  await Promise.resolve();
+  assert.deepEqual(harness.deviceCalls[0], ['screen', true]);
+
+  harness.runtime.onHide();
+  harness.runtime.onShow();
+  harness.setNow(START_AT + 90_000);
+  harness.runtime.completeManual();
+  harness.runtime.onUnload();
+  await Promise.resolve();
+
+  assert.deepEqual(
+    harness.deviceCalls.filter(([kind]) => kind === 'screen').map(([, enabled]) => enabled),
+    [true, false, true, false, false]
+  );
+  const terminalNotifications = harness.deviceCalls.filter(
+    ([kind, input]) => kind === 'notify' && input.kind === 'session-completed'
+  );
+  assert.equal(terminalNotifications.length, 1);
+
+  const disabled = createRuntimeHarness({ keepScreenOn: false });
+  disabled.runtime.load({ planId: disabled.plan.id });
+  await Promise.resolve();
+  assert.equal(disabled.deviceCalls.some(([kind, enabled]) => kind === 'screen' && enabled), false);
+});
+
+test('summary runtime atomically saves one private completion fact without writing feedback to console', () => {
+  const harness = createRuntimeHarness();
+  harness.runtime.load({ planId: harness.plan.id });
+  harness.setNow(START_AT + 95_000);
+  harness.runtime.endWorkout();
+  const summaryRuntime = createWorkoutSummaryRuntime({ database: harness.database });
+  const loaded = summaryRuntime.load();
+  assert.equal(loaded.summary.status, 'aborted');
+
+  const logged = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args) => logged.push(args);
+  console.error = (...args) => logged.push(args);
+  try {
+    const saved = summaryRuntime.saveFeedback({
+      rpe: 8,
+      weightBeforeKg: 61.2,
+      pain: { lowerBack: true },
+      note: 'private-note-should-never-be-logged'
+    });
+    assert.equal(saved.saved, true);
+    assert.equal(saved.fact.status, 'aborted');
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+
+  assert.deepEqual(logged, []);
+  const records = harness.database.load().records;
+  assert.equal(records.length, 1);
+  assert.equal(records[0].sourceSessionId, 'session_completion_runtime');
+  assert.equal(records[0].feedback.note, 'private-note-should-never-be-logged');
+
+  summaryRuntime.saveFeedback({ rpe: 6 });
+  assert.equal(harness.database.load().records.length, 1, 'source Session must materialize at most once');
 });
