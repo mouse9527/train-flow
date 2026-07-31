@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "训练总结",
+  "usingComponents": {
+    "safety-notice": "/components/safety-notice/index"
+  }
+}

@@ -7,6 +7,17 @@
   color: #17231f;
 }
 
+.device-notice {
+  margin-bottom: 20rpx;
+  padding: 20rpx 24rpx;
+  border: 1rpx solid #E8D8A8;
+  border-radius: 18rpx;
+  background: #FFF8E7;
+  color: #765620;
+  font-size: 24rpx;
+  line-height: 1.55;
+}
+
 .workout-hero,
 .target-card,
 .strength-card,

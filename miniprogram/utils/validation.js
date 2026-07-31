@@ -180,6 +180,12 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
         'notifications.attemptedExpiredOccurrences'
       );
     }
+    if (snapshot.notifications.terminalOccurrences !== undefined) {
+      assertUniqueStringArray(
+        snapshot.notifications.terminalOccurrences,
+        'notifications.terminalOccurrences'
+      );
+    }
   }
   assertPlainObject(snapshot.statisticsProjection, 'statisticsProjection');
   assertPlainObject(snapshot.sync, 'sync');

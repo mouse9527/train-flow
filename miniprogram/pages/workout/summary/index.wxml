@@ -1,0 +1,51 @@
+<view class="summary-page">
+  <view class="error-card" wx:if="{{validationError && !summary}}">
+    <text class="error-card__title">暂时无法打开训练总结</text>
+    <text class="error-card__copy">{{validationError}}</text>
+  </view>
+
+  <block wx:if="{{summary}}">
+    <view class="summary-hero summary-hero--{{summary.status}}">
+      <text class="summary-hero__eyebrow">{{summary.status === 'completed' ? '训练完成' : '训练已中止'}}</text>
+      <text class="summary-hero__title">{{summary.planTitle}}</text>
+      <text class="summary-hero__copy">{{summary.status === 'completed' ? '本次训练已完整结束。' : '未完成部分不会被当作已完成。'}}</text>
+    </view>
+
+    <view class="facts-card">
+      <view class="fact"><text class="fact__value">{{summary.elapsedLabel}}</text><text class="fact__label">实际训练时长</text></view>
+      <view class="fact"><text class="fact__value">{{summary.completedStepCount}}</text><text class="fact__label">完成动作</text></view>
+      <view class="fact"><text class="fact__value">{{summary.skippedStepCount}}</text><text class="fact__label">跳过动作</text></view>
+    </view>
+
+    <view class="feedback-card">
+      <text class="section-title">身体反馈</text>
+      <text class="section-copy">以下内容属于私人训练数据，仅保存在本机。</text>
+
+      <label class="field">
+        <text class="field__label">RPE（1–10，必填）</text>
+        <input class="field__input" type="number" value="{{rpe}}" placeholder="必填：1 表示轻松，10 表示极限" bindinput="onRpeChange" />
+      </label>
+      <label class="field">
+        <text class="field__label">训练前体重（kg，可选）</text>
+        <input class="field__input" type="digit" value="{{weightBeforeKg}}" placeholder="最多一位小数" bindinput="onWeightInput" />
+      </label>
+
+      <view class="pain-grid">
+        <label class="pain-row"><text>膝部不适</text><switch checked="{{pain.knee}}" data-field="knee" bindchange="onPainChange" /></label>
+        <label class="pain-row"><text>下背不适</text><switch checked="{{pain.lowerBack}}" data-field="lowerBack" bindchange="onPainChange" /></label>
+        <label class="pain-row"><text>脚踝或脚趾不适</text><switch checked="{{pain.ankleOrToe}}" data-field="ankleOrToe" bindchange="onPainChange" /></label>
+        <label class="pain-row"><text>头晕或明显不适</text><switch checked="{{pain.dizziness}}" data-field="dizziness" bindchange="onPainChange" /></label>
+      </view>
+
+      <label class="field">
+        <text class="field__label">备注（可选，最多 500 字）</text>
+        <textarea class="field__textarea" maxlength="500" value="{{note}}" placeholder="记录主观感受，不会用于诊断" bindinput="onNoteInput" />
+      </label>
+
+      <text class="alarm-copy" wx:if="{{safetyAdvice}}">检测到不适时，请立即停止训练并寻求合适帮助。</text>
+      <safety-notice wx:if="{{safetyAdvice}}" notices="{{safetyNotices}}" />
+      <text class="validation-error" wx:if="{{validationError}}">{{validationError}}</text>
+      <button class="save-button" bindtap="onSubmit">{{saved ? '更新本机反馈' : '保存本机反馈'}}</button>
+    </view>
+  </block>
+</view>

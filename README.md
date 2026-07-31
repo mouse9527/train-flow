@@ -17,7 +17,24 @@ framework, no npm runtime dependencies.
 - `miniprogram/application/` — application services pages call into; pages never
   touch `wx.setStorageSync` or the cloud database directly.
 - `miniprogram/domain/` — domain models and repository contracts, framework-free.
+- `miniprogram/assets/` — packaged local media used by device adapters.
 - `tests/integration/`, `tests/e2e/` — Node `--test` suites.
+
+## Notification audio asset
+
+`miniprogram/assets/workout-notification.m4a` is a short project-generated alert
+tone used by the default WeChat `InnerAudioContext` when sound reminders are
+enabled. It contains no downloaded or third-party recording: the source was a
+deterministic 22.05 kHz mono PCM sine-wave tone generated locally, then encoded
+with the macOS system converter:
+
+```sh
+/usr/bin/afconvert notification-tone.wav \
+  -o miniprogram/assets/workout-notification.m4a \
+  -f m4af -d aac -b 32000 -c 1
+```
+
+The source WAV was temporary; the packaged M4A is the auditable delivery asset.
 
 ## Today page development fixtures
 

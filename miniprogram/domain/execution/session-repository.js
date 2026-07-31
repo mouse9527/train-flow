@@ -5,6 +5,10 @@ const {
   createSessionError,
   createWorkoutSession
 } = require('./workout-session');
+const {
+  ensureTerminalTrainingRecord,
+  findTrainingRecords
+} = require('./training-record');
 
 function assertDatabase(database) {
   if (!database || typeof database.load !== 'function' || typeof database.commit !== 'function') {
@@ -14,6 +18,15 @@ function assertDatabase(database) {
 
 function isTerminal(session) {
   return session.status === 'completed' || session.status === 'aborted';
+}
+
+function assertSessionIdAvailable(records, sessionId) {
+  if (findTrainingRecords(records, sessionId).length > 0) {
+    throw createSessionError(
+      'Session ID is already reserved by a historical TrainingRecord',
+      'SESSION_ID_REUSED'
+    );
+  }
 }
 
 class SessionRepository {
@@ -63,7 +76,9 @@ class SessionRepository {
         if (!isTerminal(draft.activeSession)) {
           throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
         }
+        ensureTerminalTrainingRecord(draft.records, draft.activeSession);
       }
+      assertSessionIdAvailable(draft.records, candidate.id);
       draft.activeSession = cloneWorkoutSession(candidate);
     }, snapshot.localRevision);
     assertWorkoutSession(committed.activeSession);
@@ -97,6 +112,9 @@ class SessionRepository {
         throw createSessionError('Concurrent command already consumed this key', 'SESSION_COMMAND_RACE');
       }
       draft.activeSession = cloneWorkoutSession(applied.session);
+      if (isTerminal(applied.session)) {
+        ensureTerminalTrainingRecord(draft.records, applied.session);
+      }
     }, snapshot.localRevision);
     assertWorkoutSession(committed.activeSession);
     return { session: cloneWorkoutSession(committed.activeSession), replayed: false };

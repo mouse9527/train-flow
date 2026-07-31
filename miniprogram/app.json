@@ -4,6 +4,7 @@
     "pages/plan/index",
     "pages/plan/edit/index",
     "pages/workout/index",
+    "pages/workout/summary/index",
     "pages/record/index",
     "pages/stats/index",
     "pages/settings/index"

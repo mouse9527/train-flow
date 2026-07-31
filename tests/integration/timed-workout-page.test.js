@@ -855,10 +855,10 @@ function createPageHarness({ confirm = true } = {}) {
   return { calls, intervalCallbacks, modalTitles, page, timeoutCallbacks };
 }
 
-test('expiration adapter waits for WeChat vibrate and toast success/fail callbacks', async () => {
+test('expiration adapter waits for callbacks and degrades vibration failure to visual feedback', async () => {
   const vibrateCalls = [];
   const toastCalls = [];
-  let notificationAdapter;
+  let deviceAdapterFactory;
   const runtime = {
     load() {
       return pageView();
@@ -878,7 +878,7 @@ test('expiration adapter waits for WeChat vibrate and toast success/fail callbac
   } = require('../../miniprogram/pages/workout/index');
   const definition = createWorkoutPageDefinition({
     runtimeFactory(options) {
-      notificationAdapter = options.notifyExpired;
+      deviceAdapterFactory = options.deviceAdapterFactory;
       return runtime;
     },
     getWx: () => wxApi,
@@ -895,9 +895,18 @@ test('expiration adapter waits for WeChat vibrate and toast success/fail callbac
     }
   };
   page.onLoad({});
+  const notificationAdapter = deviceAdapterFactory({
+    vibrationEnabled: true,
+    soundEnabled: false,
+    voiceEnabled: false,
+    keepScreenOn: true
+  });
 
   let settled = false;
-  const successful = notificationAdapter('occurrence_success').then(() => {
+  const successful = notificationAdapter.notify({
+    occurrenceId: 'occurrence_success',
+    visualMessage: '计时结束'
+  }).then(() => {
     settled = true;
   });
   assert.equal(vibrateCalls.length, 1);
@@ -906,23 +915,32 @@ test('expiration adapter waits for WeChat vibrate and toast success/fail callbac
   assert.equal(settled, false, 'synchronous undefined must not count as vibrate success');
 
   vibrateCalls[0].success();
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(toastCalls.length, 1);
   assert.equal(settled, false, 'toast must confirm through its success callback');
   toastCalls[0].success();
   await successful;
   assert.equal(settled, true);
 
-  const vibrateFailure = notificationAdapter('occurrence_vibrate_failure');
+  let degradedResult;
+  const vibrateFailure = notificationAdapter.notify({
+    occurrenceId: 'occurrence_vibrate_failure',
+    visualMessage: '计时结束'
+  }).then((result) => { degradedResult = result; });
   vibrateCalls[1].fail(new Error('vibrate unavailable'));
-  await assert.rejects(vibrateFailure, /vibrate unavailable/);
-  assert.equal(toastCalls.length, 1, 'toast must not run after vibrate failure');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(toastCalls.length, 2, 'visual feedback must survive vibration failure');
+  toastCalls[1].success();
+  await vibrateFailure;
+  assert.equal(degradedResult.delivered, true);
+  assert.equal(degradedResult.degraded, true);
 
-  const toastFailure = notificationAdapter('occurrence_toast_failure');
-  vibrateCalls[2].success();
-  await Promise.resolve();
-  toastCalls[1].fail(new Error('toast unavailable'));
-  await assert.rejects(toastFailure, /toast unavailable/);
+  const duplicate = await notificationAdapter.notify({
+    occurrenceId: 'occurrence_vibrate_failure',
+    visualMessage: '计时结束'
+  });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(vibrateCalls.length, 2);
 });
 
 test('page lifecycle delegates to the runtime while interval refresh never mutates Session state', () => {
@@ -947,6 +965,143 @@ test('page lifecycle delegates to the runtime while interval refresh never mutat
     harness.calls.slice(-3).map(([method]) => method),
     ['onHide', 'onShow', 'onUnload']
   );
+});
+
+test('PR review: page unload destroys the runtime adapter once after checkpoint success or throw', async (t) => {
+  for (const checkpointMode of ['success', 'throw']) {
+    await t.test(checkpointMode, () => {
+      const storage = new StorageDouble();
+      const database = createLocalDatabase({ storage, now: () => START_AT });
+      const plan = createDefaultPlans({ now: () => START_AT })[0];
+      database.commit((draft) => {
+        draft.install = { deviceId: `device_unload_destroy_${checkpointMode}`, createdAt: START_AT };
+        draft.plans.push(clone(plan));
+      });
+      let destroyCount = 0;
+      let sequence = 0;
+      const runtime = createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT,
+        idFactory: () => `session_unload_destroy_${checkpointMode}`,
+        commandKeyFactory: (type) => `unload_destroy_${checkpointMode}_${type}_${++sequence}`,
+        deviceAdapterFactory() {
+          return {
+            setKeepScreen() { return { supported: true }; },
+            destroy() { destroyCount += 1; }
+          };
+        }
+      });
+      const {
+        createWorkoutPageDefinition
+      } = require('../../miniprogram/pages/workout/index');
+      const definition = createWorkoutPageDefinition({
+        runtimeFactory: () => runtime,
+        getWx: () => ({}),
+        setIntervalFn: () => 1,
+        clearIntervalFn() {},
+        setTimeoutFn: () => 1,
+        clearTimeoutFn() {}
+      });
+      const page = {
+        ...definition,
+        data: clone(definition.data),
+        setData(next) { this.data = { ...this.data, ...next }; }
+      };
+      page.onLoad({ planId: plan.id });
+      if (checkpointMode === 'throw') {
+        runtime.service.checkpointOnUnload = () => {
+          throw new Error('checkpoint unload failed');
+        };
+        assert.throws(() => page.onUnload(), /checkpoint unload failed/);
+      } else {
+        page.onUnload();
+      }
+      page.onUnload();
+      assert.equal(destroyCount, 1, 'runtime/device adapter destroy must be idempotent');
+    });
+  }
+});
+
+test('PR review: repeated page unload destroys the real InnerAudioContext exactly once', async () => {
+  const storage = new StorageDouble();
+  const database = createLocalDatabase({ storage, now: () => START_AT + 60_000 });
+  const sourcePlan = createDefaultPlans({ now: () => START_AT })
+    .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+  const plan = {
+    ...clone(sourcePlan),
+    id: 'plan_audio_destroy_on_unload',
+    trainingDate: '2026-08-12',
+    templateSource: null,
+    steps: [{
+      ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+      id: 'manual_audio_destroy_on_unload',
+      order: 1
+    }]
+  };
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_audio_destroy_on_unload', createdAt: START_AT };
+    draft.settings.keepScreenOn = true;
+    draft.settings.vibrationEnabled = false;
+    draft.settings.soundEnabled = true;
+    draft.settings.voiceEnabled = false;
+    draft.plans.push(plan);
+  });
+  let audioCreateCount = 0;
+  let audioDestroyCount = 0;
+  let sequence = 0;
+  const wxApi = {
+    createInnerAudioContext() {
+      audioCreateCount += 1;
+      return {
+        src: null,
+        play() {},
+        destroy() { audioDestroyCount += 1; }
+      };
+    },
+    setKeepScreenOn({ success }) { success(); },
+    showToast({ success }) { success(); }
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory({ deviceAdapterFactory }) {
+      return createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT + 60_000,
+        idFactory: () => 'session_audio_destroy_on_unload',
+        commandKeyFactory: (type) => `audio_destroy_${type}_${++sequence}`,
+        deviceAdapterFactory
+      });
+    },
+    getWx: () => wxApi,
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({ planId: plan.id });
+  page.onStart();
+  page.onCompleteManual({
+    currentTarget: {
+      dataset: {
+        stepId: page.data.view.step.id,
+        sessionRevision: page.data.view.sessionRevision
+      }
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(database.load().activeSession.status, 'completed');
+  assert.equal(audioCreateCount, 1);
+
+  page.onUnload();
+  page.onUnload();
+  assert.equal(audioDestroyCount, 1);
 });
 
 test('develop strength mode selects the deterministic fixture while release and planId navigation stay production-backed', () => {
@@ -1276,6 +1431,397 @@ test('Attack: repeated manual taps keep the original step and revision intent in
     'the stale second tap must not complete the newly rendered manual step'
   );
   assert.equal(toasts.length, 1, 'the stale second intent should fail visibly without mutating Session');
+});
+
+test('PR review: terminal keep-screen release settles before summary navigation', async (t) => {
+  for (const releaseMode of ['unsupported', 'reject', 'success']) {
+    await t.test(releaseMode, async () => {
+      const storage = new StorageDouble();
+      const database = createLocalDatabase({ storage, now: () => START_AT });
+      const sourcePlan = createDefaultPlans({ now: () => START_AT })
+        .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+      const plan = {
+        ...clone(sourcePlan),
+        id: `plan_terminal_release_${releaseMode}`,
+        trainingDate: '2026-08-11',
+        templateSource: null,
+        steps: [{
+          ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+          id: `manual_terminal_release_${releaseMode}`,
+          order: 1
+        }]
+      };
+      database.commit((draft) => {
+        draft.install = { deviceId: `device_terminal_release_${releaseMode}`, createdAt: START_AT };
+        draft.settings.keepScreenOn = true;
+        draft.settings.vibrationEnabled = false;
+        draft.settings.soundEnabled = false;
+        draft.settings.voiceEnabled = false;
+        draft.plans.push(plan);
+      });
+
+      let settleRelease;
+      const terminalRelease = new Promise((resolve, reject) => {
+        settleRelease = releaseMode === 'reject'
+          ? () => reject(new Error('terminal release rejected'))
+          : () => resolve({ supported: releaseMode === 'success' });
+      });
+      let falseCallCount = 0;
+      let sequence = 0;
+      const runtime = createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT + 60_000,
+        idFactory: () => `session_terminal_release_${releaseMode}`,
+        commandKeyFactory: (type) => `terminal_release_${releaseMode}_${type}_${++sequence}`,
+        deviceAdapterFactory() {
+          return {
+            setKeepScreen(enabled) {
+              if (!enabled && ++falseCallCount === 2) {
+                return terminalRelease;
+              }
+              return Promise.resolve({ supported: true });
+            },
+            notify() {
+              return Promise.reject(new Error('notification must not mask release result'));
+            }
+          };
+        }
+      });
+      const modals = [];
+      const redirects = [];
+      const {
+        createWorkoutPageDefinition
+      } = require('../../miniprogram/pages/workout/index');
+      const definition = createWorkoutPageDefinition({
+        runtimeFactory: () => runtime,
+        getWx: () => ({
+          showModal(options) { modals.push(options); },
+          redirectTo(options) { redirects.push(options); }
+        }),
+        setIntervalFn: () => 1,
+        clearIntervalFn() {},
+        setTimeoutFn: () => 1,
+        clearTimeoutFn() {}
+      });
+      const page = {
+        ...definition,
+        data: clone(definition.data),
+        setData(next) { this.data = { ...this.data, ...next }; }
+      };
+      page.onLoad({ planId: plan.id });
+      page.onStart();
+      page.onCompleteManual({
+        currentTarget: {
+          dataset: {
+            stepId: page.data.view.step.id,
+            sessionRevision: page.data.view.sessionRevision
+          }
+        }
+      });
+
+      assert.equal(database.load().activeSession.status, 'completed');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(redirects.length, 0, 'terminal release must settle before redirect');
+      assert.equal(modals.length, 0, 'release result is still pending');
+
+      settleRelease();
+      await new Promise((resolve) => setImmediate(resolve));
+      if (releaseMode === 'success') {
+        assert.equal(modals.length, 0);
+        assert.equal(redirects.length, 1, 'successful release should navigate automatically');
+      } else {
+        assert.equal(redirects.length, 0, 'failed release requires acknowledgement before redirect');
+        assert.equal(modals.length, 1);
+        assert.equal(modals[0].showCancel, false);
+        assert.equal(modals[0].confirmText, '查看总结');
+        assert.match(`${modals[0].title} ${modals[0].content}`, /常亮.*(?:关闭|释放).*失败/);
+        assert.doesNotMatch(`${modals[0].title} ${modals[0].content}`, /设备提醒部分不可用/);
+        modals[0].success({ confirm: true, cancel: false });
+        modals[0].complete();
+        assert.equal(redirects.length, 1, 'acknowledgement should navigate exactly once');
+      }
+      assert.match(redirects[0].url, /\/pages\/workout\/summary\/index\?sessionId=/);
+      const modalCountAfterRedirect = modals.length;
+      page.onUnload();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(redirects.length, 1, 'redirect-triggered unload must not navigate again');
+      assert.equal(modals.length, modalCountAfterRedirect, 'redirect-triggered unload must not reopen modal');
+    });
+  }
+});
+
+test('PR review: unavailable release modal requires an inline summary action', async (t) => {
+  for (const modalMode of ['missing', 'throw', 'fail']) {
+    await t.test(modalMode, async () => {
+      const database = createLocalDatabase({
+        storage: new StorageDouble(),
+        now: () => START_AT
+      });
+      const sourcePlan = createDefaultPlans({ now: () => START_AT })
+        .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+      const plan = {
+        ...clone(sourcePlan),
+        id: `plan_release_modal_${modalMode}`,
+        trainingDate: '2026-08-12',
+        templateSource: null,
+        steps: [{
+          ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+          id: `manual_release_modal_${modalMode}`,
+          order: 1
+        }]
+      };
+      database.commit((draft) => {
+        draft.install = { deviceId: `device_release_modal_${modalMode}`, createdAt: START_AT };
+        draft.settings.keepScreenOn = true;
+        draft.settings.vibrationEnabled = false;
+        draft.settings.soundEnabled = false;
+        draft.settings.voiceEnabled = false;
+        draft.plans.push(plan);
+      });
+
+      let sequence = 0;
+      const runtime = createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT + 60_000,
+        idFactory: () => `session_release_modal_${modalMode}`,
+        commandKeyFactory: (type) => `release_modal_${modalMode}_${type}_${++sequence}`,
+        deviceAdapterFactory() {
+          return {
+            setKeepScreen(enabled) {
+              return Promise.resolve({ supported: enabled });
+            },
+            notify() { return Promise.resolve({ delivered: true }); }
+          };
+        }
+      });
+      const redirects = [];
+      const wxApi = {
+        redirectTo(options) { redirects.push(options); }
+      };
+      if (modalMode === 'throw') {
+        wxApi.showModal = () => { throw new Error('showModal unavailable'); };
+      } else if (modalMode === 'fail') {
+        wxApi.showModal = ({ fail, complete }) => {
+          fail(new Error('showModal failed'));
+          complete();
+        };
+      }
+      const {
+        createWorkoutPageDefinition
+      } = require('../../miniprogram/pages/workout/index');
+      const definition = createWorkoutPageDefinition({
+        runtimeFactory: () => runtime,
+        getWx: () => wxApi,
+        setIntervalFn: () => 1,
+        clearIntervalFn() {},
+        setTimeoutFn: () => 1,
+        clearTimeoutFn() {}
+      });
+      const page = {
+        ...definition,
+        data: clone(definition.data),
+        setData(next) { this.data = { ...this.data, ...next }; }
+      };
+      page.onLoad({ planId: plan.id });
+      page.onStart();
+      page.onCompleteManual({
+        currentTarget: {
+          dataset: {
+            stepId: page.data.view.step.id,
+            sessionRevision: page.data.view.sessionRevision
+          }
+        }
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const terminal = database.load();
+      assert.equal(terminal.activeSession.status, 'completed');
+      assert.equal(terminal.records.length, 1, 'terminal commit keeps its baseline record');
+      assert.equal(redirects.length, 0, 'modal infrastructure failure must not auto-navigate');
+      assert.equal(page.data.summaryActionVisible, true);
+      assert.match(page.data.view.deviceNotice, /常亮.*(?:关闭|释放).*失败/);
+
+      page.onHide();
+      page.onShow();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(redirects.length, 0, 'showing the page again still requires the explicit CTA');
+
+      page.onViewSummary();
+      page.onViewSummary();
+      assert.equal(redirects.length, 1, 'explicit CTA navigates exactly once');
+      assert.match(redirects[0].url, /session_release_modal_/);
+
+      page.onUnload();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(database.load().records.length, 1, 'redirect unload must not duplicate records');
+      assert.equal(redirects.length, 1, 'redirect unload must not navigate again');
+    });
+  }
+
+  const markup = fs.readFileSync(
+    path.resolve(__dirname, '../../miniprogram/pages/workout/index.wxml'),
+    'utf8'
+  );
+  assert.match(markup, /summaryActionVisible/);
+  assert.match(markup, /bindtap="onViewSummary"/);
+  assert.match(markup, /查看训练总结/);
+});
+
+test('PR review r3: summary navigation failure stays actionable and retryable', async (t) => {
+  function createNavigationHarness(label) {
+    const database = createLocalDatabase({
+      storage: new StorageDouble(),
+      now: () => START_AT
+    });
+    const sourcePlan = createDefaultPlans({ now: () => START_AT })
+      .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+    const plan = {
+      ...clone(sourcePlan),
+      id: `plan_summary_navigation_${label}`,
+      trainingDate: '2026-08-13',
+      templateSource: null,
+      steps: [{
+        ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+        id: `manual_summary_navigation_${label}`,
+        order: 1
+      }]
+    };
+    database.commit((draft) => {
+      draft.install = { deviceId: `device_summary_navigation_${label}`, createdAt: START_AT };
+      draft.settings.keepScreenOn = true;
+      draft.settings.vibrationEnabled = false;
+      draft.settings.soundEnabled = false;
+      draft.settings.voiceEnabled = false;
+      draft.plans.push(plan);
+    });
+
+    let sequence = 0;
+    const runtime = createTimedWorkoutRuntime({
+      database,
+      now: () => START_AT + 60_000,
+      idFactory: () => `session_summary_navigation_${label}`,
+      commandKeyFactory: (type) => `summary_navigation_${label}_${type}_${++sequence}`,
+      deviceAdapterFactory() {
+        return {
+          setKeepScreen() { return Promise.resolve({ supported: true }); },
+          notify() { return Promise.resolve({ delivered: true }); }
+        };
+      }
+    });
+    const modals = [];
+    const wxApi = {
+      showModal(options) { modals.push(options); }
+    };
+    let refreshStarts = 0;
+    const {
+      createWorkoutPageDefinition
+    } = require('../../miniprogram/pages/workout/index');
+    const definition = createWorkoutPageDefinition({
+      runtimeFactory: () => runtime,
+      getWx: () => wxApi,
+      setIntervalFn() { refreshStarts += 1; return refreshStarts; },
+      clearIntervalFn() {},
+      setTimeoutFn: () => 1,
+      clearTimeoutFn() {}
+    });
+    const page = {
+      ...definition,
+      data: clone(definition.data),
+      setData(next) { this.data = { ...this.data, ...next }; }
+    };
+    return { database, modals, page, plan, wxApi, refreshStarts: () => refreshStarts };
+  }
+
+  async function completeTerminal(harness) {
+    const { page, plan } = harness;
+    page.onLoad({ planId: plan.id });
+    page.onStart();
+    page.onCompleteManual({
+      currentTarget: {
+        dataset: {
+          stepId: page.data.view.step.id,
+          sessionRevision: page.data.view.sessionRevision
+        }
+      }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  function assertRetryState(harness) {
+    const { database, modals, page, refreshStarts } = harness;
+    const snapshot = database.load();
+    assert.equal(snapshot.activeSession.status, 'completed');
+    assert.equal(snapshot.records.length, 1);
+    assert.equal(page.data.summaryActionVisible, true);
+    assert.match(page.data.summaryNavigationNotice, /训练总结.*(?:打开|跳转).*失败|无法打开训练总结/);
+    assert.doesNotMatch(page.data.summaryNavigationNotice, /常亮|释放/);
+    assert.equal(
+      page.data.view.deviceNotice == null,
+      true,
+      'successful release must not be relabeled'
+    );
+    assert.equal(modals.length, 0, 'navigation failure must not open the release modal');
+    assert.equal(refreshStarts(), 1, 'navigation failure must not restart terminal refresh');
+  }
+
+  await t.test('redirectTo missing', async () => {
+    const harness = createNavigationHarness('missing');
+    await completeTerminal(harness);
+    assertRetryState(harness);
+  });
+
+  await t.test('redirectTo synchronous throw remains retryable', async () => {
+    const harness = createNavigationHarness('throw');
+    await completeTerminal(harness);
+    harness.wxApi.redirectTo = () => { throw new Error('redirectTo unavailable'); };
+    assert.doesNotThrow(() => harness.page.onViewSummary());
+    assertRetryState(harness);
+  });
+
+  await t.test('fail callback supports repeated failure, successful retry and unload dedupe', async () => {
+    const harness = createNavigationHarness('fail_retry');
+    let attempts = 0;
+    const urls = [];
+    harness.wxApi.redirectTo = (options) => {
+      attempts += 1;
+      urls.push(options.url);
+      if (attempts <= 2) {
+        options.fail(new Error(`redirect failure ${attempts}`));
+      } else if (typeof options.success === 'function') {
+        options.success();
+      }
+    };
+    await completeTerminal(harness);
+    assert.equal(attempts, 1, 'normal successful release performs the first navigation attempt');
+    assertRetryState(harness);
+
+    harness.page.onViewSummary();
+    assert.equal(attempts, 2);
+    assertRetryState(harness);
+
+    harness.page.onViewSummary();
+    assert.equal(attempts, 3);
+    assert.equal(harness.page.data.summaryActionVisible, false);
+    harness.page.onViewSummary();
+    assert.equal(attempts, 3, 'successful retry remains exactly once');
+    assert.equal(new Set(urls).size, 1, 'all retries stay bound to one Session summary URL');
+
+    harness.page.onUnload();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.database.load().records.length, 1);
+    assert.equal(attempts, 3, 'redirect-triggered unload must not navigate again');
+    assert.equal(harness.modals.length, 0);
+  });
+
+  const markup = fs.readFileSync(
+    path.resolve(__dirname, '../../miniprogram/pages/workout/index.wxml'),
+    'utf8'
+  );
+  assert.match(markup, /summaryNavigationNotice/);
+  assert.match(markup, /summaryActionVisible/);
+  assert.match(markup, /bindtap="onViewSummary"/);
 });
 
 test('workout page declares native timer components, large timer states and thumb-safe controls', () => {

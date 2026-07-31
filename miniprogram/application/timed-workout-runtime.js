@@ -35,6 +35,9 @@ function ensureNotificationState(draft) {
   if (!Array.isArray(draft.notifications.attemptedExpiredOccurrences)) {
     draft.notifications.attemptedExpiredOccurrences = [];
   }
+  if (!Array.isArray(draft.notifications.terminalOccurrences)) {
+    draft.notifications.terminalOccurrences = [];
+  }
   return draft.notifications;
 }
 
@@ -44,13 +47,22 @@ class TimedWorkoutRuntime {
     now,
     idFactory,
     commandKeyFactory,
-    notifyExpired
+    notifyExpired,
+    deviceAdapterFactory
   }) {
     this.database = database;
     this.now = now;
     this.idFactory = idFactory;
     this.commandKeyFactory = commandKeyFactory;
     this.notifyExpired = notifyExpired;
+    this.deviceAdapterFactory = deviceAdapterFactory;
+    this.deviceAdapter = null;
+    this.destroyed = false;
+    this.settings = null;
+    this.deviceNotice = null;
+    this.deviceNoticePriority = 0;
+    this.terminalEffectPromise = null;
+    this.notifiedTerminalOccurrences = new Set();
     this.notifiedOccurrences = new Set();
     this.service = null;
     this.session = null;
@@ -83,6 +95,105 @@ class TimedWorkoutRuntime {
       idFactory: this.idFactory,
       now: this.now
     });
+    this.settings = snapshot.settings;
+    if (typeof this.deviceAdapterFactory === 'function') {
+      this.deviceAdapter = this.deviceAdapterFactory({ ...this.settings });
+    }
+  }
+
+  observeDeviceEffect(effectName, result) {
+    if (result && result.supported === false) {
+      let notice;
+      let priority;
+      if (effectName === 'keep-screen') {
+        notice = '屏幕常亮暂不可用，训练仍可继续。';
+        priority = 2;
+      } else if (effectName === 'keep-screen-release') {
+        notice = '屏幕常亮关闭失败，自动释放暂不可用，请手动锁屏。';
+        priority = 3;
+      } else {
+        notice = '设备提醒部分不可用，已保留页面视觉提示。';
+        priority = 1;
+      }
+      if (priority >= this.deviceNoticePriority) {
+        this.deviceNotice = notice;
+        this.deviceNoticePriority = priority;
+      }
+    }
+  }
+
+  runDeviceEffect(effectName, callback) {
+    let result;
+    try {
+      result = callback();
+    } catch (error) {
+      const failure = { supported: false };
+      this.observeDeviceEffect(effectName, failure);
+      return Promise.resolve(failure);
+    }
+    return Promise.resolve(result).then(
+      (value) => {
+        this.observeDeviceEffect(effectName, value);
+        return value;
+      },
+      () => {
+        const failure = { supported: false };
+        this.observeDeviceEffect(effectName, failure);
+        return failure;
+      }
+    );
+  }
+
+  setKeepScreen(enabled) {
+    if (!this.deviceAdapter || typeof this.deviceAdapter.setKeepScreen !== 'function') {
+      return Promise.resolve({ supported: true, skipped: true });
+    }
+    if (enabled && (!this.settings || this.settings.keepScreenOn !== true)) {
+      return Promise.resolve({ supported: true, skipped: true });
+    }
+    return this.runDeviceEffect(
+      enabled ? 'keep-screen' : 'keep-screen-release',
+      () => this.deviceAdapter.setKeepScreen(enabled)
+    );
+  }
+
+  trackTerminalEffect(releaseEffect) {
+    this.terminalEffectPromise = Promise.resolve(releaseEffect).then((result) => ({
+      releaseFailed: Boolean(result && result.supported === false),
+      view: this.render()
+    }));
+  }
+
+  waitForTerminalEffect() {
+    return this.terminalEffectPromise || Promise.resolve({
+      releaseFailed: false,
+      view: this.render()
+    });
+  }
+
+  hasStartedActivity() {
+    if (!this.session || ['completed', 'aborted'].includes(this.session.status)) {
+      return false;
+    }
+    if (this.session.activeSetStartedAt !== null && this.session.activeSetStartedAt !== undefined) {
+      return true;
+    }
+    const activityCommands = new Set([
+      'start_step',
+      'complete_step',
+      'confirm_next',
+      'confirm_next_and_start_next',
+      'early_complete_step',
+      'early_complete_step_and_start_next',
+      'skip_step',
+      'skip_step_and_start_next',
+      'previous_step',
+      'start_set',
+      'complete_set',
+      'add_set',
+      'reduce_set'
+    ]);
+    return this.session.processedCommands.some(({ type }) => activityCommands.has(type));
   }
 
   load({ planId } = {}) {
@@ -110,7 +221,12 @@ class TimedWorkoutRuntime {
       } else {
         throw new Error('没有可恢复的训练，请从今日训练重新开始');
       }
-      return this.render();
+      const keepScreenEffect = this.setKeepScreen(this.hasStartedActivity());
+      const view = this.render();
+      if (this.session.status === 'completed' || this.session.status === 'aborted') {
+        this.trackTerminalEffect(keepScreenEffect);
+      }
+      return view;
     } catch (error) {
       this.lastError = error;
       return recoveryView(error);
@@ -123,7 +239,55 @@ class TimedWorkoutRuntime {
     }
     const view = buildTimedWorkoutView(this.session, { nowMs: this.now() });
     this.notifyIfExpired();
-    return view;
+    this.notifyIfTerminal();
+    return this.deviceNotice ? { ...view, deviceNotice: this.deviceNotice } : view;
+  }
+
+  notifyIfTerminal() {
+    if (
+      !this.session ||
+      !['completed', 'aborted'].includes(this.session.status) ||
+      !this.deviceAdapter ||
+      typeof this.deviceAdapter.notify !== 'function'
+    ) {
+      return;
+    }
+    const occurrenceId = JSON.stringify([
+      'workout-session-terminal',
+      this.session.id,
+      this.session.status,
+      this.session.endedAt
+    ]);
+    if (this.notifiedTerminalOccurrences.has(occurrenceId)) {
+      return;
+    }
+    const snapshot = this.database.load();
+    const persistedOccurrences = snapshot.notifications &&
+      Array.isArray(snapshot.notifications.terminalOccurrences)
+      ? snapshot.notifications.terminalOccurrences
+      : [];
+    if (persistedOccurrences.includes(occurrenceId)) {
+      this.notifiedTerminalOccurrences.add(occurrenceId);
+      return;
+    }
+    try {
+      this.database.commit((draft) => {
+        const notifications = ensureNotificationState(draft);
+        if (!notifications.terminalOccurrences.includes(occurrenceId)) {
+          notifications.terminalOccurrences.push(occurrenceId);
+        }
+      }, snapshot.localRevision);
+    } catch (error) {
+      return;
+    }
+    this.notifiedTerminalOccurrences.add(occurrenceId);
+    const completed = this.session.status === 'completed';
+    this.runDeviceEffect('notification', () => this.deviceAdapter.notify({
+      occurrenceId,
+      kind: completed ? 'session-completed' : 'session-aborted',
+      visualMessage: completed ? '训练完成' : '训练已结束',
+      voiceText: completed ? '训练完成，请填写身体反馈' : '训练已结束，请填写身体反馈'
+    }));
   }
 
   notifyIfExpired() {
@@ -192,7 +356,18 @@ class TimedWorkoutRuntime {
 
       let deliveryResult;
       try {
-        deliveryResult = this.notifyExpired(occurrenceId);
+        if (typeof this.notifyExpired === 'function') {
+          deliveryResult = this.notifyExpired(occurrenceId);
+        } else if (this.deviceAdapter && typeof this.deviceAdapter.notify === 'function') {
+          deliveryResult = this.deviceAdapter.notify({
+            occurrenceId,
+            kind: this.session.timer.mode === 'rest' ? 'rest-expired' : 'timer-expired',
+            visualMessage: this.session.timer.mode === 'rest'
+              ? '休息结束，请确认下一组'
+              : '计时结束，请确认下一步',
+            voiceText: this.session.timer.mode === 'rest' ? '休息结束' : '计时结束'
+          });
+        }
       } catch (error) {
         this.requeueFailedNotification(occurrenceId);
         return;
@@ -274,7 +449,17 @@ class TimedWorkoutRuntime {
       payload
     });
     this.session = applied.session;
-    return this.render();
+    let terminalReleaseEffect = null;
+    if (this.session.status === 'completed' || this.session.status === 'aborted') {
+      terminalReleaseEffect = this.setKeepScreen(false);
+    } else {
+      this.setKeepScreen(this.hasStartedActivity());
+    }
+    const view = this.render();
+    if (terminalReleaseEffect) {
+      this.trackTerminalEffect(terminalReleaseEffect);
+    }
+    return view;
   }
 
   currentStep() {
@@ -380,15 +565,41 @@ class TimedWorkoutRuntime {
   }
 
   onHide() {
-    return this.checkpoint('checkpointOnHide', 'hide');
+    try {
+      return this.checkpoint('checkpointOnHide', 'hide');
+    } finally {
+      this.setKeepScreen(false);
+    }
   }
 
   onShow() {
-    return this.checkpoint('restoreOnShow', 'show');
+    const view = this.checkpoint('restoreOnShow', 'show');
+    this.setKeepScreen(this.hasStartedActivity());
+    return view;
   }
 
   onUnload() {
-    return this.checkpoint('checkpointOnUnload', 'unload');
+    try {
+      return this.checkpoint('checkpointOnUnload', 'unload');
+    } finally {
+      this.setKeepScreen(false);
+    }
+  }
+
+  destroy() {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    const adapter = this.deviceAdapter;
+    this.deviceAdapter = null;
+    if (adapter && typeof adapter.destroy === 'function') {
+      try {
+        adapter.destroy();
+      } catch (error) {
+        // Device cleanup is best effort and must not mask lifecycle errors.
+      }
+    }
   }
 
   materializeDeadline() {
@@ -410,14 +621,16 @@ function createTimedWorkoutRuntime({
   now = Date.now,
   idFactory = () => defaultId('session', now()),
   commandKeyFactory = (type) => defaultId(type, now()),
-  notifyExpired = () => {}
+  notifyExpired,
+  deviceAdapterFactory
 } = {}) {
   return new TimedWorkoutRuntime({
     database,
     now,
     idFactory,
     commandKeyFactory,
-    notifyExpired
+    notifyExpired,
+    deviceAdapterFactory
   });
 }
 
@@ -440,7 +653,8 @@ function createMemoryStorage() {
 function createDeveloperTimedWorkoutRuntime({
   mode = 'timed',
   state = mode === 'strength' ? 'active' : 'running',
-  notifyExpired = () => {}
+  notifyExpired,
+  deviceAdapterFactory
 } = {}) {
   const sampleStartAt = 1785717300000;
   let fixedNow = sampleStartAt;
@@ -457,7 +671,8 @@ function createDeveloperTimedWorkoutRuntime({
     now,
     idFactory: () => 'session_worked_sample',
     commandKeyFactory: (type) => `worked_sample_${type}_${++sequence}`,
-    notifyExpired
+    notifyExpired,
+    deviceAdapterFactory
   });
   const load = runtime.load.bind(runtime);
   load({ planId: plan.id });
