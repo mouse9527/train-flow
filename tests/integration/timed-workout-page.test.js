@@ -1668,6 +1668,158 @@ test('PR review: unavailable release modal requires an inline summary action', a
   assert.match(markup, /查看训练总结/);
 });
 
+test('PR review r3: summary navigation failure stays actionable and retryable', async (t) => {
+  function createNavigationHarness(label) {
+    const database = createLocalDatabase({
+      storage: new StorageDouble(),
+      now: () => START_AT
+    });
+    const sourcePlan = createDefaultPlans({ now: () => START_AT })
+      .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+    const plan = {
+      ...clone(sourcePlan),
+      id: `plan_summary_navigation_${label}`,
+      trainingDate: '2026-08-13',
+      templateSource: null,
+      steps: [{
+        ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+        id: `manual_summary_navigation_${label}`,
+        order: 1
+      }]
+    };
+    database.commit((draft) => {
+      draft.install = { deviceId: `device_summary_navigation_${label}`, createdAt: START_AT };
+      draft.settings.keepScreenOn = true;
+      draft.settings.vibrationEnabled = false;
+      draft.settings.soundEnabled = false;
+      draft.settings.voiceEnabled = false;
+      draft.plans.push(plan);
+    });
+
+    let sequence = 0;
+    const runtime = createTimedWorkoutRuntime({
+      database,
+      now: () => START_AT + 60_000,
+      idFactory: () => `session_summary_navigation_${label}`,
+      commandKeyFactory: (type) => `summary_navigation_${label}_${type}_${++sequence}`,
+      deviceAdapterFactory() {
+        return {
+          setKeepScreen() { return Promise.resolve({ supported: true }); },
+          notify() { return Promise.resolve({ delivered: true }); }
+        };
+      }
+    });
+    const modals = [];
+    const wxApi = {
+      showModal(options) { modals.push(options); }
+    };
+    let refreshStarts = 0;
+    const {
+      createWorkoutPageDefinition
+    } = require('../../miniprogram/pages/workout/index');
+    const definition = createWorkoutPageDefinition({
+      runtimeFactory: () => runtime,
+      getWx: () => wxApi,
+      setIntervalFn() { refreshStarts += 1; return refreshStarts; },
+      clearIntervalFn() {},
+      setTimeoutFn: () => 1,
+      clearTimeoutFn() {}
+    });
+    const page = {
+      ...definition,
+      data: clone(definition.data),
+      setData(next) { this.data = { ...this.data, ...next }; }
+    };
+    return { database, modals, page, plan, wxApi, refreshStarts: () => refreshStarts };
+  }
+
+  async function completeTerminal(harness) {
+    const { page, plan } = harness;
+    page.onLoad({ planId: plan.id });
+    page.onStart();
+    page.onCompleteManual({
+      currentTarget: {
+        dataset: {
+          stepId: page.data.view.step.id,
+          sessionRevision: page.data.view.sessionRevision
+        }
+      }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  function assertRetryState(harness) {
+    const { database, modals, page, refreshStarts } = harness;
+    const snapshot = database.load();
+    assert.equal(snapshot.activeSession.status, 'completed');
+    assert.equal(snapshot.records.length, 1);
+    assert.equal(page.data.summaryActionVisible, true);
+    assert.match(page.data.summaryNavigationNotice, /训练总结.*(?:打开|跳转).*失败|无法打开训练总结/);
+    assert.doesNotMatch(page.data.summaryNavigationNotice, /常亮|释放/);
+    assert.equal(page.data.view.deviceNotice, null, 'successful release must not be relabeled');
+    assert.equal(modals.length, 0, 'navigation failure must not open the release modal');
+    assert.equal(refreshStarts(), 1, 'navigation failure must not restart terminal refresh');
+  }
+
+  await t.test('redirectTo missing', async () => {
+    const harness = createNavigationHarness('missing');
+    await completeTerminal(harness);
+    assertRetryState(harness);
+  });
+
+  await t.test('redirectTo synchronous throw remains retryable', async () => {
+    const harness = createNavigationHarness('throw');
+    await completeTerminal(harness);
+    harness.wxApi.redirectTo = () => { throw new Error('redirectTo unavailable'); };
+    assert.doesNotThrow(() => harness.page.onViewSummary());
+    assertRetryState(harness);
+  });
+
+  await t.test('fail callback supports repeated failure, successful retry and unload dedupe', async () => {
+    const harness = createNavigationHarness('fail_retry');
+    let attempts = 0;
+    const urls = [];
+    harness.wxApi.redirectTo = (options) => {
+      attempts += 1;
+      urls.push(options.url);
+      if (attempts <= 2) {
+        options.fail(new Error(`redirect failure ${attempts}`));
+      } else if (typeof options.success === 'function') {
+        options.success();
+      }
+    };
+    await completeTerminal(harness);
+    assert.equal(attempts, 1, 'normal successful release performs the first navigation attempt');
+    assertRetryState(harness);
+
+    harness.page.onViewSummary();
+    assert.equal(attempts, 2);
+    assertRetryState(harness);
+
+    harness.page.onViewSummary();
+    assert.equal(attempts, 3);
+    assert.equal(harness.page.data.summaryActionVisible, false);
+    harness.page.onViewSummary();
+    assert.equal(attempts, 3, 'successful retry remains exactly once');
+    assert.equal(new Set(urls).size, 1, 'all retries stay bound to one Session summary URL');
+
+    harness.page.onUnload();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.database.load().records.length, 1);
+    assert.equal(attempts, 3, 'redirect-triggered unload must not navigate again');
+    assert.equal(harness.modals.length, 0);
+  });
+
+  const markup = fs.readFileSync(
+    path.resolve(__dirname, '../../miniprogram/pages/workout/index.wxml'),
+    'utf8'
+  );
+  assert.match(markup, /summaryNavigationNotice/);
+  assert.match(markup, /summaryActionVisible/);
+  assert.match(markup, /bindtap="onViewSummary"/);
+});
+
 test('workout page declares native timer components, large timer states and thumb-safe controls', () => {
   const root = path.resolve(__dirname, '../..');
   const pageJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.json'), 'utf8'));
