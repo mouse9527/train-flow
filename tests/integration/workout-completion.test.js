@@ -131,7 +131,14 @@ test('completion facts distinguish event types, carry validated feedback and are
   assert.equal(aborted.eventType, 'WorkoutSessionAborted');
   assert.equal(aborted.status, 'aborted');
   assert.notEqual(completed.occurrenceId, aborted.occurrenceId);
-  assert.deepEqual(completed.feedback, feedback);
+  assert.deepEqual(completed.feedback, {
+    rpe: feedback.rpe,
+    weightBeforeKg: feedback.weightBeforeKg,
+    pain: feedback.pain,
+    note: feedback.note
+  });
+  assert.equal(Object.hasOwn(completed.feedback, 'safetyAdvice'), false);
+  assert.equal(Object.hasOwn(completed.feedback, 'hasSafetyAlarm'), false);
   assert.throws(
     () => applyWorkoutCommand(completedSession(), {
       type: 'abort',
@@ -337,6 +344,27 @@ test('summary runtime atomically saves one private completion fact without writi
 
   summaryRuntime.saveFeedback({ rpe: 6 });
   assert.equal(harness.database.load().records.length, 1, 'source Session must materialize at most once');
+});
+
+test('keep-screen API failure stays non-blocking and becomes an observable runtime notice', async () => {
+  const harness = createRuntimeHarness();
+  const runtime = createTimedWorkoutRuntime({
+    database: harness.database,
+    now: () => START_AT,
+    idFactory: () => 'session_keep_screen_failure',
+    commandKeyFactory: (type) => `keep_screen_failure_${type}`,
+    deviceAdapterFactory() {
+      return {
+        setKeepScreen() { return Promise.resolve({ supported: false }); },
+        notify() { return Promise.resolve({ delivered: true }); }
+      };
+    }
+  });
+  const loaded = runtime.load({ planId: harness.plan.id });
+  assert.notEqual(loaded.state, 'recovery-error');
+  await Promise.resolve();
+  const observed = runtime.render();
+  assert.match(observed.deviceNotice, /常亮.*不可用/);
 });
 
 test('summary page exposes completed/aborted facts, validated feedback controls and safety advice', () => {

@@ -7,6 +7,9 @@
   </view>
 
   <block wx:else>
+    <view class="device-notice" wx:if="{{view.deviceNotice}}">
+      <text>{{view.deviceNotice}}</text>
+    </view>
     <view class="workout-hero">
       <view class="workout-hero__topline">
         <text class="workout-hero__position">{{view.positionLabel}}</text>

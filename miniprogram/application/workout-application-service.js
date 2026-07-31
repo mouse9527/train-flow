@@ -133,7 +133,12 @@ function createWorkoutCompletionFact(session, feedback = {}) {
     elapsedActiveSeconds: session.elapsedActiveSeconds,
     planSnapshot: JSON.parse(JSON.stringify(session.planSnapshot)),
     stepResults: JSON.parse(JSON.stringify(session.stepResults)),
-    feedback: normalizedFeedback
+    feedback: {
+      rpe: normalizedFeedback.rpe,
+      weightBeforeKg: normalizedFeedback.weightBeforeKg,
+      pain: normalizedFeedback.pain,
+      note: normalizedFeedback.note
+    }
   };
 }
 

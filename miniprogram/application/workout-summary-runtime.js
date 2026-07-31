@@ -23,10 +23,14 @@ class WorkoutSummaryRuntime {
       throw new Error('没有可总结的已结束训练');
     }
     this.session = clone(session);
-    const existing = snapshot.records.find(({ sourceSessionId }) => sourceSessionId === session.id);
+    const existing = snapshot.records.find(
+      (record) => record && record.sourceSessionId === session.id
+    );
     return {
       summary: buildWorkoutCompletionSummary(session),
-      feedback: existing ? clone(existing.feedback) : normalizeWorkoutFeedback({}),
+      feedback: existing
+        ? normalizeWorkoutFeedback(existing.feedback)
+        : normalizeWorkoutFeedback({}),
       saved: Boolean(existing)
     };
   }
@@ -41,7 +45,7 @@ class WorkoutSummaryRuntime {
     const fact = createWorkoutCompletionFact(session, feedback);
     const savedAt = this.now();
     const existingIndex = snapshot.records.findIndex(
-      ({ sourceSessionId }) => sourceSessionId === session.id
+      (record) => record && record.sourceSessionId === session.id
     );
     const existing = existingIndex === -1 ? null : snapshot.records[existingIndex];
     const record = {
@@ -53,7 +57,7 @@ class WorkoutSummaryRuntime {
     };
     const committed = this.database.commit((draft) => {
       const index = draft.records.findIndex(
-        ({ sourceSessionId }) => sourceSessionId === session.id
+        (candidate) => candidate && candidate.sourceSessionId === session.id
       );
       if (index === -1) {
         draft.records.push(clone(record));
@@ -63,7 +67,9 @@ class WorkoutSummaryRuntime {
     }, snapshot.localRevision);
     return {
       saved: true,
-      fact: clone(committed.records.find(({ sourceSessionId }) => sourceSessionId === session.id))
+      fact: clone(committed.records.find(
+        (candidate) => candidate && candidate.sourceSessionId === session.id
+      ))
     };
   }
 }
