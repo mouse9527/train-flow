@@ -217,6 +217,118 @@ test('notification claim pointer failure stays retryable and rebuild delivers th
   assert.equal(delivered.length, 1, 'confirmed delivery must stay deduplicated');
 });
 
+test('notification API failure leaves a pending delivery that a rebuilt runtime retries', () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const database = createLocalDatabase({ storage, now: () => clock });
+  const plans = createDefaultPlans({ now: () => START_AT });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_notification_api_failure', createdAt: START_AT };
+    draft.plans.push(...clone(plans));
+  });
+
+  let attempts = 0;
+  let firstSequence = 0;
+  const first = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_notification_api_failure',
+    commandKeyFactory: (type) => `notification_api_first_${type}_${++firstSequence}`,
+    notifyExpired() {
+      attempts += 1;
+      throw new Error('notification API unavailable');
+    }
+  });
+  first.load({ planId: plans[0].id });
+  first.start();
+  clock = START_AT + 6 * 60_000;
+
+  const expired = first.onShow();
+  assert.equal(expired.state, 'expired-awaiting-confirmation');
+  assert.equal(attempts, 1);
+  const pending = database.load();
+  assert.equal(pending.notifications.expiredOccurrences.length, 0);
+  assert.equal(pending.notifications.pendingExpiredOccurrences.length, 1);
+
+  const successfulDeliveries = [];
+  let rebuiltSequence = 0;
+  const rebuilt = createTimedWorkoutRuntime({
+    database: createLocalDatabase({ storage, now: () => clock + 1_000 }),
+    now: () => clock + 1_000,
+    idFactory: () => 'must_restore_notification_api_failure',
+    commandKeyFactory: (type) => `notification_api_rebuilt_${type}_${++rebuiltSequence}`,
+    notifyExpired: (occurrenceId) => {
+      attempts += 1;
+      successfulDeliveries.push(occurrenceId);
+    }
+  });
+  rebuilt.load({});
+  assert.equal(attempts, 2);
+  assert.equal(successfulDeliveries.length, 1);
+  const delivered = rebuilt.database.load();
+  assert.deepEqual(delivered.notifications.expiredOccurrences, successfulDeliveries);
+  assert.deepEqual(delivered.notifications.pendingExpiredOccurrences, []);
+
+  rebuilt.render();
+  assert.equal(attempts, 2);
+});
+
+test('reentrant runtimes produce at most one confirmed expiration delivery', () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const database = createLocalDatabase({ storage, now: () => clock });
+  const plans = createDefaultPlans({ now: () => START_AT });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_notification_concurrency', createdAt: START_AT };
+    draft.plans.push(...clone(plans));
+  });
+  let seedSequence = 0;
+  const seed = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_notification_concurrency',
+    commandKeyFactory: (type) => `notification_seed_${type}_${++seedSequence}`,
+    notifyExpired() {}
+  });
+  seed.load({ planId: plans[0].id });
+  seed.start();
+  clock = START_AT + 6 * 60_000;
+
+  const confirmedDeliveries = [];
+  let runtimeB;
+  let sequenceA = 0;
+  let sequenceB = 0;
+  const runtimeA = createTimedWorkoutRuntime({
+    database: createLocalDatabase({ storage, now: () => clock }),
+    now: () => clock,
+    idFactory: () => 'must_restore_notification_concurrency_a',
+    commandKeyFactory: (type) => `notification_a_${type}_${++sequenceA}`,
+    notifyExpired: (occurrenceId) => {
+      confirmedDeliveries.push(`a:${occurrenceId}`);
+      runtimeB.load({});
+    }
+  });
+  runtimeB = createTimedWorkoutRuntime({
+    database: createLocalDatabase({ storage, now: () => clock }),
+    now: () => clock,
+    idFactory: () => 'must_restore_notification_concurrency_b',
+    commandKeyFactory: (type) => `notification_b_${type}_${++sequenceB}`,
+    notifyExpired: (occurrenceId) => confirmedDeliveries.push(`b:${occurrenceId}`)
+  });
+
+  const restored = runtimeA.load({});
+  assert.equal(restored.state, 'expired-awaiting-confirmation');
+  assert.equal(confirmedDeliveries.length, 1);
+  const occurrenceId = confirmedDeliveries[0].split(':').slice(1).join(':');
+  const finalSnapshot = runtimeA.database.load();
+  assert.deepEqual(finalSnapshot.notifications.expiredOccurrences, [occurrenceId]);
+  assert.deepEqual(finalSnapshot.notifications.pendingExpiredOccurrences, []);
+
+  runtimeA.render();
+  runtimeB.render();
+  assert.equal(confirmedDeliveries.length, 1);
+});
+
 test('expired second step disables previous and rejects correction with zero persistence', () => {
   const harness = createHarness();
   harness.runtime.load({ planId: harness.plans[0].id });
