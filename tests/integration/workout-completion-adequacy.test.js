@@ -351,6 +351,51 @@ test('reloaded completed and aborted records persist symmetric terminal statisti
   }
 });
 
+test('legacy records without a stored fingerprint fail closed on conflict and upgrade in place on proof', () => {
+  const completed = completedSession('session_legacy_fingerprint');
+  const database = databaseWithTerminal(completed);
+  const firstRuntime = createWorkoutSummaryRuntime({
+    database,
+    now: () => completed.endedAt + 1_000
+  });
+  firstRuntime.load();
+  firstRuntime.saveFeedback({
+    rpe: 7,
+    pain: { knee: true },
+    note: 'LEGACY_PRIVATE_FEEDBACK'
+  });
+  database.commit((draft) => {
+    delete draft.records[0].sourceSessionFingerprint;
+  });
+
+  const replacement = abortedSession(completed.id);
+  database.commit((draft) => {
+    draft.activeSession = clone(replacement);
+  });
+  assert.throws(
+    () => createWorkoutSummaryRuntime({ database }).load(),
+    /记录.*当前总结不匹配/
+  );
+
+  database.commit((draft) => {
+    draft.activeSession = clone(completed);
+  });
+  const legacyRuntime = createWorkoutSummaryRuntime({
+    database,
+    now: () => completed.endedAt + 2_000
+  });
+  const loaded = legacyRuntime.load();
+  assert.equal(loaded.saved, true);
+  assert.equal(loaded.feedback.note, 'LEGACY_PRIVATE_FEEDBACK');
+  legacyRuntime.saveFeedback({ rpe: 6, pain: { knee: true }, note: '' });
+
+  const records = database.load().records;
+  assert.equal(records.length, 1);
+  assert.match(records[0].sourceSessionFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(Object.hasOwn(records[0].feedback, 'safetyAdvice'), false);
+  assert.equal(Object.hasOwn(records[0].feedback, 'hasSafetyAlarm'), false);
+});
+
 test('keep-screen stays off before step start, follows settings after start, and releases on every exit', async () => {
   const plan = customPlan('timed');
   const calls = [];
