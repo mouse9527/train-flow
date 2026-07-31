@@ -1,0 +1,14 @@
+<view class="workout-card workout-card--{{view.state}}" wx:if="{{view}}">
+  <view class="workout-card__date-row">
+    <text class="workout-card__date">{{view.dateLabel}}</text>
+    <text class="workout-card__weekday">{{view.weekdayLabel}}</text>
+  </view>
+  <text class="workout-card__state">{{view.stateTitle}}</text>
+  <text class="workout-card__title">{{view.title}}</text>
+  <text class="workout-card__detail">{{view.stateDetail}}</text>
+  <view class="workout-card__meta" wx:if="{{view.estimatedDurationLabel || view.recommendedEndLabel}}">
+    <text class="workout-card__meta-item" wx:if="{{view.estimatedDurationLabel}}">{{view.estimatedDurationLabel}}</text>
+    <text class="workout-card__meta-dot" wx:if="{{view.estimatedDurationLabel && view.recommendedEndLabel}}">·</text>
+    <text class="workout-card__meta-item" wx:if="{{view.recommendedEndLabel}}">{{view.recommendedEndLabel}}</text>
+  </view>
+</view>

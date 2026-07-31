@@ -1,0 +1,41 @@
+.safety-notice {
+  margin-top: 28rpx;
+  padding: 26rpx 28rpx;
+  border: 1rpx solid #F0D9A9;
+  border-radius: 22rpx;
+  background: #FFF9EC;
+}
+
+.safety-notice__heading {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12rpx;
+}
+
+.safety-notice__mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34rpx;
+  height: 34rpx;
+  margin-right: 12rpx;
+  border-radius: 50%;
+  background: #9B6412;
+  color: #FFFFFF;
+  font-size: 22rpx;
+  font-weight: 800;
+}
+
+.safety-notice__title {
+  color: #6D4710;
+  font-size: 26rpx;
+  font-weight: 700;
+}
+
+.safety-notice__item {
+  display: block;
+  margin-top: 8rpx;
+  color: #795B2B;
+  font-size: 24rpx;
+  line-height: 1.65;
+}

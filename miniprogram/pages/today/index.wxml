@@ -1,5 +1,48 @@
-<view class="tf-page">
-  <view class="tf-empty-state">
-    <text class="tf-caption">今日训练即将上线</text>
+<view class="tf-page today-page {{view.primaryAction ? 'today-page--with-action' : ''}}" wx:if="{{view}}">
+  <workout-card view="{{view}}" />
+
+  <view class="today-week-summary">
+    <text class="today-week-summary__eyebrow">本周节奏</text>
+    <text class="today-week-summary__value">{{view.weekSummary.label}}</text>
   </view>
+
+  <view class="today-completed-card" wx:if="{{view.state === 'completed'}}">
+    <view>
+      <text class="today-completed-card__label">本次训练</text>
+      <text class="today-completed-card__duration">{{view.completedSessionSummary.durationLabel}}</text>
+    </view>
+    <text class="today-completed-card__time">{{view.completedSessionSummary.endedAtLabel}}</text>
+  </view>
+
+  <view class="tf-section today-steps" wx:if="{{view.steps.length}}">
+    <view class="today-section-heading">
+      <text class="today-section-heading__title">动作预览</text>
+      <text class="today-section-heading__count">{{view.steps.length}} 项</text>
+    </view>
+    <view class="today-step" wx:for="{{view.steps}}" wx:key="id">
+      <view class="today-step__index">{{item.sequence}}</view>
+      <view class="today-step__body">
+        <view class="today-step__title-row">
+          <text class="today-step__name">{{item.name}}</text>
+          <text class="today-step__optional" wx:if="{{item.optional}}">可选</text>
+        </view>
+        <text class="today-step__target">{{item.targetLabel}}</text>
+        <text class="today-step__description" wx:if="{{item.description}}">{{item.description}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="today-empty" wx:if="{{view.state === 'empty'}}">
+    <text class="today-empty__mark">—</text>
+    <text class="today-empty__title">今天留一点空白</text>
+    <text class="today-empty__detail">当前日期没有训练计划，可以在“计划”中查看其他日期。</text>
+  </view>
+
+  <safety-notice notices="{{view.safetyNotices}}" />
+</view>
+
+<view class="today-action-dock" wx:if="{{view.primaryAction}}">
+  <button class="today-primary-action" bindtap="onPrimaryAction">
+    {{view.primaryAction.label}}
+  </button>
 </view>
