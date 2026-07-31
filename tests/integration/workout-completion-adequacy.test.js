@@ -396,6 +396,47 @@ test('legacy records without a stored fingerprint fail closed on conflict and up
   assert.equal(Object.hasOwn(records[0].feedback, 'hasSafetyAlarm'), false);
 });
 
+test('summary load proves every canonical record semantic and metadata field before exposing feedback', () => {
+  const mutations = [
+    ['schema version', (record) => { record.schemaVersion = 2; }],
+    ['occurrence identity', (record) => { record.occurrenceId = 'forged-occurrence'; }],
+    ['event type', (record) => { record.eventType = 'WorkoutSessionAborted'; }],
+    ['source Session identity', (record) => { record.sourceSessionId = 'forged-session'; }],
+    ['terminal status', (record) => { record.status = 'aborted'; }],
+    ['training date', (record) => { record.trainingDate = '2026-12-31'; }],
+    ['start timestamp', (record) => { record.startedAt += 1; }],
+    ['end timestamp', (record) => { record.endedAt += 1; }],
+    ['active duration', (record) => { record.elapsedActiveSeconds += 1; }],
+    ['completed count', (record) => { record.completedStepCount += 1; }],
+    ['skipped count', (record) => { record.skippedStepCount += 1; }],
+    ['total count', (record) => { record.totalStepCount = 0; }],
+    ['record identity', (record) => { record.id = 'forged-record'; }],
+    ['created timestamp', (record) => { record.createdAt = 'forged'; }],
+    ['updated timestamp order', (record) => { record.updatedAt = record.createdAt - 1; }],
+    ['record revision', (record) => { record.revision = 0; }],
+    ['computed feedback field', (record) => { record.feedback.safetyAdvice = 'forged'; }],
+    ['unknown record field', (record) => { record.deletedAt = null; }]
+  ];
+
+  for (const [index, [label, mutate]] of mutations.entries()) {
+    const session = completedSession(`session_record_semantics_${index}`);
+    const database = databaseWithTerminal(session);
+    const runtime = createWorkoutSummaryRuntime({
+      database,
+      now: () => session.endedAt + 1_000
+    });
+    runtime.load();
+    runtime.saveFeedback({ rpe: 7, note: 'PRIVATE_CANONICAL_RECORD_FEEDBACK' });
+    database.commit((draft) => mutate(draft.records[0]));
+
+    assert.throws(
+      () => createWorkoutSummaryRuntime({ database }).load(),
+      /记录.*当前总结不匹配/,
+      label
+    );
+  }
+});
+
 test('keep-screen stays off before step start, follows settings after start, and releases on every exit', async () => {
   const plan = customPlan('timed');
   const calls = [];

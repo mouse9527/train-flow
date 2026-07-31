@@ -5,7 +5,39 @@ const {
   normalizeWorkoutFeedback
 } = require('./workout-application-service');
 const { createLocalDatabase } = require('../services/local-database');
-const { computeChecksum } = require('../utils/checksum');
+const { canonicalize, computeChecksum } = require('../utils/checksum');
+
+const TERMINAL_RECORD_FACT_FIELDS = Object.freeze([
+  'schemaVersion',
+  'occurrenceId',
+  'eventType',
+  'sourceSessionId',
+  'status',
+  'trainingDate',
+  'startedAt',
+  'endedAt',
+  'elapsedActiveSeconds',
+  'completedStepCount',
+  'skippedStepCount',
+  'totalStepCount',
+  'planSnapshot',
+  'stepResults'
+]);
+const STORED_FEEDBACK_FIELDS = Object.freeze([
+  'rpe',
+  'weightBeforeKg',
+  'pain',
+  'note'
+]);
+const TERMINAL_RECORD_FIELDS = new Set([
+  ...TERMINAL_RECORD_FACT_FIELDS,
+  'feedback',
+  'sourceSessionFingerprint',
+  'id',
+  'createdAt',
+  'updatedAt',
+  'revision'
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -24,7 +56,74 @@ function terminalFactFingerprint(source) {
   });
 }
 
-function recordMatchesTerminalFact(record, fingerprint) {
+function isPlainObject(value) {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function hasExactFields(value, fields) {
+  return isPlainObject(value) &&
+    Object.keys(value).length === fields.length &&
+    fields.every((field) => Object.prototype.hasOwnProperty.call(value, field));
+}
+
+function canonicalStoredFeedback(feedback) {
+  if (!hasExactFields(feedback, STORED_FEEDBACK_FIELDS)) {
+    return false;
+  }
+  try {
+    const normalized = normalizeWorkoutFeedback(feedback);
+    return STORED_FEEDBACK_FIELDS.every(
+      (field) => canonicalize(feedback[field]) === canonicalize(normalized[field])
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
+function recordMetadataMatches(record, session) {
+  return record.id === `record_${session.id}` &&
+    Number.isSafeInteger(record.createdAt) &&
+    Number.isSafeInteger(record.updatedAt) &&
+    record.updatedAt >= record.createdAt &&
+    Number.isSafeInteger(record.revision) &&
+    record.revision >= 1;
+}
+
+function recordMatchesTerminalFact(record, session, fingerprint) {
+  if (
+    !isPlainObject(record) ||
+    Object.keys(record).some((field) => !TERMINAL_RECORD_FIELDS.has(field)) ||
+    TERMINAL_RECORD_FACT_FIELDS.some(
+      (field) => !Object.prototype.hasOwnProperty.call(record, field)
+    ) ||
+    !Object.prototype.hasOwnProperty.call(record, 'feedback') ||
+    !Object.prototype.hasOwnProperty.call(record, 'id') ||
+    !Object.prototype.hasOwnProperty.call(record, 'createdAt') ||
+    !Object.prototype.hasOwnProperty.call(record, 'updatedAt') ||
+    !Object.prototype.hasOwnProperty.call(record, 'revision') ||
+    !recordMetadataMatches(record, session) ||
+    !canonicalStoredFeedback(record.feedback)
+  ) {
+    return false;
+  }
+
+  const expectedFact = createWorkoutCompletionFact(session, {
+    rpe: 1,
+    weightBeforeKg: null,
+    pain: {},
+    note: ''
+  });
+  if (TERMINAL_RECORD_FACT_FIELDS.some(
+    (field) => canonicalize(record[field]) !== canonicalize(expectedFact[field])
+  )) {
+    return false;
+  }
+
   const derivedFingerprint = terminalFactFingerprint(record);
   if (
     Object.prototype.hasOwnProperty.call(record, 'sourceSessionFingerprint') &&
@@ -35,16 +134,19 @@ function recordMatchesTerminalFact(record, fingerprint) {
   return derivedFingerprint === fingerprint;
 }
 
-function findBoundRecord(records, sourceSessionId, fingerprint) {
+function findBoundRecord(records, session, fingerprint) {
+  const canonicalRecordId = `record_${session.id}`;
   const candidates = records.filter(
-    (record) => record && record.sourceSessionId === sourceSessionId
+    (record) => record && (
+      record.sourceSessionId === session.id || record.id === canonicalRecordId
+    )
   );
   if (candidates.length === 0) {
     return null;
   }
   if (
     candidates.length !== 1 ||
-    !recordMatchesTerminalFact(candidates[0], fingerprint)
+    !recordMatchesTerminalFact(candidates[0], session, fingerprint)
   ) {
     throw new Error('训练记录与当前总结不匹配，请重新打开后再试');
   }
@@ -65,7 +167,7 @@ class WorkoutSummaryRuntime {
       throw new Error('没有可总结的已结束训练');
     }
     this.sessionFingerprint = terminalFactFingerprint(session);
-    const existing = findBoundRecord(snapshot.records, session.id, this.sessionFingerprint);
+    const existing = findBoundRecord(snapshot.records, session, this.sessionFingerprint);
     return {
       summary: buildWorkoutCompletionSummary(session),
       feedback: existing
@@ -91,7 +193,7 @@ class WorkoutSummaryRuntime {
     const fact = createWorkoutCompletionFact(session, feedback);
     const sessionFingerprint = terminalFactFingerprint(session);
     const savedAt = this.now();
-    const existing = findBoundRecord(snapshot.records, session.id, sessionFingerprint);
+    const existing = findBoundRecord(snapshot.records, session, sessionFingerprint);
     const record = {
       ...fact,
       sourceSessionFingerprint: sessionFingerprint,
@@ -100,6 +202,9 @@ class WorkoutSummaryRuntime {
       updatedAt: savedAt,
       revision: existing ? existing.revision + 1 : 1
     };
+    if (!recordMatchesTerminalFact(record, session, sessionFingerprint)) {
+      throw new Error('训练记录生成失败，请重新打开后再保存反馈');
+    }
     const committed = this.database.commit((draft) => {
       if (existing === null) {
         draft.records.push(clone(record));
