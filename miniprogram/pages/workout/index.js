@@ -19,6 +19,35 @@ function developerFixturesEnabled(wxApi) {
   }
 }
 
+function callWxApi(wxApi, methodName, options = {}) {
+  if (typeof wxApi[methodName] !== 'function') {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      wxApi[methodName]({
+        ...options,
+        success: resolve,
+        fail(error) {
+          reject(error instanceof Error ? error : new Error(
+            error && error.errMsg ? error.errMsg : `${methodName} failed`
+          ));
+        }
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function notifyWorkoutExpired(wxApi) {
+  await callWxApi(wxApi, 'vibrateLong');
+  await callWxApi(wxApi, 'showToast', {
+    title: '计时结束，请确认下一步',
+    icon: 'none'
+  });
+}
+
 function createWorkoutPageDefinition({
   runtimeFactory = createTimedWorkoutRuntime,
   fixtureRuntimeFactory = createDeveloperTimedWorkoutRuntime,
@@ -39,14 +68,7 @@ function createWorkoutPageDefinition({
       const wxApi = getWx();
       const useFixture = developerFixturesEnabled(wxApi) && query.fixture === 'worked-sample';
       const runtimeOptions = {
-        notifyExpired: () => {
-          if (typeof wxApi.vibrateLong === 'function') {
-            wxApi.vibrateLong();
-          }
-          if (typeof wxApi.showToast === 'function') {
-            wxApi.showToast({ title: '计时结束，请确认下一步', icon: 'none' });
-          }
-        }
+        notifyExpired: () => notifyWorkoutExpired(wxApi)
       };
       this.runtime = useFixture
         ? fixtureRuntimeFactory({ state: query.state || 'running', ...runtimeOptions })

@@ -32,6 +32,9 @@ function ensureNotificationState(draft) {
   if (!Array.isArray(draft.notifications.pendingExpiredOccurrences)) {
     draft.notifications.pendingExpiredOccurrences = [];
   }
+  if (!Array.isArray(draft.notifications.attemptedExpiredOccurrences)) {
+    draft.notifications.attemptedExpiredOccurrences = [];
+  }
   return draft.notifications;
 }
 
@@ -139,11 +142,21 @@ class TimedWorkoutRuntime {
       this.notifiedOccurrences.add(occurrenceId);
       return;
     }
+    const attemptedOccurrences = snapshot.notifications &&
+      Array.isArray(snapshot.notifications.attemptedExpiredOccurrences)
+      ? snapshot.notifications.attemptedExpiredOccurrences
+      : [];
+    if (attemptedOccurrences.includes(occurrenceId)) {
+      this.notifiedOccurrences.add(occurrenceId);
+      return;
+    }
     if (activeExpirationDeliveries.has(occurrenceId)) {
       return;
     }
     activeExpirationDeliveries.add(occurrenceId);
 
+    let claimedSnapshot = snapshot;
+    let asynchronousDelivery = false;
     try {
       const pendingOccurrences = snapshot.notifications &&
         Array.isArray(snapshot.notifications.pendingExpiredOccurrences)
@@ -151,7 +164,7 @@ class TimedWorkoutRuntime {
         : [];
       if (!pendingOccurrences.includes(occurrenceId)) {
         try {
-          this.database.commit((draft) => {
+          claimedSnapshot = this.database.commit((draft) => {
             const notifications = ensureNotificationState(draft);
             if (!notifications.pendingExpiredOccurrences.includes(occurrenceId)) {
               notifications.pendingExpiredOccurrences.push(occurrenceId);
@@ -163,30 +176,92 @@ class TimedWorkoutRuntime {
       }
 
       try {
-        this.notifyExpired(occurrenceId);
-      } catch (error) {
-        return;
-      }
-      this.notifiedOccurrences.add(occurrenceId);
-
-      try {
-        const deliverySnapshot = this.database.load();
         this.database.commit((draft) => {
           const notifications = ensureNotificationState(draft);
           notifications.pendingExpiredOccurrences =
             notifications.pendingExpiredOccurrences.filter(
               (pendingOccurrenceId) => pendingOccurrenceId !== occurrenceId
             );
-          if (!notifications.expiredOccurrences.includes(occurrenceId)) {
-            notifications.expiredOccurrences.push(occurrenceId);
+          if (!notifications.attemptedExpiredOccurrences.includes(occurrenceId)) {
+            notifications.attemptedExpiredOccurrences.push(occurrenceId);
           }
-        }, deliverySnapshot.localRevision);
+        }, claimedSnapshot.localRevision);
       } catch (error) {
-        // The external notification already succeeded. A later runtime can reconcile
-        // any still-pending durable state without suppressing the current view.
+        return;
       }
+
+      let deliveryResult;
+      try {
+        deliveryResult = this.notifyExpired(occurrenceId);
+      } catch (error) {
+        this.requeueFailedNotification(occurrenceId);
+        return;
+      }
+
+      if (deliveryResult && typeof deliveryResult.then === 'function') {
+        asynchronousDelivery = true;
+        Promise.resolve(deliveryResult)
+          .then(
+            () => this.recordDeliveredNotification(occurrenceId),
+            () => this.requeueFailedNotification(occurrenceId)
+          )
+          .finally(() => activeExpirationDeliveries.delete(occurrenceId));
+        return;
+      }
+
+      this.recordDeliveredNotification(occurrenceId);
     } finally {
-      activeExpirationDeliveries.delete(occurrenceId);
+      if (!asynchronousDelivery) {
+        activeExpirationDeliveries.delete(occurrenceId);
+      }
+    }
+  }
+
+  recordDeliveredNotification(occurrenceId) {
+    this.notifiedOccurrences.add(occurrenceId);
+    try {
+      const deliverySnapshot = this.database.load();
+      this.database.commit((draft) => {
+        const notifications = ensureNotificationState(draft);
+        notifications.pendingExpiredOccurrences =
+          notifications.pendingExpiredOccurrences.filter(
+            (pendingOccurrenceId) => pendingOccurrenceId !== occurrenceId
+          );
+        notifications.attemptedExpiredOccurrences =
+          notifications.attemptedExpiredOccurrences.filter(
+            (attemptedOccurrenceId) => attemptedOccurrenceId !== occurrenceId
+          );
+        if (!notifications.expiredOccurrences.includes(occurrenceId)) {
+          notifications.expiredOccurrences.push(occurrenceId);
+        }
+      }, deliverySnapshot.localRevision);
+    } catch (error) {
+      // A durable attempted marker is intentionally terminal after external success.
+    }
+  }
+
+  requeueFailedNotification(occurrenceId) {
+    try {
+      const failureSnapshot = this.database.load();
+      const persistedOccurrences = failureSnapshot.notifications
+        ? failureSnapshot.notifications.expiredOccurrences
+        : [];
+      if (persistedOccurrences.includes(occurrenceId)) {
+        this.notifiedOccurrences.add(occurrenceId);
+        return;
+      }
+      this.database.commit((draft) => {
+        const notifications = ensureNotificationState(draft);
+        notifications.attemptedExpiredOccurrences =
+          notifications.attemptedExpiredOccurrences.filter(
+            (attemptedOccurrenceId) => attemptedOccurrenceId !== occurrenceId
+          );
+        if (!notifications.pendingExpiredOccurrences.includes(occurrenceId)) {
+          notifications.pendingExpiredOccurrences.push(occurrenceId);
+        }
+      }, failureSnapshot.localRevision);
+    } catch (error) {
+      // Without a confirmed retry marker, retain attempted state to prevent duplicates.
     }
   }
 

@@ -174,6 +174,12 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
         'notifications.pendingExpiredOccurrences'
       );
     }
+    if (snapshot.notifications.attemptedExpiredOccurrences !== undefined) {
+      assertUniqueStringArray(
+        snapshot.notifications.attemptedExpiredOccurrences,
+        'notifications.attemptedExpiredOccurrences'
+      );
+    }
   }
   assertPlainObject(snapshot.statisticsProjection, 'statisticsProjection');
   assertPlainObject(snapshot.sync, 'sync');

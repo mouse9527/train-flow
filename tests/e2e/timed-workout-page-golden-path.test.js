@@ -42,8 +42,8 @@ test('golden path: developer worked sample runs, pauses, resumes and recovers wi
     setStorageSync(key) { storageWrites.push(key); },
     removeStorageSync(key) { storageWrites.push(key); },
     setKeepScreenOn() {},
-    vibrateLong() {},
-    showToast() {},
+    vibrateLong({ success }) { success(); },
+    showToast({ success }) { success(); },
     showModal({ success }) { success({ confirm: true, cancel: false }); }
   };
   const page = instantiate(loadPageDefinition(wxApi));
@@ -73,8 +73,8 @@ test('golden path: expired worked sample remains on the current step until expli
       return { miniProgram: { envVersion: 'develop' } };
     },
     setKeepScreenOn() {},
-    vibrateLong() { vibrationCount += 1; },
-    showToast() {},
+    vibrateLong({ success }) { vibrationCount += 1; success(); },
+    showToast({ success }) { success(); },
     showModal({ success }) { success({ confirm: true, cancel: false }); }
   };
   const page = instantiate(loadPageDefinition(wxApi));

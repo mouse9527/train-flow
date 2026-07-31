@@ -16,7 +16,8 @@ function createAppDatabase({ now = Date.now, install = null, schemaVersion = 1 }
     activeSession: null,
     notifications: {
       expiredOccurrences: [],
-      pendingExpiredOccurrences: []
+      pendingExpiredOccurrences: [],
+      attemptedExpiredOccurrences: []
     },
     records: [],
     statisticsProjection: {},

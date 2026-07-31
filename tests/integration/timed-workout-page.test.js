@@ -217,7 +217,7 @@ test('notification claim pointer failure stays retryable and rebuild delivers th
   assert.equal(delivered.length, 1, 'confirmed delivery must stay deduplicated');
 });
 
-test('notification API failure leaves a pending delivery that a rebuilt runtime retries', () => {
+test('asynchronous notification API failure requeues the attempted delivery for rebuilt runtime retry', async () => {
   const storage = new StorageDouble();
   let clock = START_AT;
   const database = createLocalDatabase({ storage, now: () => clock });
@@ -228,6 +228,7 @@ test('notification API failure leaves a pending delivery that a rebuilt runtime 
   });
 
   let attempts = 0;
+  let rejectFirstAttempt;
   let firstSequence = 0;
   const first = createTimedWorkoutRuntime({
     database,
@@ -236,7 +237,11 @@ test('notification API failure leaves a pending delivery that a rebuilt runtime 
     commandKeyFactory: (type) => `notification_api_first_${type}_${++firstSequence}`,
     notifyExpired() {
       attempts += 1;
-      throw new Error('notification API unavailable');
+      const pendingAttempt = new Promise((resolve, reject) => {
+        rejectFirstAttempt = reject;
+      });
+      pendingAttempt.catch(() => {});
+      return pendingAttempt;
     }
   });
   first.load({ planId: plans[0].id });
@@ -246,9 +251,17 @@ test('notification API failure leaves a pending delivery that a rebuilt runtime 
   const expired = first.onShow();
   assert.equal(expired.state, 'expired-awaiting-confirmation');
   assert.equal(attempts, 1);
+  const attempted = database.load();
+  assert.equal(attempted.notifications.expiredOccurrences.length, 0);
+  assert.equal(attempted.notifications.pendingExpiredOccurrences.length, 0);
+  assert.equal(attempted.notifications.attemptedExpiredOccurrences.length, 1);
+
+  rejectFirstAttempt(new Error('notification API unavailable'));
+  await new Promise((resolve) => setImmediate(resolve));
   const pending = database.load();
   assert.equal(pending.notifications.expiredOccurrences.length, 0);
   assert.equal(pending.notifications.pendingExpiredOccurrences.length, 1);
+  assert.equal(pending.notifications.attemptedExpiredOccurrences.length, 0);
 
   const successfulDeliveries = [];
   let rebuiltSequence = 0;
@@ -260,17 +273,107 @@ test('notification API failure leaves a pending delivery that a rebuilt runtime 
     notifyExpired: (occurrenceId) => {
       attempts += 1;
       successfulDeliveries.push(occurrenceId);
+      return Promise.resolve();
     }
   });
   rebuilt.load({});
   assert.equal(attempts, 2);
   assert.equal(successfulDeliveries.length, 1);
+  await new Promise((resolve) => setImmediate(resolve));
   const delivered = rebuilt.database.load();
   assert.deepEqual(delivered.notifications.expiredOccurrences, successfulDeliveries);
   assert.deepEqual(delivered.notifications.pendingExpiredOccurrences, []);
+  assert.deepEqual(delivered.notifications.attemptedExpiredOccurrences, []);
 
   rebuilt.render();
   assert.equal(attempts, 2);
+});
+
+test('successful notification with delivered persistence failure leaves attempted state and never resends', async () => {
+  const ACTIVE_KEY = 'train_flow:v1:db:active';
+  const SLOT_KEYS = {
+    a: 'train_flow:v1:db:a',
+    b: 'train_flow:v1:db:b'
+  };
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const innerDatabase = createLocalDatabase({ storage, now: () => clock });
+  const plans = createDefaultPlans({ now: () => START_AT });
+  innerDatabase.commit((draft) => {
+    draft.install = { deviceId: 'device_notification_delivery_failure', createdAt: START_AT };
+    draft.plans.push(...clone(plans));
+  });
+
+  let failDeliveredWrite = true;
+  const database = {
+    load() {
+      return innerDatabase.load();
+    },
+    commit(mutator, expectedRevision) {
+      const before = innerDatabase.load();
+      const preview = clone(before);
+      mutator(preview);
+      const deliveredBefore = before.notifications.expiredOccurrences.length;
+      const deliveredAfter = preview.notifications.expiredOccurrences.length;
+      if (failDeliveredWrite && deliveredAfter > deliveredBefore) {
+        failDeliveredWrite = false;
+        const activeSlot = storage.peek(ACTIVE_KEY);
+        const targetSlot = activeSlot === 'a' ? 'b' : 'a';
+        storage.failNextWrite(
+          SLOT_KEYS[targetSlot],
+          new Error('delivered snapshot write unavailable')
+        );
+      }
+      return innerDatabase.commit(mutator, expectedRevision);
+    }
+  };
+
+  const deliveries = [];
+  let resolveDelivery;
+  let firstSequence = 0;
+  const first = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_notification_delivery_failure',
+    commandKeyFactory: (type) => `notification_delivery_first_${type}_${++firstSequence}`,
+    notifyExpired(occurrenceId) {
+      deliveries.push(occurrenceId);
+      return new Promise((resolve) => {
+        resolveDelivery = resolve;
+      });
+    }
+  });
+  first.load({ planId: plans[0].id });
+  first.start();
+  clock = START_AT + 6 * 60_000;
+
+  const expired = first.onShow();
+  assert.equal(expired.state, 'expired-awaiting-confirmation');
+  assert.equal(deliveries.length, 1);
+  const inFlight = innerDatabase.load();
+  assert.deepEqual(inFlight.notifications.pendingExpiredOccurrences, []);
+  assert.deepEqual(inFlight.notifications.attemptedExpiredOccurrences, deliveries);
+  assert.deepEqual(inFlight.notifications.expiredOccurrences, []);
+
+  resolveDelivery();
+  await new Promise((resolve) => setImmediate(resolve));
+  const ambiguousSuccess = innerDatabase.load();
+  assert.deepEqual(ambiguousSuccess.notifications.pendingExpiredOccurrences, []);
+  assert.deepEqual(ambiguousSuccess.notifications.attemptedExpiredOccurrences, deliveries);
+  assert.deepEqual(ambiguousSuccess.notifications.expiredOccurrences, []);
+
+  let rebuiltSequence = 0;
+  const rebuilt = createTimedWorkoutRuntime({
+    database: createLocalDatabase({ storage, now: () => clock + 1_000 }),
+    now: () => clock + 1_000,
+    idFactory: () => 'must_restore_notification_delivery_failure',
+    commandKeyFactory: (type) => `notification_delivery_rebuilt_${type}_${++rebuiltSequence}`,
+    notifyExpired: (occurrenceId) => deliveries.push(occurrenceId)
+  });
+  const restored = rebuilt.load({});
+  assert.equal(restored.state, 'expired-awaiting-confirmation');
+  rebuilt.render();
+  assert.equal(deliveries.length, 1, 'an ambiguous successful attempt must never be sent again');
 });
 
 test('reentrant runtimes produce at most one confirmed expiration delivery', () => {
@@ -632,8 +735,8 @@ function createPageHarness({ confirm = true } = {}) {
       modalTitles.push(options.title);
       options.success({ confirm, cancel: !confirm });
     },
-    showToast() {},
-    vibrateLong() {},
+    showToast({ success }) { success(); },
+    vibrateLong({ success }) { success(); },
     setKeepScreenOn() {}
   };
   const {
@@ -663,6 +766,76 @@ function createPageHarness({ confirm = true } = {}) {
   };
   return { calls, intervalCallbacks, modalTitles, page, timeoutCallbacks };
 }
+
+test('expiration adapter waits for WeChat vibrate and toast success/fail callbacks', async () => {
+  const vibrateCalls = [];
+  const toastCalls = [];
+  let notificationAdapter;
+  const runtime = {
+    load() {
+      return pageView();
+    }
+  };
+  const wxApi = {
+    vibrateLong(options) {
+      vibrateCalls.push(options);
+    },
+    showToast(options) {
+      toastCalls.push(options);
+    },
+    setKeepScreenOn() {}
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory(options) {
+      notificationAdapter = options.notifyExpired;
+      return runtime;
+    },
+    getWx: () => wxApi,
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) {
+      this.data = { ...this.data, ...next };
+    }
+  };
+  page.onLoad({});
+
+  let settled = false;
+  const successful = notificationAdapter('occurrence_success').then(() => {
+    settled = true;
+  });
+  assert.equal(vibrateCalls.length, 1);
+  assert.equal(toastCalls.length, 0);
+  await Promise.resolve();
+  assert.equal(settled, false, 'synchronous undefined must not count as vibrate success');
+
+  vibrateCalls[0].success();
+  await Promise.resolve();
+  assert.equal(toastCalls.length, 1);
+  assert.equal(settled, false, 'toast must confirm through its success callback');
+  toastCalls[0].success();
+  await successful;
+  assert.equal(settled, true);
+
+  const vibrateFailure = notificationAdapter('occurrence_vibrate_failure');
+  vibrateCalls[1].fail(new Error('vibrate unavailable'));
+  await assert.rejects(vibrateFailure, /vibrate unavailable/);
+  assert.equal(toastCalls.length, 1, 'toast must not run after vibrate failure');
+
+  const toastFailure = notificationAdapter('occurrence_toast_failure');
+  vibrateCalls[2].success();
+  await Promise.resolve();
+  toastCalls[1].fail(new Error('toast unavailable'));
+  await assert.rejects(toastFailure, /toast unavailable/);
+});
 
 test('page lifecycle delegates to the runtime while interval refresh never mutates Session state', () => {
   const harness = createPageHarness();
