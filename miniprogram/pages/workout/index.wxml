@@ -47,7 +47,7 @@
           <input type="digit" value="{{actualLoad}}" placeholder="未知可留空" bindinput="onActualWeightInput" disabled="{{view.controls.completeSet.disabled || busy}}" />
         </label>
       </view>
-      <button class="control control--primary control--wide" bindtap="onCompleteSet" disabled="{{view.controls.completeSet.disabled || busy}}">{{view.controls.completeSet.label}}</button>
+      <button class="control control--primary control--wide" bindtap="onCompleteSet" data-step-id="{{view.step.id}}" data-set-number="{{view.strength.currentSet}}" data-session-revision="{{view.sessionRevision}}" disabled="{{view.controls.completeSet.disabled || busy}}">{{view.controls.completeSet.label}}</button>
       <view class="strength-card__set-controls">
         <button class="control control--compact" bindtap="onReduceSet" disabled="{{view.controls.reduceSet.disabled || busy}}">{{view.controls.reduceSet.label}}</button>
         <button class="control control--compact" bindtap="onAddSet" disabled="{{view.controls.addSet.disabled || busy}}">{{view.controls.addSet.label}}</button>

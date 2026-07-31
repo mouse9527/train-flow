@@ -1119,6 +1119,91 @@ test('Attack: an unloaded page invalidates pending Skip callbacks before they ca
   );
 });
 
+test('Attack: repeated zero-rest strength taps keep the original step, set and revision intent with zero second write', () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const database = createLocalDatabase({ storage, now: () => clock });
+  const sourcePlan = createDefaultPlans({ now: () => START_AT })
+    .find(({ steps }) => steps.some(({ kind }) => kind === 'strength'));
+  const sourceStrength = sourcePlan.steps.find(({ kind }) => kind === 'strength');
+  const plan = {
+    ...clone(sourcePlan),
+    id: 'plan_strength_zero_rest_double_tap_page',
+    trainingDate: '2026-08-10',
+    title: '力量零休息双击页面夹具',
+    templateSource: null,
+    steps: [{
+      ...clone(sourceStrength),
+      id: 'strength_zero_rest_double_tap',
+      order: 1,
+      sets: 2,
+      restSeconds: 0
+    }]
+  };
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_strength_zero_rest_page', createdAt: START_AT };
+    draft.plans.push(plan);
+  });
+  let sequence = 0;
+  const runtime = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_strength_zero_rest_page',
+    commandKeyFactory: (type) => `strength_zero_rest_${type}_${++sequence}`
+  });
+  const toasts = [];
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => ({
+      setKeepScreenOn() {},
+      showToast(options) { toasts.push(options.title); }
+    }),
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({ planId: plan.id });
+  const originalIntent = {
+    currentTarget: {
+      dataset: {
+        stepId: page.data.view.step.id,
+        setNumber: page.data.view.strength.currentSet,
+        sessionRevision: page.data.view.sessionRevision
+      }
+    }
+  };
+
+  page.onCompleteSet(originalIntent);
+  const afterFirst = database.load();
+  assert.equal(afterFirst.activeSession.currentSet, 2);
+  assert.equal(afterFirst.activeSession.stepResults[0].setResults.length, 1);
+  clock += 1;
+  page.onCompleteSet(originalIntent);
+
+  const afterSecond = database.load();
+  assert.equal(afterSecond.localRevision, afterFirst.localRevision, 'stale second tap must perform zero write');
+  assert.equal(afterSecond.activeSession.status, 'in_progress');
+  assert.equal(afterSecond.activeSession.currentSet, 2);
+  assert.deepEqual(
+    afterSecond.activeSession.stepResults[0].setResults.map(({ setNumber }) => setNumber),
+    [1]
+  );
+  assert.equal(
+    afterSecond.activeSession.processedCommands.filter(({ type }) => type === 'complete_set').length,
+    1
+  );
+  assert.equal(toasts.length, 1, 'the stale strength intent should fail visibly');
+});
+
 test('Attack: repeated manual taps keep the original step and revision intent instead of completing the next action', () => {
   const storage = new StorageDouble();
   let clock = START_AT;
@@ -1208,6 +1293,10 @@ test('workout page declares native timer components, large timer states and thum
   assert.match(wxml, /requiresConfirmation/);
   assert.match(wxml, /确认时间后继续/);
   assert.match(wxml, /bindtap="onConfirmClockAnomaly"/);
+  assert.match(
+    wxml,
+    /bindtap="onCompleteSet"[^>]*data-step-id="\{\{view\.step\.id\}\}"[^>]*data-set-number="\{\{view\.strength\.currentSet\}\}"[^>]*data-session-revision="\{\{view\.sessionRevision\}\}"/
+  );
   assert.match(wxml, /data-step-id="\{\{view\.step\.id\}\}"/);
   assert.match(wxml, /data-session-revision="\{\{view\.sessionRevision\}\}"/);
   assert.match(wxss, /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/);

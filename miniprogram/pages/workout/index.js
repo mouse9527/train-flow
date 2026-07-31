@@ -34,6 +34,19 @@ function progressionIntent(event, view) {
   };
 }
 
+function strengthSetIntent(event, view) {
+  const dataset = event && event.currentTarget && event.currentTarget.dataset
+    ? event.currentTarget.dataset
+    : {};
+  const setNumber = Number(dataset.setNumber);
+  return {
+    ...progressionIntent(event, view),
+    setNumber: Number.isSafeInteger(setNumber) && setNumber > 0
+      ? setNumber
+      : view.strength.currentSet
+  };
+}
+
 function callWxApi(wxApi, methodName, options = {}) {
   if (typeof wxApi[methodName] !== 'function') {
     return Promise.resolve();
@@ -255,11 +268,11 @@ function createWorkoutPageDefinition({
     onStartSet() { this.invoke('startSet', 'startSet'); },
     onActualRepsInput({ detail }) { this.setData({ actualReps: detail.value }); },
     onActualWeightInput({ detail }) { this.setData({ actualLoad: detail.value }); },
-    onCompleteSet() {
+    onCompleteSet(event) {
       this.invoke('completeSet', 'completeSet', {
         reps: Number(this.data.actualReps),
         loadKg: this.data.actualLoad === '' ? null : Number(this.data.actualLoad)
-      });
+      }, strengthSetIntent(event, this.data.view));
     },
     onAddSet() { this.invoke('addSet', 'addSet'); },
     onReduceSet() { this.invoke('reduceSet', 'reduceSet'); },

@@ -326,13 +326,18 @@ class TimedWorkoutRuntime {
     });
   }
 
-  completeSet({ reps, weightKg, loadKg }) {
+  completeSet({ reps, weightKg, loadKg }, intent = {}) {
     const actualWeight = weightKg === undefined ? loadKg : weightKg;
+    const currentStep = this.currentStep();
     return this.execute('complete_set', {
-      stepId: this.currentStep().id,
-      setNumber: this.session.currentSet,
+      stepId: intent.stepId === undefined ? currentStep.id : intent.stepId,
+      setNumber: intent.setNumber === undefined ? this.session.currentSet : intent.setNumber,
       reps,
       weightKg: actualWeight
+    }, {
+      expectedSessionRevision: intent.sessionRevision === undefined
+        ? this.session.sessionRevision
+        : intent.sessionRevision
     });
   }
 
