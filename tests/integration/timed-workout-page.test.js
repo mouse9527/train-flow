@@ -1642,6 +1642,11 @@ test('PR review: unavailable release modal requires an inline summary action', a
       assert.equal(page.data.releaseFailureActionVisible, true);
       assert.match(page.data.view.deviceNotice, /常亮.*(?:关闭|释放).*失败/);
 
+      page.onHide();
+      page.onShow();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(redirects.length, 0, 'showing the page again still requires the explicit CTA');
+
       page.onViewSummary();
       page.onViewSummary();
       assert.equal(redirects.length, 1, 'explicit CTA navigates exactly once');

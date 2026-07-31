@@ -64,7 +64,8 @@ function createWorkoutPageDefinition({
       view: null,
       busy: false,
       actualReps: '',
-      actualLoad: ''
+      actualLoad: '',
+      releaseFailureActionVisible: false
     },
 
     onLoad(query = {}) {
@@ -159,7 +160,8 @@ function createWorkoutPageDefinition({
       if (
         this.pageUnloaded ||
         this.summaryNavigationStarted ||
-        this.summaryNavigationPending
+        this.summaryNavigationPending ||
+        this.data.releaseFailureActionVisible
       ) {
         return;
       }
@@ -207,9 +209,18 @@ function createWorkoutPageDefinition({
         settled = true;
         this.redirectToSummary(view);
       };
+      const showFallbackAction = () => {
+        if (settled || this.pageUnloaded) return;
+        settled = true;
+        this.setData({
+          view,
+          busy: false,
+          releaseFailureActionVisible: true
+        });
+      };
       const wxApi = getWx();
       if (typeof wxApi.showModal !== 'function') {
-        proceed();
+        showFallbackAction();
         return;
       }
       try {
@@ -218,13 +229,35 @@ function createWorkoutPageDefinition({
           content: view.deviceNotice || '自动释放暂不可用，请手动锁屏后查看训练总结。',
           showCancel: false,
           confirmText: '查看总结',
-          success: proceed,
-          fail: proceed,
-          complete: proceed
+          success: ({ confirm }) => {
+            if (confirm === true) {
+              proceed();
+            } else {
+              showFallbackAction();
+            }
+          },
+          fail: showFallbackAction,
+          complete: () => {
+            if (!settled) {
+              showFallbackAction();
+            }
+          }
         });
       } catch (error) {
-        proceed();
+        showFallbackAction();
       }
+    },
+
+    onViewSummary() {
+      const view = this.data.view;
+      if (
+        !this.data.releaseFailureActionVisible ||
+        !view ||
+        !['completed', 'aborted'].includes(view.state)
+      ) {
+        return;
+      }
+      this.redirectToSummary(view);
     },
 
     redirectToSummary(view) {
