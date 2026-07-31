@@ -124,6 +124,42 @@ test('editor changes fields, adds/deletes/reorders steps and surfaces validation
   assert.deepEqual(database.load(), before);
 });
 
+test('manual aggregate validation is visible on its step after clearing sets and reps', (t) => {
+  const { page, database } = createPageHarness(t);
+  page.onLoad({ planId: 'plan_20260805_builtin' });
+  const before = database.load();
+  const manual = page.data.draft.steps.find(({ kind }) => kind === 'manual');
+
+  page.onStepNumberInput(event({
+    value: '',
+    dataset: { stepId: manual.id, field: 'sets' }
+  }));
+  page.onStepNumberInput(event({
+    value: '',
+    dataset: { stepId: manual.id, field: 'reps' }
+  }));
+  page.onSave();
+
+  const manualView = page.data.stepViews.find(({ id }) => id === manual.id);
+  assert.equal(page.data.saveState, 'error');
+  assert.match(manualView.errors.general, /组数和次数至少填写一项/);
+  assert.deepEqual(database.load(), before);
+});
+
+test('mixed rest-day aggregate validation is visible at plan level after formal editor actions', (t) => {
+  const { page, database } = createPageHarness(t);
+  page.onLoad({ planId: 'plan_20260803_builtin' });
+  const before = database.load();
+
+  page.onAddKindChange(event({ value: 4 }));
+  page.onAddStep();
+  page.onSave();
+
+  assert.equal(page.data.saveState, 'error');
+  assert.match(page.data.planErrors.general, /休息日不能与训练步骤混合/);
+  assert.deepEqual(database.load(), before);
+});
+
 test('editor saves nested targets and supports empty-date creation', (t) => {
   const { page, database } = createPageHarness(t);
   page.onLoad({ trainingDate: '2026-08-10' });
@@ -249,6 +285,8 @@ test('editor markup exposes reorder, delete, kind fields, alternatives, error an
   assert.match(wxml, /resistance/);
   assert.match(wxml, /alternatives/);
   assert.match(wxml, /errorSummary/);
+  assert.match(wxml, /planErrors\.general/);
+  assert.match(wxml, /step\.errors\.general/);
   assert.match(wxml, /copyConfirmation\.visible/);
   assert.match(wxml, /bindtap="onConfirmCopy"/);
 });

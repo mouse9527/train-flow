@@ -108,6 +108,44 @@ test('required editor text rejects whitespace-only titles and step names', () =>
   assert.match(result.fieldErrors['plan.steps[0].name'], /必填/);
 });
 
+test('aggregate kind validation errors remain localized and actionable at plan and step scopes', () => {
+  const manual = createPlanDraft(sourcePlan(2));
+  const manualStep = manual.steps.find(({ kind }) => kind === 'manual');
+  manual.steps = [{
+    ...manualStep,
+    order: 10,
+    sets: null,
+    reps: null
+  }];
+
+  const manualResult = validatePlanDraft(manual);
+
+  assert.equal(manualResult.valid, false);
+  assert.match(manualResult.fieldErrors['plan.steps[0]'], /组数和次数至少填写一项/);
+
+  const mixed = createPlanDraft(sourcePlan());
+  mixed.steps.push({
+    id: 'step_mixed_rest_day',
+    order: 80,
+    kind: 'rest_day',
+    name: '休息日',
+    description: '',
+    durationSeconds: null,
+    sets: null,
+    reps: null,
+    restSeconds: null,
+    targets: {},
+    optional: false,
+    alternatives: [],
+    safetyNoticeCodes: []
+  });
+
+  const mixedResult = validatePlanDraft(mixed);
+
+  assert.equal(mixedResult.valid, false);
+  assert.match(mixedResult.fieldErrors.plan, /休息日不能与训练步骤混合/);
+});
+
 test('new step defaults expose only fields valid for its kind', () => {
   const expected = {
     timed: { durationSeconds: 600, sets: null, reps: null, restSeconds: null },

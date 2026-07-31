@@ -54,6 +54,7 @@ function stepView(step, index, fieldErrors) {
     resistanceMin: targetValue(step, 'resistance', 'min'),
     resistanceMax: targetValue(step, 'resistance', 'max'),
     errors: {
+      general: fieldErrors[`plan.steps[${index}]`] || '',
       name: error('name'),
       durationSeconds: error('durationSeconds'),
       sets: error('sets'),
@@ -123,6 +124,7 @@ Page({
     this.setData({
       fieldErrors,
       planErrors: {
+        general: fieldErrors.plan || '',
         title: fieldErrors['plan.title'] || '',
         trainingDate: fieldErrors['plan.trainingDate'] || '',
         revision: fieldErrors['plan.revision'] || '',

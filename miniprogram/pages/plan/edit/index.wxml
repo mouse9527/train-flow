@@ -12,6 +12,7 @@
   </view>
 
   <view class="error-banner" wx:if="{{errorSummary}}">{{errorSummary}}</view>
+  <text class="field-error section-error" wx:if="{{planErrors.general}}">{{planErrors.general}}</text>
   <view class="save-banner" wx:if="{{saveMessage}}">{{saveMessage}}</view>
 
   <view class="editor-section plan-basics">
@@ -53,6 +54,8 @@
           <button class="icon-button danger" data-step-id="{{step.id}}" bindtap="onDeleteStep">删</button>
         </view>
       </view>
+
+      <text class="field-error section-error" wx:if="{{step.errors.general}}">{{step.errors.general}}</text>
 
       <text class="field-label">动作名称 *</text>
       <input class="field-input {{step.errors.name ? 'field-invalid' : ''}}" value="{{step.name}}" data-step-id="{{step.id}}" data-field="name" bindinput="onStepTextInput" />

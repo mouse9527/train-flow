@@ -151,7 +151,9 @@ function localizedMessage(message) {
   if (message.includes('min must not exceed max')) return '最小值不能大于最大值';
   if (message.includes('must contain at least one step')) return '至少保留一个训练步骤';
   if (message.includes('must be strictly increasing')) return '步骤顺序无效';
+  if (message.includes('manual steps require sets or reps')) return '组数和次数至少填写一项';
   if (message.includes('cannot be mixed')) return '休息日不能与训练步骤混合';
+  if (message.includes('rest_day plan duration must be zero')) return '休息日计划预计时长必须为 0';
   return message;
 }
 
