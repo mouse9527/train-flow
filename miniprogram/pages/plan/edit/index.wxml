@@ -146,6 +146,7 @@
     <view class="confirmation-card" wx:if="{{copyConfirmation.visible}}">
       <text class="confirmation-label">需要明确确认</text>
       <text class="confirmation-message">{{copyConfirmation.message}}</text>
+      <text class="confirmation-revision">目标 plan ID: {{copyConfirmation.targetPlanId}}</text>
       <text class="confirmation-revision">目标 expected revision: {{copyConfirmation.targetRevision}}</text>
       <view class="confirmation-actions">
         <button class="cancel-button" bindtap="onCancelCopy">取消</button>

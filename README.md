@@ -41,8 +41,10 @@ Open `pages/plan/edit/index?planId=plan_20260803_builtin` in WeChat DevTools to
 exercise the plan editor. It supports kind-specific duration/set/rep/rest and
 equipment-target fields, step add/delete/reorder, field-level validation, and a
 copy-to-date flow. Copying over an existing date always shows a confirmation
-with the target plan revision; saving an edited plan only affects future workout
-starts because an active Session keeps its own deep `PlanSnapshot`.
+bound to the target plan ID and exact revision. Replayed taps reuse one copy
+intent, while a newly opened confirmation creates a fresh copy identity. Saving
+an edited plan only affects future workout starts because an active Session keeps
+its own deep `PlanSnapshot`.
 
 ## Privacy
 

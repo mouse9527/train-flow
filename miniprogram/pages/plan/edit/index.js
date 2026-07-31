@@ -87,6 +87,8 @@ Page({
     copyMessage: '',
     copyConfirmation: {
       visible: false,
+      copyIntentId: null,
+      targetPlanId: null,
       targetRevision: null,
       message: ''
     }
@@ -238,13 +240,15 @@ Page({
     this.setData({ copyDate: event.detail.value, copyState: 'idle', copyMessage: '' });
   },
 
-  copyCommand(confirmReplace, expectedTargetRevision) {
+  copyCommand(confirmReplace, confirmation = {}) {
     return application.copyPlanToDate({
       sourcePlanId: this.data.draft.id,
       targetDate: this.data.copyDate,
       commandKey: `copy:${this.data.draft.id}:${this.data.copyDate}`,
       confirmReplace,
-      expectedTargetRevision
+      copyIntentId: confirmation.copyIntentId || null,
+      expectedTargetPlanId: confirmation.targetPlanId || null,
+      expectedTargetRevision: confirmation.targetRevision ?? null
     });
   },
 
@@ -253,12 +257,14 @@ Page({
       this.setData({ copyState: 'error', copyMessage: '请先保存新计划，再复制到其他日期。' });
       return;
     }
-    const result = this.copyCommand(false, null);
+    const result = this.copyCommand(false);
     if (result.code === 'PLAN_REPLACE_CONFIRMATION_REQUIRED') {
       this.setData({
         copyState: 'confirming',
         copyConfirmation: {
           visible: true,
+          copyIntentId: result.copyIntentId,
+          targetPlanId: result.targetPlanId,
           targetRevision: result.targetRevision,
           message: `${this.data.copyDate} 已有计划。确认后将以当前计划的深复制版本替换它。`
         }
@@ -272,9 +278,15 @@ Page({
     if (!this.data.copyConfirmation.visible) {
       return;
     }
-    const result = this.copyCommand(true, this.data.copyConfirmation.targetRevision);
+    const result = this.copyCommand(true, this.data.copyConfirmation);
     this.setData({
-      copyConfirmation: { visible: false, targetRevision: null, message: '' }
+      copyConfirmation: {
+        visible: false,
+        copyIntentId: null,
+        targetPlanId: null,
+        targetRevision: null,
+        message: ''
+      }
     });
     this.finishCopy(result);
   },
@@ -282,7 +294,13 @@ Page({
   onCancelCopy() {
     this.setData({
       copyState: 'idle',
-      copyConfirmation: { visible: false, targetRevision: null, message: '' }
+      copyConfirmation: {
+        visible: false,
+        copyIntentId: null,
+        targetPlanId: null,
+        targetRevision: null,
+        message: ''
+      }
     });
   },
 

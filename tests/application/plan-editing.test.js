@@ -374,7 +374,10 @@ test('copy-to-existing-date requires confirmation and its exact expected revisio
   });
   assert.equal(unconfirmed.ok, false);
   assert.equal(unconfirmed.code, 'PLAN_REPLACE_CONFIRMATION_REQUIRED');
+  assert.equal(unconfirmed.targetPlanId, target.id);
   assert.equal(unconfirmed.targetRevision, target.revision);
+  assert.equal(typeof unconfirmed.copyIntentId, 'string');
+  assert.ok(unconfirmed.copyIntentId.length > 0);
   assert.deepEqual(runtime.database.load(), before);
   assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
 
@@ -383,6 +386,8 @@ test('copy-to-existing-date requires confirmation and its exact expected revisio
     targetDate: target.trainingDate,
     commandKey: 'replace-2026-08-04',
     confirmReplace: true,
+    copyIntentId: unconfirmed.copyIntentId,
+    expectedTargetPlanId: unconfirmed.targetPlanId,
     expectedTargetRevision: 0
   });
   assert.equal(stale.ok, false);
@@ -396,12 +401,18 @@ test('copy-to-existing-date requires confirmation and its exact expected revisio
     targetDate: target.trainingDate,
     commandKey: 'replace-2026-08-04',
     confirmReplace: true,
+    copyIntentId: unconfirmed.copyIntentId,
+    expectedTargetPlanId: unconfirmed.targetPlanId,
     expectedTargetRevision: target.revision
   });
   const replayed = runtime.application.copyPlanToDate({
     sourcePlanId: source.id,
     targetDate: target.trainingDate,
-    commandKey: 'replace-2026-08-04'
+    commandKey: 'replace-2026-08-04-double-tap',
+    confirmReplace: true,
+    copyIntentId: unconfirmed.copyIntentId,
+    expectedTargetPlanId: unconfirmed.targetPlanId,
+    expectedTargetRevision: unconfirmed.targetRevision
   });
 
   assert.equal(replaced.ok, true);
@@ -417,25 +428,185 @@ test('copy-to-existing-date requires confirmation and its exact expected revisio
   assert.equal(runtime.repository.findRange(target.trainingDate, target.trainingDate).length, 1);
 });
 
-test('different dialog tap keys still replay one stable source-revision to target-date copy intent', () => {
+test('stale replacement confirmation rejects a different target plan with the same revision and performs zero writes', () => {
+  const runtime = createRuntime();
+  const source = runtime.repository.findByDate('2026-08-03');
+  const targetA = runtime.repository.findByDate('2026-08-04');
+  const preflight = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: targetA.trainingDate,
+    commandKey: 'preflight-target-a'
+  });
+
+  runtime.repository.delete(targetA.id, targetA.revision);
+  const targetB = runtime.repository.save({
+    ...sourcePlan(2),
+    id: 'plan_concurrent_target_b',
+    trainingDate: targetA.trainingDate,
+    title: '并发创建的目标 B',
+    templateSource: null
+  }, 0);
+  const before = runtime.database.load();
+  runtime.storage.clearOperations();
+
+  const stale = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: targetA.trainingDate,
+    commandKey: 'confirm-stale-target-a',
+    confirmReplace: true,
+    copyIntentId: preflight.copyIntentId,
+    expectedTargetPlanId: preflight.targetPlanId,
+    expectedTargetRevision: preflight.targetRevision
+  });
+
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'PLAN_REVISION_CONFLICT');
+  assert.match(stale.fieldErrors['plan.revision'], /重新加载/);
+  assert.deepEqual(runtime.repository.findByDate(targetA.trainingDate), targetB);
+  assert.deepEqual(runtime.database.load(), before);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('stale replacement confirmation cannot downgrade to empty-date creation after its target is deleted', () => {
+  const runtime = createRuntime();
+  const source = runtime.repository.findByDate('2026-08-03');
+  const target = runtime.repository.findByDate('2026-08-04');
+  const preflight = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'preflight-before-delete'
+  });
+
+  runtime.repository.delete(target.id, target.revision);
+  const before = runtime.database.load();
+  runtime.storage.clearOperations();
+
+  const stale = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'confirm-after-delete',
+    confirmReplace: true,
+    copyIntentId: preflight.copyIntentId,
+    expectedTargetPlanId: preflight.targetPlanId,
+    expectedTargetRevision: preflight.targetRevision
+  });
+
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'PLAN_REVISION_CONFLICT');
+  assert.equal(runtime.repository.findByDate(target.trainingDate), null);
+  assert.deepEqual(runtime.database.load(), before);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('replacement confirmation rejects an incomplete target identity payload without writing', () => {
+  const runtime = createRuntime();
+  const source = runtime.repository.findByDate('2026-08-03');
+  const target = runtime.repository.findByDate('2026-08-04');
+  const preflight = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'preflight-incomplete-payload'
+  });
+  const before = runtime.database.load();
+  runtime.storage.clearOperations();
+
+  const invalid = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'confirm-incomplete-payload',
+    confirmReplace: true,
+    copyIntentId: preflight.copyIntentId,
+    expectedTargetPlanId: preflight.targetPlanId
+  });
+
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, 'PLAN_REPLACE_CONFIRMATION_INVALID');
+  assert.match(invalid.fieldErrors['plan.revision'], /重新加载/);
+  assert.deepEqual(runtime.database.load(), before);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('a fresh copy intent can reuse a source revision after an intervening replacement while replaying itself once', () => {
+  const runtime = createRuntime();
+  const sourceA = runtime.repository.findByDate('2026-08-03');
+  const sourceB = runtime.repository.findByDate('2026-08-05');
+  const targetDate = '2026-08-04';
+
+  function replaceFrom(source, commandKey) {
+    const preflight = runtime.application.copyPlanToDate({
+      sourcePlanId: source.id,
+      targetDate,
+      commandKey: `${commandKey}-preflight`
+    });
+    assert.equal(preflight.code, 'PLAN_REPLACE_CONFIRMATION_REQUIRED');
+    return {
+      preflight,
+      result: runtime.application.copyPlanToDate({
+        sourcePlanId: source.id,
+        targetDate,
+        commandKey: `${commandKey}-confirm`,
+        confirmReplace: true,
+        copyIntentId: preflight.copyIntentId,
+        expectedTargetPlanId: preflight.targetPlanId,
+        expectedTargetRevision: preflight.targetRevision
+      })
+    };
+  }
+
+  const firstA = replaceFrom(sourceA, 'first-a');
+  const thenB = replaceFrom(sourceB, 'then-b');
+  const beforeThird = runtime.database.load().localRevision;
+  const secondA = replaceFrom(sourceA, 'second-a');
+  const replay = runtime.application.copyPlanToDate({
+    sourcePlanId: sourceA.id,
+    targetDate,
+    commandKey: 'second-a-double-tap',
+    confirmReplace: true,
+    copyIntentId: secondA.preflight.copyIntentId,
+    expectedTargetPlanId: secondA.preflight.targetPlanId,
+    expectedTargetRevision: secondA.preflight.targetRevision
+  });
+
+  assert.equal(firstA.result.ok, true);
+  assert.equal(thenB.result.ok, true);
+  assert.equal(secondA.result.ok, true);
+  assert.notEqual(secondA.preflight.copyIntentId, firstA.preflight.copyIntentId);
+  assert.notEqual(secondA.result.plan.id, firstA.result.plan.id);
+  assert.equal(replay.ok, true);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.plan.id, secondA.result.plan.id);
+  assert.equal(runtime.database.load().localRevision, beforeThird + 1);
+  assert.equal(runtime.repository.findByDate(targetDate).id, secondA.result.plan.id);
+});
+
+test('different dialog tap keys replay one explicit copy intent', () => {
   const runtime = createRuntime();
   const source = runtime.repository.findByDate('2026-08-03');
   const target = runtime.repository.findByDate('2026-08-04');
   const beforeRevision = runtime.database.load().localRevision;
 
+  const preflight = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'dialog-open'
+  });
   const first = runtime.application.copyPlanToDate({
     sourcePlanId: source.id,
     targetDate: target.trainingDate,
     commandKey: 'dialog-tap-1',
     confirmReplace: true,
-    expectedTargetRevision: target.revision
+    copyIntentId: preflight.copyIntentId,
+    expectedTargetPlanId: preflight.targetPlanId,
+    expectedTargetRevision: preflight.targetRevision
   });
   const second = runtime.application.copyPlanToDate({
     sourcePlanId: source.id,
     targetDate: target.trainingDate,
     commandKey: 'dialog-tap-2',
     confirmReplace: true,
-    expectedTargetRevision: first.plan.revision
+    copyIntentId: preflight.copyIntentId,
+    expectedTargetPlanId: preflight.targetPlanId,
+    expectedTargetRevision: preflight.targetRevision
   });
 
   assert.equal(first.ok, true);
@@ -450,12 +621,19 @@ test('a newer source revision creates a new copy intent and can explicitly refre
   const runtime = createRuntime();
   const sourceV1 = runtime.repository.findByDate('2026-08-03');
   const target = runtime.repository.findByDate('2026-08-04');
+  const sourceV1Preflight = runtime.application.copyPlanToDate({
+    sourcePlanId: sourceV1.id,
+    targetDate: target.trainingDate,
+    commandKey: 'source-v1-copy-preflight'
+  });
   const first = runtime.application.copyPlanToDate({
     sourcePlanId: sourceV1.id,
     targetDate: target.trainingDate,
     commandKey: 'source-v1-copy',
     confirmReplace: true,
-    expectedTargetRevision: target.revision
+    copyIntentId: sourceV1Preflight.copyIntentId,
+    expectedTargetPlanId: sourceV1Preflight.targetPlanId,
+    expectedTargetRevision: sourceV1Preflight.targetRevision
   });
   const sourceV2 = runtime.repository.save({
     ...runtime.repository.findById(sourceV1.id),
@@ -474,6 +652,8 @@ test('a newer source revision creates a new copy intent and can explicitly refre
     targetDate: target.trainingDate,
     commandKey: 'source-v2-copy-confirm',
     confirmReplace: true,
+    copyIntentId: needsRefreshConfirmation.copyIntentId,
+    expectedTargetPlanId: needsRefreshConfirmation.targetPlanId,
     expectedTargetRevision: needsRefreshConfirmation.targetRevision
   });
   assert.equal(refreshed.ok, true);

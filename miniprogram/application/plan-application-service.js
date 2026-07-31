@@ -53,6 +53,7 @@ class PlanApplicationService {
     this.idFactory = idFactory || (({ entity }) => `${entity}_${this.now()}_${++sequence}`);
     this.editorSessionSequence = 0;
     this.editorSessions = new Map();
+    this.copyIntentSequence = 0;
   }
 
   initializeDefaultPlans() {
@@ -261,6 +262,8 @@ class PlanApplicationService {
     targetDate,
     commandKey,
     confirmReplace = false,
+    copyIntentId = null,
+    expectedTargetPlanId = null,
     expectedTargetRevision = null
   } = {}) {
     if (typeof commandKey !== 'string' || commandKey.trim().length === 0) {
@@ -277,11 +280,24 @@ class PlanApplicationService {
         fieldErrors: { 'plan.trainingDate': '请选择与来源计划不同的其他日期' }
       };
     }
+    if (confirmReplace && (
+      typeof copyIntentId !== 'string' || copyIntentId.trim().length === 0 ||
+      typeof expectedTargetPlanId !== 'string' || expectedTargetPlanId.trim().length === 0 ||
+      !Number.isSafeInteger(expectedTargetRevision) || expectedTargetRevision < 0
+    )) {
+      return {
+        ok: false,
+        code: 'PLAN_REPLACE_CONFIRMATION_INVALID',
+        fieldErrors: { 'plan.revision': '替换确认已失效，请重新加载目标计划' }
+      };
+    }
+    const stableIntentId = copyIntentId || commandKey;
     const fingerprint = computeChecksum({
       command: 'copy_plan_to_date',
       sourcePlanId,
       sourceRevision: source.revision,
-      targetDate
+      targetDate,
+      copyIntentId: stableIntentId
     }).slice(0, 20);
     const copyService = createPlanCopyService({
       now: this.now,
@@ -294,26 +310,39 @@ class PlanApplicationService {
     if (replayed !== null && replayed.trainingDate === targetDate) {
       return { ok: true, plan: replayed, replayed: true, replaced: false };
     }
-
     const target = this.repository.findByDate(targetDate);
     if (target !== null && !confirmReplace) {
+      const issuedIntentId = `copy_intent_${computeChecksum({
+        sourcePlanId,
+        sourceRevision: source.revision,
+        targetDate,
+        targetPlanId: target.id,
+        targetRevision: target.revision,
+        sequence: ++this.copyIntentSequence
+      }).slice(0, 24)}`;
       return {
         ok: false,
         code: 'PLAN_REPLACE_CONFIRMATION_REQUIRED',
         requiresConfirmation: true,
+        copyIntentId: issuedIntentId,
+        targetPlanId: target.id,
         targetRevision: target.revision,
         fieldErrors: {}
       };
     }
+
     try {
-      const plan = target === null
-        ? this.repository.save(candidate, 0)
-        : this.repository.replaceForDate(candidate, expectedTargetRevision);
+      const plan = confirmReplace
+        ? this.repository.replaceForDate(candidate, {
+          expectedTargetPlanId,
+          expectedTargetRevision
+        })
+        : this.repository.save(candidate, 0);
       return {
         ok: true,
         plan,
         replayed: false,
-        replaced: target !== null
+        replaced: confirmReplace
       };
     } catch (error) {
       if (error && error.code === 'PLAN_REVISION_CONFLICT') {

@@ -153,7 +153,10 @@ test('copy-date requires visible confirmation for an existing plan and double co
 
   page.onCopyPlan();
   assert.equal(page.data.copyConfirmation.visible, true);
+  assert.equal(page.data.copyConfirmation.targetPlanId, 'plan_20260804_builtin');
   assert.equal(page.data.copyConfirmation.targetRevision, 1);
+  assert.equal(typeof page.data.copyConfirmation.copyIntentId, 'string');
+  assert.ok(page.data.copyConfirmation.copyIntentId.length > 0);
   assert.match(page.data.copyConfirmation.message, /已有计划|替换/);
   assert.equal(database.load().localRevision, beforeRevision);
 

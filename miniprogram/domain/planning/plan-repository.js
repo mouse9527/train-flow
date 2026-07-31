@@ -312,8 +312,11 @@ class PlanRepository {
     return clone(committed.plans.find(({ id }) => id === candidate.id));
   }
 
-  replaceForDate(plan, expectedTargetRevision) {
+  replaceForDate(plan, { expectedTargetPlanId, expectedTargetRevision } = {}) {
     assertExpectedRevision(expectedTargetRevision);
+    if (typeof expectedTargetPlanId !== 'string' || expectedTargetPlanId.length === 0) {
+      throw new Error('expectedTargetPlanId must be a non-empty string');
+    }
     if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
       throw new Error('replacement plan must be an object');
     }
@@ -327,9 +330,13 @@ class PlanRepository {
       ({ trainingDate, status }) => status !== 'deleted' && trainingDate === plan.trainingDate
     ) || null;
     const actualRevision = target ? target.revision : 0;
-    if (!target || actualRevision !== expectedTargetRevision) {
+    if (
+      !target ||
+      target.id !== expectedTargetPlanId ||
+      actualRevision !== expectedTargetRevision
+    ) {
       throw createRepositoryError(
-        `Plan revision conflict: expected ${expectedTargetRevision}, actual ${actualRevision}`,
+        `Plan replacement conflict: expected ${expectedTargetPlanId}@${expectedTargetRevision}, actual ${target ? `${target.id}@${actualRevision}` : 'empty'}`,
         'PLAN_REVISION_CONFLICT'
       );
     }
@@ -364,9 +371,13 @@ class PlanRepository {
       );
       const current = currentIndex === -1 ? null : draft.plans[currentIndex];
       const currentRevision = current ? current.revision : 0;
-      if (!current || currentRevision !== expectedTargetRevision) {
+      if (
+        !current ||
+        current.id !== expectedTargetPlanId ||
+        currentRevision !== expectedTargetRevision
+      ) {
         throw createRepositoryError(
-          `Plan revision conflict: expected ${expectedTargetRevision}, actual ${currentRevision}`,
+          `Plan replacement conflict: expected ${expectedTargetPlanId}@${expectedTargetRevision}, actual ${current ? `${current.id}@${currentRevision}` : 'empty'}`,
           'PLAN_REVISION_CONFLICT'
         );
       }
