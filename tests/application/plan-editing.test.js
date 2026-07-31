@@ -12,6 +12,22 @@ const {
 const {
   createDefaultPlans
 } = require('../../miniprogram/domain/planning/default-plan-factory');
+const {
+  createPlanApplicationService
+} = require('../../miniprogram/application/plan-application-service');
+const {
+  createPlanRepository
+} = require('../../miniprogram/domain/planning/plan-repository');
+const {
+  createSessionRepository
+} = require('../../miniprogram/domain/execution/session-repository');
+const {
+  createLocalDatabase
+} = require('../../miniprogram/services/local-database');
+const {
+  createWorkoutApplicationService
+} = require('../../miniprogram/application/workout-application-service');
+const { StorageDouble } = require('../helpers/storage-double');
 
 const FIXED_NOW = 1785717300000;
 
@@ -79,6 +95,18 @@ test('plan editor returns field-level errors for required and kind-specific valu
   assert.match(result.fieldErrors['plan.steps[3].restSeconds'], /不能小于 0/);
 });
 
+test('required editor text rejects whitespace-only titles and step names', () => {
+  const draft = createPlanDraft(sourcePlan());
+  draft.title = '   ';
+  draft.steps[0].name = '\t';
+
+  const result = validatePlanDraft(draft);
+
+  assert.equal(result.valid, false);
+  assert.match(result.fieldErrors['plan.title'], /必填/);
+  assert.match(result.fieldErrors['plan.steps[0].name'], /必填/);
+});
+
 test('new step defaults expose only fields valid for its kind', () => {
   const expected = {
     timed: { durationSeconds: 600, sets: null, reps: null, restSeconds: null },
@@ -106,4 +134,216 @@ test('new step defaults expose only fields valid for its kind', () => {
     assert.deepEqual(step.alternatives, []);
     assert.equal(step.optional, false);
   }
+});
+
+function createRuntime() {
+  const storage = new StorageDouble();
+  const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
+  const repository = createPlanRepository({ database, now: () => FIXED_NOW + 60_000 });
+  const application = createPlanApplicationService({
+    repository,
+    now: () => FIXED_NOW + 60_000
+  });
+  application.initializeDefaultPlans();
+  return { storage, database, repository, application };
+}
+
+test('application-generated step IDs remain fresh after a draft step is deleted', () => {
+  const runtime = createRuntime();
+  const editor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+
+  const first = runtime.application.addPlanDraftStep({
+    draft: editor.draft,
+    kind: 'manual',
+    name: '临时动作'
+  });
+  removeDraftStep(editor.draft, first.id);
+  const second = runtime.application.addPlanDraftStep({
+    draft: editor.draft,
+    kind: 'manual',
+    name: '新的动作'
+  });
+
+  assert.match(first.id, /^step_[A-Za-z0-9_-]+$/);
+  assert.match(second.id, /^step_[A-Za-z0-9_-]+$/);
+  assert.notEqual(second.id, first.id);
+});
+
+test('saving an editor draft updates the aggregate but leaves an active Session PlanSnapshot isolated', () => {
+  const runtime = createRuntime();
+  const sessionRepository = createSessionRepository({ database: runtime.database });
+  const workout = createWorkoutApplicationService({
+    planRepository: runtime.repository,
+    sessionRepository,
+    deviceId: 'device_plan_editor',
+    idFactory: () => 'session_plan_editor',
+    now: () => FIXED_NOW + 1_000
+  });
+  const started = workout.startSession({
+    planId: 'plan_20260803_builtin',
+    commandKey: 'start-before-edit'
+  });
+  const editor = runtime.application.openPlanEditor({ planId: started.planId });
+  editor.draft.title = '适合今日器械的版本';
+  updateDraftStep(editor.draft, editor.draft.steps[0].id, {
+    name: '替代热身动作',
+    durationSeconds: 420
+  });
+
+  const result = runtime.application.savePlanDraft({
+    draft: editor.draft,
+    expectedRevision: editor.expectedRevision
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.revision, 2);
+  assert.equal(runtime.repository.findById(started.planId).title, '适合今日器械的版本');
+  assert.equal(runtime.database.load().activeSession.planSnapshot.title, started.planSnapshot.title);
+  assert.equal(
+    runtime.database.load().activeSession.planSnapshot.steps[0].name,
+    started.planSnapshot.steps[0].name
+  );
+  assert.match(editor.futureStartNotice, /进行中的训练不变|下次开始/);
+});
+
+test('invalid and stale drafts return field errors with zero partial writes', () => {
+  const runtime = createRuntime();
+  const editor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+  const beforeInvalid = runtime.database.load();
+  editor.draft.title = '';
+  editor.draft.steps[0].durationSeconds = 0;
+  runtime.storage.clearOperations();
+
+  const invalid = runtime.application.savePlanDraft({
+    draft: editor.draft,
+    expectedRevision: editor.expectedRevision
+  });
+
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, 'PLAN_VALIDATION_FAILED');
+  assert.match(invalid.fieldErrors['plan.title'], /必填/);
+  assert.deepEqual(runtime.database.load(), beforeInvalid);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+
+  const freshEditor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+  const winner = runtime.repository.save({
+    ...runtime.repository.findById('plan_20260803_builtin'),
+    title: '另一窗口先保存'
+  }, freshEditor.expectedRevision);
+  runtime.storage.clearOperations();
+  freshEditor.draft.title = '过期窗口覆盖';
+
+  const stale = runtime.application.savePlanDraft({
+    draft: freshEditor.draft,
+    expectedRevision: freshEditor.expectedRevision
+  });
+
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'PLAN_REVISION_CONFLICT');
+  assert.match(stale.fieldErrors['plan.revision'], /重新加载/);
+  assert.equal(runtime.repository.findById(winner.id).title, '另一窗口先保存');
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('an empty date gets a valid custom draft and persists with expected revision zero', () => {
+  const runtime = createRuntime();
+  const editor = runtime.application.openPlanEditor({ trainingDate: '2026-08-10' });
+
+  assert.equal(editor.isNew, true);
+  assert.equal(editor.expectedRevision, 0);
+  assert.equal(editor.draft.trainingDate, '2026-08-10');
+  assert.equal(editor.draft.steps.length, 1);
+  editor.draft.title = '周一自定义训练';
+  const saved = runtime.application.savePlanDraft({
+    draft: editor.draft,
+    expectedRevision: editor.expectedRevision
+  });
+
+  assert.equal(saved.ok, true);
+  assert.equal(saved.plan.revision, 1);
+  assert.equal(runtime.repository.findByDate('2026-08-10').id, editor.draft.id);
+});
+
+test('copy-to-empty-date is a deep copy and repeated confirmation is idempotent', () => {
+  const runtime = createRuntime();
+  const source = runtime.repository.findByDate('2026-08-03');
+
+  const first = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: '2026-08-10',
+    commandKey: 'copy-2026-08-03-to-10'
+  });
+  const repeated = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: '2026-08-10',
+    commandKey: 'copy-2026-08-03-to-10'
+  });
+
+  assert.equal(first.ok, true);
+  assert.equal(first.replayed, false);
+  assert.equal(repeated.ok, true);
+  assert.equal(repeated.replayed, true);
+  assert.equal(repeated.plan.id, first.plan.id);
+  assert.notEqual(first.plan.id, source.id);
+  assert.ok(first.plan.steps.every((step, index) => step.id !== source.steps[index].id));
+  assert.equal(runtime.repository.findRange('2026-08-10', '2026-08-10').length, 1);
+  first.plan.steps[0].targets.speedKph.min = 99;
+  assert.notEqual(runtime.repository.findByDate('2026-08-03').steps[0].targets.speedKph.min, 99);
+});
+
+test('copy-to-existing-date requires confirmation and its exact expected revision before one atomic replacement', () => {
+  const runtime = createRuntime();
+  const source = runtime.repository.findByDate('2026-08-03');
+  const target = runtime.repository.findByDate('2026-08-04');
+  const before = runtime.database.load();
+  runtime.storage.clearOperations();
+
+  const unconfirmed = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'replace-2026-08-04'
+  });
+  assert.equal(unconfirmed.ok, false);
+  assert.equal(unconfirmed.code, 'PLAN_REPLACE_CONFIRMATION_REQUIRED');
+  assert.equal(unconfirmed.targetRevision, target.revision);
+  assert.deepEqual(runtime.database.load(), before);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+
+  const stale = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'replace-2026-08-04',
+    confirmReplace: true,
+    expectedTargetRevision: 0
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'PLAN_REVISION_CONFLICT');
+  assert.match(stale.fieldErrors['plan.revision'], /重新加载/);
+  assert.equal(runtime.repository.findByDate(target.trainingDate).id, target.id);
+
+  runtime.storage.clearOperations();
+  const replaced = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'replace-2026-08-04',
+    confirmReplace: true,
+    expectedTargetRevision: target.revision
+  });
+  const replayed = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'replace-2026-08-04'
+  });
+
+  assert.equal(replaced.ok, true);
+  assert.equal(replaced.replaced, true);
+  assert.notEqual(replaced.plan.id, target.id);
+  assert.equal(runtime.repository.findById(target.id), null);
+  assert.equal(runtime.database.load().plans.find(({ id }) => id === target.id).status, 'deleted');
+  assert.equal(runtime.database.load().localRevision, before.localRevision + 1);
+  assert.equal(runtime.storage.operations.filter(({ type }) => type === 'write').length, 2);
+  assert.equal(replayed.ok, true);
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.plan.id, replaced.plan.id);
+  assert.equal(runtime.repository.findRange(target.trainingDate, target.trainingDate).length, 1);
 });

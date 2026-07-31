@@ -68,8 +68,8 @@ function defaultsForKind(kind) {
 }
 
 function addDraftStep(draft, { id, kind, name }) {
-  if (typeof id !== 'string' || id.length === 0) {
-    throw new Error('new WorkoutStep id is required');
+  if (typeof id !== 'string' || !/^step_[A-Za-z0-9_-]+$/.test(id)) {
+    throw new Error('new WorkoutStep id must be a safe generated step_ identifier');
   }
   if (draft.steps.some((step) => step.id === id)) {
     throw new Error(`WorkoutStep ${id} already exists in the draft`);

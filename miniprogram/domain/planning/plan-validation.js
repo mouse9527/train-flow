@@ -133,7 +133,7 @@ function validateStep(step, path, fields) {
   if (typeof step.id !== 'string' || step.id.length === 0) fields.push(`${path}.id is required`);
   if (!isPositiveInteger(step.order)) fields.push(`${path}.order must be a positive integer`);
   if (!STEP_KINDS.has(step.kind)) fields.push(`${path}.kind is unsupported`);
-  if (typeof step.name !== 'string' || step.name.length === 0) fields.push(`${path}.name is required`);
+  if (typeof step.name !== 'string' || step.name.trim().length === 0) fields.push(`${path}.name is required`);
   if (typeof step.description !== 'string') fields.push(`${path}.description must be a string`);
   if (typeof step.optional !== 'boolean') fields.push(`${path}.optional must be a boolean`);
   validateStringArray(step.alternatives, `${path}.alternatives`, fields);
@@ -176,7 +176,7 @@ function assertWorkoutPlan(plan) {
   if (typeof plan.id !== 'string' || plan.id.length === 0) fields.push('plan.id is required');
   if (!isValidTrainingDate(plan.trainingDate)) fields.push('plan.trainingDate must be a real YYYY-MM-DD date');
   if (typeof plan.timezone !== 'string' || !TIMEZONE_PATTERN.test(plan.timezone)) fields.push('plan.timezone must be UTC or an IANA timezone');
-  if (typeof plan.title !== 'string' || plan.title.length === 0) fields.push('plan.title is required');
+  if (typeof plan.title !== 'string' || plan.title.trim().length === 0) fields.push('plan.title is required');
   if (typeof plan.summary !== 'string') fields.push('plan.summary must be a string');
   if (!isNonNegativeInteger(plan.estimatedDurationSeconds)) fields.push('plan.estimatedDurationSeconds must be non-negative');
   if (plan.recommendedEndLocalTime !== null && (
