@@ -265,10 +265,10 @@ class TimedWorkoutRuntime {
     }
   }
 
-  execute(type, payload = {}) {
+  execute(type, payload = {}, { expectedSessionRevision = this.session.sessionRevision } = {}) {
     const applied = this.service.execute({
       type,
-      expectedSessionRevision: this.session.sessionRevision,
+      expectedSessionRevision,
       commandKey: this.commandKeyFactory(type),
       nowMs: this.now(),
       payload
@@ -344,8 +344,13 @@ class TimedWorkoutRuntime {
     return this.execute('reduce_set', { stepId: this.currentStep().id });
   }
 
-  completeManual() {
-    return this.execute('complete_step', { stepId: this.currentStep().id });
+  completeManual(intent = {}) {
+    const currentStep = this.currentStep();
+    return this.execute('complete_step', {
+      stepId: intent.stepId || currentStep.id
+    }, {
+      expectedSessionRevision: intent.sessionRevision || this.session.sessionRevision
+    });
   }
 
   endWorkout() {
@@ -427,14 +432,21 @@ function createMemoryStorage() {
   };
 }
 
-function createDeveloperTimedWorkoutRuntime({ state = 'running', notifyExpired = () => {} } = {}) {
+function createDeveloperTimedWorkoutRuntime({
+  mode = 'timed',
+  state = mode === 'strength' ? 'active' : 'running',
+  notifyExpired = () => {}
+} = {}) {
   const sampleStartAt = 1785717300000;
   let fixedNow = sampleStartAt;
-  const useLiveClock = state === 'running';
+  const useLiveClock = mode === 'timed' && state === 'running';
   const now = () => useLiveClock ? Date.now() : fixedNow;
   let sequence = 0;
   const database = createLocalDatabase({ storage: createMemoryStorage(), now });
-  const planId = createDefaultPlans({ now: () => sampleStartAt })[0].id;
+  const plans = createDefaultPlans({ now: () => sampleStartAt });
+  const plan = mode === 'strength'
+    ? plans.find(({ steps }) => steps.some(({ kind }) => kind === 'strength'))
+    : plans[0];
   const runtime = createTimedWorkoutRuntime({
     database,
     now,
@@ -443,16 +455,30 @@ function createDeveloperTimedWorkoutRuntime({ state = 'running', notifyExpired =
     notifyExpired
   });
   const load = runtime.load.bind(runtime);
-  load({ planId });
-  runtime.start();
-  if (state === 'paused') {
-    fixedNow += 90_000;
-    runtime.pause();
-  } else if (state === 'expired') {
-    fixedNow += 2 * 60_000;
-    runtime.onHide();
-    fixedNow += 4 * 60_000;
-    runtime.onShow();
+  load({ planId: plan.id });
+  if (mode === 'strength') {
+    while (runtime.currentStep() && runtime.currentStep().kind !== 'strength') {
+      runtime.skip();
+    }
+    if (state === 'rest' || state === 'expired') {
+      const view = runtime.render();
+      runtime.completeSet({ reps: view.strength.targetReps, weightKg: null });
+    }
+    if (state === 'expired') {
+      fixedNow = runtime.session.timer.expectedEndAt;
+      runtime.onShow();
+    }
+  } else {
+    runtime.start();
+    if (state === 'paused') {
+      fixedNow += 90_000;
+      runtime.pause();
+    } else if (state === 'expired') {
+      fixedNow += 2 * 60_000;
+      runtime.onHide();
+      fixedNow += 4 * 60_000;
+      runtime.onShow();
+    }
   }
   runtime.load = () => runtime.render();
   return runtime;

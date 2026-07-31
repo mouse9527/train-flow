@@ -19,6 +19,21 @@ function developerFixturesEnabled(wxApi) {
   }
 }
 
+function progressionIntent(event, view) {
+  const dataset = event && event.currentTarget && event.currentTarget.dataset
+    ? event.currentTarget.dataset
+    : {};
+  const sessionRevision = Number(dataset.sessionRevision);
+  return {
+    stepId: typeof dataset.stepId === 'string' && dataset.stepId.length > 0
+      ? dataset.stepId
+      : view.step.id,
+    sessionRevision: Number.isSafeInteger(sessionRevision) && sessionRevision > 0
+      ? sessionRevision
+      : view.sessionRevision
+  };
+}
+
 function callWxApi(wxApi, methodName, options = {}) {
   if (typeof wxApi[methodName] !== 'function') {
     return Promise.resolve();
@@ -68,12 +83,18 @@ function createWorkoutPageDefinition({
     onLoad(query = {}) {
       this.isVisible = true;
       const wxApi = getWx();
-      const useFixture = developerFixturesEnabled(wxApi) && query.fixture === 'worked-sample';
+      const useFixture = developerFixturesEnabled(wxApi) && (
+        query.fixture === 'worked-sample' || query.mode === 'strength'
+      );
       const runtimeOptions = {
         notifyExpired: () => notifyWorkoutExpired(wxApi)
       };
       this.runtime = useFixture
-        ? fixtureRuntimeFactory({ state: query.state || 'running', ...runtimeOptions })
+        ? fixtureRuntimeFactory({
+          mode: query.mode === 'strength' ? 'strength' : 'timed',
+          state: query.state || (query.mode === 'strength' ? 'active' : 'running'),
+          ...runtimeOptions
+        })
         : runtimeFactory(runtimeOptions);
       if (typeof wxApi.setKeepScreenOn === 'function') {
         wxApi.setKeepScreenOn({ keepScreenOn: true });
@@ -242,7 +263,13 @@ function createWorkoutPageDefinition({
     },
     onAddSet() { this.invoke('addSet', 'addSet'); },
     onReduceSet() { this.invoke('reduceSet', 'reduceSet'); },
-    onCompleteManual() { this.invoke('complete', 'completeManual'); },
+    onCompleteManual(event) {
+      this.invoke(
+        'complete',
+        'completeManual',
+        progressionIntent(event, this.data.view)
+      );
+    },
     onSubtract30() { this.invoke('subtract30', 'adjustTimer', -30); },
     onAdd30() { this.invoke('add30', 'adjustTimer', 30); },
 

@@ -10,6 +10,7 @@ const {
   createDefaultPlans
 } = require('../../miniprogram/domain/planning/default-plan-factory');
 const {
+  createDeveloperTimedWorkoutRuntime,
   createTimedWorkoutRuntime
 } = require('../../miniprogram/application/timed-workout-runtime');
 const {
@@ -466,6 +467,29 @@ test('Attack: manual exercise exposes a completion action without starting a tim
 
   assert.ok(completionControls.length > 0, 'manual/stretch work needs an enabled completion action');
   assert.equal(session.timer, null, 'manual completion must not require or fabricate a timer');
+});
+
+test('develop strength fixture derives active, running-rest and expired-rest views through the real runtime', () => {
+  const active = createDeveloperTimedWorkoutRuntime({ mode: 'strength', state: 'active' }).load({});
+  assert.equal(active.state, 'ready');
+  assert.equal(active.step.kind, 'strength');
+  assert.equal(active.controls.completeSet.disabled, false);
+  assert.equal(active.strength.currentSet, 1);
+
+  const rest = createDeveloperTimedWorkoutRuntime({ mode: 'strength', state: 'rest' }).load({});
+  assert.equal(rest.state, 'running');
+  assert.equal(rest.step.kind, 'strength');
+  assert.equal(rest.strength.currentSet, 2);
+  assert.equal(rest.controls.completeSet.disabled, true);
+  assert.equal(rest.remainingSeconds > 0, true);
+
+  const expired = createDeveloperTimedWorkoutRuntime({ mode: 'strength', state: 'expired' }).load({});
+  assert.equal(expired.state, 'rest-expired-awaiting-start-set');
+  assert.equal(expired.step.kind, 'strength');
+  assert.equal(expired.strength.currentSet, 2);
+  assert.equal(expired.showStartSetConfirmation, true);
+  assert.equal(expired.controls.startSet.disabled, false);
+  assert.equal(expired.controls.completeSet.disabled, true);
 });
 
 test('Attack: previous correction keeps completed strength sets and appends an audit revision', () => {

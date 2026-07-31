@@ -107,7 +107,7 @@
         <button class="control" bindtap="onEarlyComplete" disabled="{{view.controls.earlyComplete.disabled || busy}}">提前完成</button>
       </view>
 
-      <button class="control control--primary control--wide" wx:if="{{view.step && view.step.kind === 'manual'}}" bindtap="onCompleteManual" disabled="{{view.controls.complete.disabled || busy}}">{{view.controls.complete.label}}</button>
+      <button class="control control--primary control--wide" wx:if="{{view.step && view.step.kind === 'manual'}}" bindtap="onCompleteManual" data-step-id="{{view.step.id}}" data-session-revision="{{view.sessionRevision}}" disabled="{{view.controls.complete.disabled || busy}}">{{view.controls.complete.label}}</button>
 
       <button class="control control--danger control--wide" bindtap="onEndWorkout" disabled="{{view.controls.end.disabled || busy}}">结束训练</button>
     </view>
