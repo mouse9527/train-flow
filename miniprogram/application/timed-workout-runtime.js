@@ -4,6 +4,7 @@ const { createWorkoutApplicationService } = require('./workout-application-servi
 const { createSessionRepository } = require('../domain/execution/session-repository');
 const { createPlanRepository } = require('../domain/planning/plan-repository');
 const { createLocalDatabase } = require('../services/local-database');
+const { createDefaultPlans } = require('../domain/planning/default-plan-factory');
 
 function defaultId(prefix, nowMs) {
   return `${prefix}_${nowMs}_${Math.random().toString(36).slice(2, 10)}`;
@@ -212,6 +213,19 @@ class TimedWorkoutRuntime {
   onUnload() {
     return this.checkpoint('checkpointOnUnload', 'unload');
   }
+
+  materializeDeadline() {
+    if (!this.session || ['completed', 'aborted'].includes(this.session.status)) {
+      return this.render();
+    }
+    const result = this.service.checkpoint('manual', {
+      expectedSessionRevision: this.session.sessionRevision,
+      commandKey: this.commandKeyFactory('manual'),
+      nowMs: this.now()
+    });
+    this.session = result.session;
+    return this.render();
+  }
 }
 
 function createTimedWorkoutRuntime({
@@ -230,7 +244,55 @@ function createTimedWorkoutRuntime({
   });
 }
 
+function createMemoryStorage() {
+  const values = new Map();
+  const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+  return {
+    getStorageSync(key) {
+      return clone(values.get(key));
+    },
+    setStorageSync(key, value) {
+      values.set(key, clone(value));
+    },
+    removeStorageSync(key) {
+      values.delete(key);
+    }
+  };
+}
+
+function createDeveloperTimedWorkoutRuntime({ state = 'running', notifyExpired = () => {} } = {}) {
+  const sampleStartAt = 1785717300000;
+  let fixedNow = sampleStartAt;
+  const useLiveClock = state === 'running';
+  const now = () => useLiveClock ? Date.now() : fixedNow;
+  let sequence = 0;
+  const database = createLocalDatabase({ storage: createMemoryStorage(), now });
+  const planId = createDefaultPlans({ now: () => sampleStartAt })[0].id;
+  const runtime = createTimedWorkoutRuntime({
+    database,
+    now,
+    idFactory: () => 'session_worked_sample',
+    commandKeyFactory: (type) => `worked_sample_${type}_${++sequence}`,
+    notifyExpired
+  });
+  const load = runtime.load.bind(runtime);
+  load({ planId });
+  runtime.start();
+  if (state === 'paused') {
+    fixedNow += 90_000;
+    runtime.pause();
+  } else if (state === 'expired') {
+    fixedNow += 2 * 60_000;
+    runtime.onHide();
+    fixedNow += 4 * 60_000;
+    runtime.onShow();
+  }
+  runtime.load = () => runtime.render();
+  return runtime;
+}
+
 module.exports = {
   TimedWorkoutRuntime,
+  createDeveloperTimedWorkoutRuntime,
   createTimedWorkoutRuntime
 };

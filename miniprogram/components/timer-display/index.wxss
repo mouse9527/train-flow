@@ -1,0 +1,20 @@
+.timer-display {
+  display: flex;
+  justify-content: center;
+  margin: 28rpx 0 8rpx;
+}
+.timer-display__content { text-align: center; }
+.timer-display__eyebrow { display: block; color: #658077; font-size: 24rpx; font-weight: 700; }
+.timer-display__value {
+  display: block;
+  margin-top: 8rpx;
+  color: #153f32;
+  font-size: 94rpx;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -4rpx;
+  line-height: 1.1;
+}
+.timer-display__hint { display: block; margin-top: 12rpx; color: #7a8983; font-size: 22rpx; }
+.timer-display--paused .timer-display__value { color: #9b6a23; }
+.timer-display--expired-awaiting-confirmation .timer-display__value { color: #b1513f; }

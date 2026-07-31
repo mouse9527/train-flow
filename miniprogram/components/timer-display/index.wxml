@@ -1,0 +1,9 @@
+<view class="timer-display timer-display--{{state}}">
+  <progress-ring percent="{{progress}}">
+    <view class="timer-display__content">
+      <text class="timer-display__eyebrow">{{state === 'paused' ? '已暂停' : state === 'expired-awaiting-confirmation' ? '等待确认' : '剩余时间'}}</text>
+      <text class="timer-display__value">{{label}}</text>
+      <text class="timer-display__hint">{{state === 'running' ? '按绝对时间持续计时' : state === 'paused' ? '继续后从这里恢复' : '每一步都由你确认'}}</text>
+    </view>
+  </progress-ring>
+</view>

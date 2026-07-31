@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   createTimedWorkoutRuntime
@@ -191,4 +193,146 @@ test('unload and a new runtime restore the same timer while corruption stays rec
   assert.equal(recovery.state, 'recovery-error');
   assert.equal(recovery.recoveryError.recoverable, true);
   assert.match(recovery.recoveryError.message, /checksum|snapshot/i);
+});
+
+function pageView(overrides = {}) {
+  const enabled = { disabled: false };
+  return {
+    state: 'running',
+    remainingSeconds: 120,
+    deadlineReached: false,
+    controls: {
+      start: enabled,
+      pause: enabled,
+      resume: enabled,
+      previous: enabled,
+      next: enabled,
+      skip: enabled,
+      earlyComplete: enabled,
+      subtract30: enabled,
+      add30: enabled,
+      end: enabled
+    },
+    ...overrides
+  };
+}
+
+function createPageHarness({ confirm = true } = {}) {
+  const calls = [];
+  const runtime = {};
+  for (const method of [
+    'load', 'render', 'start', 'pause', 'resume', 'previous', 'confirmNext',
+    'skip', 'earlyComplete', 'adjustTimer', 'endWorkout', 'onHide', 'onShow',
+    'onUnload', 'materializeDeadline'
+  ]) {
+    runtime[method] = (...args) => {
+      calls.push([method, ...args]);
+      return pageView();
+    };
+  }
+  const intervalCallbacks = [];
+  const timeoutCallbacks = [];
+  const modalTitles = [];
+  const wxApi = {
+    getAccountInfoSync() {
+      return { miniProgram: { envVersion: 'develop' } };
+    },
+    showModal(options) {
+      modalTitles.push(options.title);
+      options.success({ confirm, cancel: !confirm });
+    },
+    showToast() {},
+    vibrateLong() {},
+    setKeepScreenOn() {}
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    fixtureRuntimeFactory: () => runtime,
+    getWx: () => wxApi,
+    setIntervalFn(callback) {
+      intervalCallbacks.push(callback);
+      return intervalCallbacks.length;
+    },
+    clearIntervalFn() {},
+    setTimeoutFn(callback) {
+      timeoutCallbacks.push(callback);
+      return timeoutCallbacks.length;
+    },
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) {
+      this.data = { ...this.data, ...next };
+    }
+  };
+  return { calls, intervalCallbacks, modalTitles, page, timeoutCallbacks };
+}
+
+test('page lifecycle delegates to the runtime while interval refresh never mutates Session state', () => {
+  const harness = createPageHarness();
+  harness.page.onLoad({ fixture: 'worked-sample', state: 'running', planId: 'ignored' });
+  assert.deepEqual(harness.calls[0], ['load', { planId: undefined }]);
+  assert.equal(harness.intervalCallbacks.length, 1);
+  assert.equal(harness.timeoutCallbacks.length, 1);
+
+  harness.intervalCallbacks[0]();
+  assert.equal(harness.calls.at(-1)[0], 'render');
+  assert.equal(harness.calls.some(([method]) => method === 'materializeDeadline'), false);
+
+  harness.timeoutCallbacks[0]();
+  assert.equal(harness.calls.at(-1)[0], 'materializeDeadline');
+  const timeoutCountBeforeHide = harness.timeoutCallbacks.length;
+  harness.page.onHide();
+  assert.equal(harness.timeoutCallbacks.length, timeoutCountBeforeHide);
+  harness.page.onShow();
+  harness.page.onUnload();
+  assert.deepEqual(
+    harness.calls.slice(-3).map(([method]) => method),
+    ['onHide', 'onShow', 'onUnload']
+  );
+});
+
+test('destructive and irreversible page controls require explicit confirmation', () => {
+  const confirmed = createPageHarness({ confirm: true });
+  confirmed.page.onLoad({});
+  confirmed.page.onSkip();
+  confirmed.page.onEarlyComplete();
+  confirmed.page.onEndWorkout();
+  assert.deepEqual(confirmed.modalTitles, ['跳过这个动作？', '提前完成这个动作？', '结束本次训练？']);
+  assert.equal(confirmed.calls.filter(([method]) => method === 'skip').length, 1);
+  assert.equal(confirmed.calls.filter(([method]) => method === 'earlyComplete').length, 1);
+  assert.equal(confirmed.calls.filter(([method]) => method === 'endWorkout').length, 1);
+
+  const cancelled = createPageHarness({ confirm: false });
+  cancelled.page.onLoad({});
+  cancelled.page.onEndWorkout();
+  assert.equal(cancelled.calls.some(([method]) => method === 'endWorkout'), false);
+});
+
+test('workout page declares native timer components, large timer states and thumb-safe controls', () => {
+  const root = path.resolve(__dirname, '../..');
+  const pageJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.json'), 'utf8'));
+  const wxml = fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.wxml'), 'utf8');
+  const wxss = fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.wxss'), 'utf8');
+  assert.deepEqual(pageJson.usingComponents, {
+    'timer-display': '/components/timer-display/index'
+  });
+  for (const copy of ['进入下一步', '提前完成', '+30 秒', '-30 秒', '结束训练']) {
+    assert.match(wxml, new RegExp(copy.replace('+', '\\+')));
+  }
+  assert.match(wxml, /expired-awaiting-confirmation/);
+  assert.match(wxss, /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/);
+  assert.match(wxss, /min-height:\s*96rpx/);
+
+  const timerJson = JSON.parse(fs.readFileSync(
+    path.join(root, 'miniprogram/components/timer-display/index.json'),
+    'utf8'
+  ));
+  assert.equal(timerJson.component, true);
+  assert.equal(timerJson.usingComponents['progress-ring'], '/components/progress-ring/index');
 });

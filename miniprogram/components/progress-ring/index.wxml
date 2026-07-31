@@ -1,0 +1,5 @@
+<view class="progress-ring" style="background: conic-gradient(#2a8064 {{percent}}%, #dfeae5 0);">
+  <view class="progress-ring__inner">
+    <slot></slot>
+  </view>
+</view>
