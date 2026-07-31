@@ -72,4 +72,37 @@ function createWorkoutSummaryRuntime(options) {
   return new WorkoutSummaryRuntime(options);
 }
 
-module.exports = { WorkoutSummaryRuntime, createWorkoutSummaryRuntime };
+function createDeveloperWorkoutSummaryRuntime({ status = 'completed' } = {}) {
+  const summary = {
+    sessionId: `session_fixture_${status}`,
+    status: status === 'aborted' ? 'aborted' : 'completed',
+    trainingDate: '2026-08-03',
+    planTitle: '周一全身训练',
+    elapsedActiveSeconds: status === 'aborted' ? 925 : 2040,
+    elapsedLabel: status === 'aborted' ? '15:25' : '34:00',
+    completedStepCount: status === 'aborted' ? 3 : 7,
+    skippedStepCount: status === 'aborted' ? 1 : 0,
+    totalStepCount: 7,
+    endedAt: 1785719340000
+  };
+  let feedback = normalizeWorkoutFeedback(
+    status === 'aborted'
+      ? { rpe: 8, pain: { dizziness: true } }
+      : { rpe: 5 }
+  );
+  return {
+    load() {
+      return { summary: clone(summary), feedback: clone(feedback), saved: false };
+    },
+    saveFeedback(input) {
+      feedback = normalizeWorkoutFeedback(input);
+      return { saved: true, fact: { ...clone(summary), feedback: clone(feedback) } };
+    }
+  };
+}
+
+module.exports = {
+  WorkoutSummaryRuntime,
+  createDeveloperWorkoutSummaryRuntime,
+  createWorkoutSummaryRuntime
+};

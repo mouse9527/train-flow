@@ -1,0 +1,29 @@
+.summary-page { min-height: 100vh; padding: 32rpx; box-sizing: border-box; background: #F4F7F5; color: #1F2933; }
+.summary-hero, .facts-card, .feedback-card, .error-card { padding: 32rpx; border-radius: 28rpx; background: #FFFFFF; box-shadow: 0 14rpx 36rpx rgba(31, 41, 51, .08); }
+.summary-hero { color: #FFFFFF; background: linear-gradient(135deg, #215B46, #2F7D61); }
+.summary-hero--aborted { background: linear-gradient(135deg, #5C4932, #8B6940); }
+.summary-hero__eyebrow, .summary-hero__title, .summary-hero__copy { display: block; }
+.summary-hero__eyebrow { font-size: 24rpx; opacity: .82; }
+.summary-hero__title { margin-top: 14rpx; font-size: 44rpx; font-weight: 800; }
+.summary-hero__copy { margin-top: 14rpx; font-size: 26rpx; line-height: 1.6; }
+.facts-card { display: flex; justify-content: space-between; margin-top: 24rpx; }
+.fact { flex: 1; text-align: center; }
+.fact__value, .fact__label { display: block; }
+.fact__value { font-size: 38rpx; font-weight: 800; }
+.fact__label { margin-top: 8rpx; color: #65727E; font-size: 22rpx; }
+.feedback-card { margin-top: 24rpx; }
+.section-title, .section-copy { display: block; }
+.section-title { font-size: 34rpx; font-weight: 800; }
+.section-copy { margin-top: 10rpx; color: #65727E; font-size: 24rpx; }
+.field { display: block; margin-top: 28rpx; }
+.field__label { display: block; margin-bottom: 12rpx; font-size: 26rpx; font-weight: 700; }
+.field__input, .field__textarea { width: 100%; padding: 22rpx 24rpx; box-sizing: border-box; border: 1rpx solid #D7DFDA; border-radius: 18rpx; background: #F9FBFA; }
+.field__textarea { min-height: 160rpx; }
+.pain-grid { margin-top: 26rpx; border-top: 1rpx solid #E6ECE8; }
+.pain-row { display: flex; align-items: center; justify-content: space-between; min-height: 92rpx; border-bottom: 1rpx solid #E6ECE8; font-size: 26rpx; }
+.validation-error { display: block; margin-top: 20rpx; color: #A63D40; font-size: 24rpx; }
+.alarm-copy { display: block; margin-top: 24rpx; color: #8A3B12; font-size: 25rpx; font-weight: 700; line-height: 1.6; }
+.save-button { margin-top: 30rpx; border-radius: 20rpx; background: #1F6F54; color: #FFFFFF; font-weight: 800; }
+.error-card__title, .error-card__copy { display: block; }
+.error-card__title { font-size: 34rpx; font-weight: 800; }
+.error-card__copy { margin-top: 14rpx; color: #65727E; }

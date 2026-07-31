@@ -35,6 +35,9 @@ function ensureNotificationState(draft) {
   if (!Array.isArray(draft.notifications.attemptedExpiredOccurrences)) {
     draft.notifications.attemptedExpiredOccurrences = [];
   }
+  if (!Array.isArray(draft.notifications.terminalOccurrences)) {
+    draft.notifications.terminalOccurrences = [];
+  }
   return draft.notifications;
 }
 
@@ -192,6 +195,25 @@ class TimedWorkoutRuntime {
       this.session.endedAt
     ]);
     if (this.notifiedTerminalOccurrences.has(occurrenceId)) {
+      return;
+    }
+    const snapshot = this.database.load();
+    const persistedOccurrences = snapshot.notifications &&
+      Array.isArray(snapshot.notifications.terminalOccurrences)
+      ? snapshot.notifications.terminalOccurrences
+      : [];
+    if (persistedOccurrences.includes(occurrenceId)) {
+      this.notifiedTerminalOccurrences.add(occurrenceId);
+      return;
+    }
+    try {
+      this.database.commit((draft) => {
+        const notifications = ensureNotificationState(draft);
+        if (!notifications.terminalOccurrences.includes(occurrenceId)) {
+          notifications.terminalOccurrences.push(occurrenceId);
+        }
+      }, snapshot.localRevision);
+    } catch (error) {
       return;
     }
     this.notifiedTerminalOccurrences.add(occurrenceId);
@@ -542,7 +564,8 @@ function createMemoryStorage() {
 function createDeveloperTimedWorkoutRuntime({
   mode = 'timed',
   state = mode === 'strength' ? 'active' : 'running',
-  notifyExpired = () => {}
+  notifyExpired,
+  deviceAdapterFactory
 } = {}) {
   const sampleStartAt = 1785717300000;
   let fixedNow = sampleStartAt;
@@ -559,7 +582,8 @@ function createDeveloperTimedWorkoutRuntime({
     now,
     idFactory: () => 'session_worked_sample',
     commandKeyFactory: (type) => `worked_sample_${type}_${++sequence}`,
-    notifyExpired
+    notifyExpired,
+    deviceAdapterFactory
   });
   const load = runtime.load.bind(runtime);
   load({ planId: plan.id });

@@ -2,6 +2,9 @@ const {
   createDeveloperTimedWorkoutRuntime,
   createTimedWorkoutRuntime
 } = require('../../application/timed-workout-runtime');
+const {
+  createWechatDeviceAdapter
+} = require('../../services/wechat-device-adapter');
 
 function developerFixturesEnabled(wxApi) {
   if (!wxApi || typeof wxApi.getAccountInfoSync !== 'function') {
@@ -47,35 +50,6 @@ function strengthSetIntent(event, view) {
   };
 }
 
-function callWxApi(wxApi, methodName, options = {}) {
-  if (typeof wxApi[methodName] !== 'function') {
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    try {
-      wxApi[methodName]({
-        ...options,
-        success: resolve,
-        fail(error) {
-          reject(error instanceof Error ? error : new Error(
-            error && error.errMsg ? error.errMsg : `${methodName} failed`
-          ));
-        }
-      });
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
-
-async function notifyWorkoutExpired(wxApi) {
-  await callWxApi(wxApi, 'vibrateLong');
-  await callWxApi(wxApi, 'showToast', {
-    title: '计时结束，请确认下一步',
-    icon: 'none'
-  });
-}
-
 function createWorkoutPageDefinition({
   runtimeFactory = createTimedWorkoutRuntime,
   fixtureRuntimeFactory = createDeveloperTimedWorkoutRuntime,
@@ -100,7 +74,7 @@ function createWorkoutPageDefinition({
         query.fixture === 'worked-sample' || query.mode === 'strength'
       );
       const runtimeOptions = {
-        notifyExpired: () => notifyWorkoutExpired(wxApi)
+        deviceAdapterFactory: (settings) => createWechatDeviceAdapter({ wxApi, settings })
       };
       this.runtime = useFixture
         ? fixtureRuntimeFactory({
@@ -109,9 +83,6 @@ function createWorkoutPageDefinition({
           ...runtimeOptions
         })
         : runtimeFactory(runtimeOptions);
-      if (typeof wxApi.setKeepScreenOn === 'function') {
-        wxApi.setKeepScreenOn({ keepScreenOn: true });
-      }
       this.syncView(this.runtime.load({ planId: useFixture ? undefined : query.planId }));
       this.startRefreshLoop();
     },
@@ -140,10 +111,6 @@ function createWorkoutPageDefinition({
       if (this.runtime) {
         this.syncView(this.runtime.onUnload());
       }
-      const wxApi = getWx();
-      if (typeof wxApi.setKeepScreenOn === 'function') {
-        wxApi.setKeepScreenOn({ keepScreenOn: false });
-      }
     },
 
     syncView(view) {
@@ -161,6 +128,21 @@ function createWorkoutPageDefinition({
           : '';
       }
       this.setData(nextData);
+      if (
+        view &&
+        (view.state === 'completed' || view.state === 'aborted') &&
+        !this.summaryNavigationStarted
+      ) {
+        const wxApi = getWx();
+        if (typeof wxApi.redirectTo === 'function') {
+          this.summaryNavigationStarted = true;
+          this.stopRefreshLoop();
+          wxApi.redirectTo({
+            url: `/pages/workout/summary/index?sessionId=${encodeURIComponent(view.sessionId)}`,
+            fail: () => { this.summaryNavigationStarted = false; }
+          });
+        }
+      }
       if (this.isVisible) {
         this.scheduleDeadline(view);
       }

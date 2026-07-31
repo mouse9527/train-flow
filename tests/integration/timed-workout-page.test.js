@@ -855,10 +855,10 @@ function createPageHarness({ confirm = true } = {}) {
   return { calls, intervalCallbacks, modalTitles, page, timeoutCallbacks };
 }
 
-test('expiration adapter waits for WeChat vibrate and toast success/fail callbacks', async () => {
+test('expiration adapter waits for callbacks and degrades vibration failure to visual feedback', async () => {
   const vibrateCalls = [];
   const toastCalls = [];
-  let notificationAdapter;
+  let deviceAdapterFactory;
   const runtime = {
     load() {
       return pageView();
@@ -878,7 +878,7 @@ test('expiration adapter waits for WeChat vibrate and toast success/fail callbac
   } = require('../../miniprogram/pages/workout/index');
   const definition = createWorkoutPageDefinition({
     runtimeFactory(options) {
-      notificationAdapter = options.notifyExpired;
+      deviceAdapterFactory = options.deviceAdapterFactory;
       return runtime;
     },
     getWx: () => wxApi,
@@ -895,9 +895,18 @@ test('expiration adapter waits for WeChat vibrate and toast success/fail callbac
     }
   };
   page.onLoad({});
+  const notificationAdapter = deviceAdapterFactory({
+    vibrationEnabled: true,
+    soundEnabled: false,
+    voiceEnabled: false,
+    keepScreenOn: true
+  });
 
   let settled = false;
-  const successful = notificationAdapter('occurrence_success').then(() => {
+  const successful = notificationAdapter.notify({
+    occurrenceId: 'occurrence_success',
+    visualMessage: '计时结束'
+  }).then(() => {
     settled = true;
   });
   assert.equal(vibrateCalls.length, 1);
@@ -906,23 +915,32 @@ test('expiration adapter waits for WeChat vibrate and toast success/fail callbac
   assert.equal(settled, false, 'synchronous undefined must not count as vibrate success');
 
   vibrateCalls[0].success();
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(toastCalls.length, 1);
   assert.equal(settled, false, 'toast must confirm through its success callback');
   toastCalls[0].success();
   await successful;
   assert.equal(settled, true);
 
-  const vibrateFailure = notificationAdapter('occurrence_vibrate_failure');
+  let degradedResult;
+  const vibrateFailure = notificationAdapter.notify({
+    occurrenceId: 'occurrence_vibrate_failure',
+    visualMessage: '计时结束'
+  }).then((result) => { degradedResult = result; });
   vibrateCalls[1].fail(new Error('vibrate unavailable'));
-  await assert.rejects(vibrateFailure, /vibrate unavailable/);
-  assert.equal(toastCalls.length, 1, 'toast must not run after vibrate failure');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(toastCalls.length, 2, 'visual feedback must survive vibration failure');
+  toastCalls[1].success();
+  await vibrateFailure;
+  assert.equal(degradedResult.delivered, true);
+  assert.equal(degradedResult.degraded, true);
 
-  const toastFailure = notificationAdapter('occurrence_toast_failure');
-  vibrateCalls[2].success();
-  await Promise.resolve();
-  toastCalls[1].fail(new Error('toast unavailable'));
-  await assert.rejects(toastFailure, /toast unavailable/);
+  const duplicate = await notificationAdapter.notify({
+    occurrenceId: 'occurrence_vibrate_failure',
+    visualMessage: '计时结束'
+  });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(vibrateCalls.length, 2);
 });
 
 test('page lifecycle delegates to the runtime while interval refresh never mutates Session state', () => {

@@ -263,6 +263,32 @@ test('runtime honors keep-screen settings and releases on hide, terminal complet
     ([kind, input]) => kind === 'notify' && input.kind === 'session-completed'
   );
   assert.equal(terminalNotifications.length, 1);
+  const rebuiltCalls = [];
+  const rebuilt = createTimedWorkoutRuntime({
+    database: harness.database,
+    now: () => START_AT + 90_000,
+    idFactory: () => 'must_not_replace_terminal_session',
+    commandKeyFactory: (type) => `rebuilt_${type}`,
+    deviceAdapterFactory() {
+      return {
+        setKeepScreen(enabled) {
+          rebuiltCalls.push(['screen', enabled]);
+          return Promise.resolve({ supported: true });
+        },
+        notify(input) {
+          rebuiltCalls.push(['notify', input]);
+          return Promise.resolve({ delivered: true });
+        }
+      };
+    }
+  });
+  rebuilt.load({});
+  await Promise.resolve();
+  assert.equal(
+    rebuiltCalls.some(([kind]) => kind === 'notify'),
+    false,
+    'terminal occurrence must remain deduplicated after runtime reconstruction'
+  );
 
   const disabled = createRuntimeHarness({ keepScreenOn: false });
   disabled.runtime.load({ planId: disabled.plan.id });
