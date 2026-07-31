@@ -100,9 +100,13 @@ class TimedWorkoutRuntime {
 
   observeDeviceEffect(effectName, result) {
     if (result && result.supported === false) {
-      this.deviceNotice = effectName === 'keep-screen'
-        ? '屏幕常亮暂不可用，训练仍可继续。'
-        : '设备提醒部分不可用，已保留页面视觉提示。';
+      if (effectName === 'keep-screen') {
+        this.deviceNotice = '屏幕常亮暂不可用，训练仍可继续。';
+      } else if (effectName === 'keep-screen-release') {
+        this.deviceNotice = '屏幕常亮关闭失败，自动释放暂不可用，请手动锁屏。';
+      } else {
+        this.deviceNotice = '设备提醒部分不可用，已保留页面视觉提示。';
+      }
     }
   }
 
@@ -129,7 +133,10 @@ class TimedWorkoutRuntime {
     if (enabled && (!this.settings || this.settings.keepScreenOn !== true)) {
       return;
     }
-    this.runDeviceEffect('keep-screen', () => this.deviceAdapter.setKeepScreen(enabled));
+    this.runDeviceEffect(
+      enabled ? 'keep-screen' : 'keep-screen-release',
+      () => this.deviceAdapter.setKeepScreen(enabled)
+    );
   }
 
   hasStartedActivity() {
