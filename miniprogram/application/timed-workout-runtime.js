@@ -59,6 +59,8 @@ class TimedWorkoutRuntime {
     this.deviceAdapter = null;
     this.settings = null;
     this.deviceNotice = null;
+    this.deviceNoticePriority = 0;
+    this.terminalEffectPromise = null;
     this.notifiedTerminalOccurrences = new Set();
     this.notifiedOccurrences = new Set();
     this.service = null;
@@ -100,43 +102,72 @@ class TimedWorkoutRuntime {
 
   observeDeviceEffect(effectName, result) {
     if (result && result.supported === false) {
+      let notice;
+      let priority;
       if (effectName === 'keep-screen') {
-        this.deviceNotice = '屏幕常亮暂不可用，训练仍可继续。';
+        notice = '屏幕常亮暂不可用，训练仍可继续。';
+        priority = 2;
       } else if (effectName === 'keep-screen-release') {
-        this.deviceNotice = '屏幕常亮关闭失败，自动释放暂不可用，请手动锁屏。';
+        notice = '屏幕常亮关闭失败，自动释放暂不可用，请手动锁屏。';
+        priority = 3;
       } else {
-        this.deviceNotice = '设备提醒部分不可用，已保留页面视觉提示。';
+        notice = '设备提醒部分不可用，已保留页面视觉提示。';
+        priority = 1;
+      }
+      if (priority >= this.deviceNoticePriority) {
+        this.deviceNotice = notice;
+        this.deviceNoticePriority = priority;
       }
     }
   }
 
   runDeviceEffect(effectName, callback) {
+    let result;
     try {
-      const result = callback();
-      if (result && typeof result.then === 'function') {
-        Promise.resolve(result).then(
-          (value) => this.observeDeviceEffect(effectName, value),
-          () => this.observeDeviceEffect(effectName, { supported: false })
-        );
-      } else {
-        this.observeDeviceEffect(effectName, result);
-      }
+      result = callback();
     } catch (error) {
-      this.observeDeviceEffect(effectName, { supported: false });
+      const failure = { supported: false };
+      this.observeDeviceEffect(effectName, failure);
+      return Promise.resolve(failure);
     }
+    return Promise.resolve(result).then(
+      (value) => {
+        this.observeDeviceEffect(effectName, value);
+        return value;
+      },
+      () => {
+        const failure = { supported: false };
+        this.observeDeviceEffect(effectName, failure);
+        return failure;
+      }
+    );
   }
 
   setKeepScreen(enabled) {
     if (!this.deviceAdapter || typeof this.deviceAdapter.setKeepScreen !== 'function') {
-      return;
+      return Promise.resolve({ supported: true, skipped: true });
     }
     if (enabled && (!this.settings || this.settings.keepScreenOn !== true)) {
-      return;
+      return Promise.resolve({ supported: true, skipped: true });
     }
-    this.runDeviceEffect(
+    return this.runDeviceEffect(
       enabled ? 'keep-screen' : 'keep-screen-release',
       () => this.deviceAdapter.setKeepScreen(enabled)
     );
+  }
+
+  trackTerminalEffect(releaseEffect) {
+    this.terminalEffectPromise = Promise.resolve(releaseEffect).then((result) => ({
+      releaseFailed: Boolean(result && result.supported === false),
+      view: this.render()
+    }));
+  }
+
+  waitForTerminalEffect() {
+    return this.terminalEffectPromise || Promise.resolve({
+      releaseFailed: false,
+      view: this.render()
+    });
   }
 
   hasStartedActivity() {
@@ -189,8 +220,12 @@ class TimedWorkoutRuntime {
       } else {
         throw new Error('没有可恢复的训练，请从今日训练重新开始');
       }
-      this.setKeepScreen(this.hasStartedActivity());
-      return this.render();
+      const keepScreenEffect = this.setKeepScreen(this.hasStartedActivity());
+      const view = this.render();
+      if (this.session.status === 'completed' || this.session.status === 'aborted') {
+        this.trackTerminalEffect(keepScreenEffect);
+      }
+      return view;
     } catch (error) {
       this.lastError = error;
       return recoveryView(error);
@@ -413,12 +448,17 @@ class TimedWorkoutRuntime {
       payload
     });
     this.session = applied.session;
+    let terminalReleaseEffect = null;
     if (this.session.status === 'completed' || this.session.status === 'aborted') {
-      this.setKeepScreen(false);
+      terminalReleaseEffect = this.setKeepScreen(false);
     } else {
       this.setKeepScreen(this.hasStartedActivity());
     }
-    return this.render();
+    const view = this.render();
+    if (terminalReleaseEffect) {
+      this.trackTerminalEffect(terminalReleaseEffect);
+    }
+    return view;
   }
 
   currentStep() {

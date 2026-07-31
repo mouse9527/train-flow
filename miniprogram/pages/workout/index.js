@@ -69,6 +69,10 @@ function createWorkoutPageDefinition({
 
     onLoad(query = {}) {
       this.isVisible = true;
+      this.pageUnloaded = false;
+      this.summaryNavigationStarted = false;
+      this.summaryNavigationPending = false;
+      this.releaseFailureModalStarted = false;
       const wxApi = getWx();
       const useFixture = developerFixturesEnabled(wxApi) && (
         query.fixture === 'worked-sample' || query.mode === 'strength'
@@ -130,22 +134,106 @@ function createWorkoutPageDefinition({
       this.setData(nextData);
       if (
         view &&
-        (view.state === 'completed' || view.state === 'aborted') &&
-        !this.summaryNavigationStarted
+        (view.state === 'completed' || view.state === 'aborted')
       ) {
-        const wxApi = getWx();
-        if (typeof wxApi.redirectTo === 'function') {
-          this.summaryNavigationStarted = true;
-          this.stopRefreshLoop();
-          wxApi.redirectTo({
-            url: `/pages/workout/summary/index?sessionId=${encodeURIComponent(view.sessionId)}`,
-            fail: () => { this.summaryNavigationStarted = false; }
-          });
-        }
+        this.waitForTerminalEffectThenNavigate(view);
       }
       if (this.isVisible) {
         this.scheduleDeadline(view);
       }
+    },
+
+    waitForTerminalEffectThenNavigate(view) {
+      if (
+        this.pageUnloaded ||
+        this.summaryNavigationStarted ||
+        this.summaryNavigationPending
+      ) {
+        return;
+      }
+      const runtime = this.runtime;
+      this.summaryNavigationPending = true;
+      this.stopRefreshLoop();
+      const pending = runtime && typeof runtime.waitForTerminalEffect === 'function'
+        ? runtime.waitForTerminalEffect()
+        : Promise.resolve({ releaseFailed: false, view });
+      Promise.resolve(pending).then(
+        (outcome) => {
+          if (this.pageUnloaded || this.runtime !== runtime || this.summaryNavigationStarted) {
+            return;
+          }
+          this.summaryNavigationPending = false;
+          const finalView = outcome && outcome.view ? outcome.view : view;
+          this.setData({ view: finalView, busy: false });
+          if (outcome && outcome.releaseFailed) {
+            this.showReleaseFailureThenNavigate(finalView);
+          } else {
+            this.redirectToSummary(finalView);
+          }
+        },
+        () => {
+          if (this.pageUnloaded || this.runtime !== runtime || this.summaryNavigationStarted) {
+            return;
+          }
+          this.summaryNavigationPending = false;
+          this.showReleaseFailureThenNavigate({
+            ...view,
+            deviceNotice: '屏幕常亮关闭失败，自动释放暂不可用，请手动锁屏。'
+          });
+        }
+      );
+    },
+
+    showReleaseFailureThenNavigate(view) {
+      if (this.pageUnloaded || this.releaseFailureModalStarted) {
+        return;
+      }
+      this.releaseFailureModalStarted = true;
+      let settled = false;
+      const proceed = () => {
+        if (settled) return;
+        settled = true;
+        this.redirectToSummary(view);
+      };
+      const wxApi = getWx();
+      if (typeof wxApi.showModal !== 'function') {
+        proceed();
+        return;
+      }
+      try {
+        wxApi.showModal({
+          title: '屏幕常亮关闭失败',
+          content: view.deviceNotice || '自动释放暂不可用，请手动锁屏后查看训练总结。',
+          showCancel: false,
+          confirmText: '查看总结',
+          success: proceed,
+          fail: proceed,
+          complete: proceed
+        });
+      } catch (error) {
+        proceed();
+      }
+    },
+
+    redirectToSummary(view) {
+      if (this.pageUnloaded || this.summaryNavigationStarted) {
+        return;
+      }
+      const wxApi = getWx();
+      if (typeof wxApi.redirectTo !== 'function') {
+        return;
+      }
+      this.summaryNavigationStarted = true;
+      this.summaryNavigationPending = false;
+      this.stopRefreshLoop();
+      wxApi.redirectTo({
+        url: `/pages/workout/summary/index?sessionId=${encodeURIComponent(view.sessionId)}`,
+        fail: () => {
+          if (!this.pageUnloaded) {
+            this.summaryNavigationStarted = false;
+          }
+        }
+      });
     },
 
     startRefreshLoop() {
