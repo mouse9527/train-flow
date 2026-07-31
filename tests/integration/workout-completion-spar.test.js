@@ -367,6 +367,107 @@ test('Post-Spar hardening: same-status terminal ABA with changed facts rejects s
   assert.equal(database.load().records.length, 0);
 });
 
+test('Test Adequacy Round 6: each isolated terminal fact replacement rejects stale feedback', async (t) => {
+  function fingerprintFact(session) {
+    return {
+      sourceSessionId: session.id,
+      planSnapshot: session.planSnapshot,
+      trainingDate: session.trainingDate,
+      status: session.status,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt,
+      elapsedActiveSeconds: session.elapsedActiveSeconds,
+      stepResults: session.stepResults
+    };
+  }
+
+  function resultCounts(session) {
+    return {
+      completed: session.stepResults.filter(({ status }) => status === 'completed').length,
+      skipped: session.stepResults.filter(({ status }) => status === 'skipped').length,
+      total: session.planSnapshot.steps.length
+    };
+  }
+
+  const cases = [
+    {
+      name: 'only endedAt changes',
+      field: 'endedAt',
+      mutate(replacement) {
+        replacement.endedAt += 1;
+        replacement.lastCheckpointAt = replacement.endedAt;
+      }
+    },
+    {
+      name: 'only planSnapshot changes',
+      field: 'planSnapshot',
+      mutate(replacement) {
+        replacement.planSnapshot.title = `${replacement.planSnapshot.title} replacement`;
+      }
+    },
+    {
+      name: 'only stepResults changes while counts stay unchanged',
+      field: 'stepResults',
+      mutate(replacement) {
+        replacement.stepResults[0].completedAt -= 1;
+      }
+    }
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    await t.test(scenario.name, () => {
+      const completed = terminalSession({
+        id: `session_round6_isolated_${index}`,
+        status: 'completed',
+        plan: manualPlan(`plan_round6_isolated_${index}`, `2026-09-0${index + 1}`),
+        endedAt: START_AT + 60_000
+      });
+      const replacement = clone(completed);
+      scenario.mutate(replacement);
+
+      assert.equal(replacement.id, completed.id);
+      assert.equal(replacement.sessionRevision, completed.sessionRevision);
+      assert.equal(replacement.status, completed.status);
+      assert.deepEqual(resultCounts(replacement), resultCounts(completed));
+      const originalFact = fingerprintFact(completed);
+      const replacementFact = fingerprintFact(replacement);
+      assert.notDeepEqual(replacementFact[scenario.field], originalFact[scenario.field]);
+      const originalOtherFacts = clone(originalFact);
+      const replacementOtherFacts = clone(replacementFact);
+      delete originalOtherFacts[scenario.field];
+      delete replacementOtherFacts[scenario.field];
+      assert.equal(
+        JSON.stringify(replacementOtherFacts),
+        JSON.stringify(originalOtherFacts),
+        `${scenario.field} must be the only changed terminal fact`
+      );
+
+      const database = createLocalDatabase({
+        storage: new StorageDouble(),
+        now: () => START_AT + 90_000
+      });
+      database.commit((draft) => {
+        draft.install = {
+          deviceId: 'device_round6_isolated_terminal_fact',
+          createdAt: START_AT
+        };
+        draft.activeSession = clone(completed);
+      });
+      const runtime = createWorkoutSummaryRuntime({ database });
+      runtime.load();
+      database.commit((draft) => {
+        draft.activeSession = clone(replacement);
+      });
+
+      assert.throws(
+        () => runtime.saveFeedback({ rpe: 6 }),
+        /总结已过期/
+      );
+      assert.equal(database.load().records.length, 0);
+    });
+  }
+});
+
 test('Post-Spar hardening: isolated persisted stepResults tamper fails closed with counts unchanged', () => {
   const completed = terminalSession({
     id: 'session_post_spar_step_results_tamper',
