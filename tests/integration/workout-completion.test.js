@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   applyWorkoutCommand,
@@ -309,4 +311,77 @@ test('summary runtime atomically saves one private completion fact without writi
 
   summaryRuntime.saveFeedback({ rpe: 6 });
   assert.equal(harness.database.load().records.length, 1, 'source Session must materialize at most once');
+});
+
+test('summary page exposes completed/aborted facts, validated feedback controls and safety advice', () => {
+  const saved = [];
+  const runtime = {
+    load() {
+      return {
+        summary: {
+          status: 'aborted',
+          planTitle: '恢复与活动',
+          elapsedLabel: '01:35',
+          completedStepCount: 0,
+          skippedStepCount: 0,
+          totalStepCount: 1
+        },
+        feedback: normalizeWorkoutFeedback({}),
+        saved: false
+      };
+    },
+    saveFeedback(feedback) {
+      saved.push(feedback);
+      return { saved: true };
+    }
+  };
+  const toastTitles = [];
+  const {
+    createWorkoutSummaryPageDefinition
+  } = require('../../miniprogram/pages/workout/summary/index');
+  const definition = createWorkoutSummaryPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => ({
+      showToast({ title }) { toastTitles.push(title); }
+    })
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+
+  page.onLoad({});
+  assert.equal(page.data.summary.status, 'aborted');
+  page.onRpeChange({ detail: { value: '7' } });
+  page.onWeightInput({ detail: { value: '62.5' } });
+  page.onPainChange({ currentTarget: { dataset: { field: 'dizziness' } }, detail: { value: true } });
+  page.onNoteInput({ detail: { value: '仅保存在本机的备注' } });
+  assert.match(page.data.safetyAdvice, /停止训练/);
+  page.onSubmit();
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].rpe, 7);
+  assert.equal(saved[0].weightBeforeKg, 62.5);
+  assert.equal(saved[0].pain.dizziness, true);
+  assert.equal(saved[0].note, '仅保存在本机的备注');
+  assert.deepEqual(toastTitles, ['反馈已保存在本机']);
+});
+
+test('mini program registers the real summary route and renders privacy/safety copy', () => {
+  const root = path.resolve(__dirname, '../..');
+  const appJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/app.json'), 'utf8'));
+  assert.ok(appJson.pages.includes('pages/workout/summary/index'));
+
+  const markup = fs.readFileSync(
+    path.join(root, 'miniprogram/pages/workout/summary/index.wxml'),
+    'utf8'
+  );
+  assert.match(markup, /实际训练时长/);
+  assert.match(markup, /RPE/);
+  assert.match(markup, /体重/);
+  assert.match(markup, /膝|下背|脚踝|头晕/);
+  assert.match(markup, /停止训练/);
+  assert.match(markup, /不会用于诊断/);
+  assert.match(markup, /仅保存在本机/);
 });
