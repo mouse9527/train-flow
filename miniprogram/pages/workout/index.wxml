@@ -10,6 +10,9 @@
     <view class="device-notice" wx:if="{{view.deviceNotice}}">
       <text>{{view.deviceNotice}}</text>
     </view>
+    <view class="device-notice" wx:if="{{summaryNavigationNotice}}">
+      <text>{{summaryNavigationNotice}}</text>
+    </view>
     <view class="workout-hero">
       <view class="workout-hero__topline">
         <text class="workout-hero__position">{{view.positionLabel}}</text>
@@ -118,7 +121,7 @@
     <view class="terminal-card" wx:if="{{view.state === 'completed' || view.state === 'aborted'}}">
       <text class="terminal-card__title">{{view.state === 'completed' ? '训练完成' : '训练已结束'}}</text>
       <text class="terminal-card__copy">本次进度已保存在本机。</text>
-      <button class="control control--primary control--wide" wx:if="{{releaseFailureActionVisible}}" bindtap="onViewSummary">查看训练总结</button>
+      <button class="control control--primary control--wide" wx:if="{{summaryActionVisible}}" bindtap="onViewSummary">查看训练总结</button>
     </view>
   </block>
 </view>

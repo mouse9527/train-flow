@@ -65,7 +65,8 @@ function createWorkoutPageDefinition({
       busy: false,
       actualReps: '',
       actualLoad: '',
-      releaseFailureActionVisible: false
+      summaryActionVisible: false,
+      summaryNavigationNotice: null
     },
 
     onLoad(query = {}) {
@@ -161,7 +162,7 @@ function createWorkoutPageDefinition({
         this.pageUnloaded ||
         this.summaryNavigationStarted ||
         this.summaryNavigationPending ||
-        this.data.releaseFailureActionVisible
+        this.data.summaryActionVisible
       ) {
         return;
       }
@@ -215,7 +216,7 @@ function createWorkoutPageDefinition({
         this.setData({
           view,
           busy: false,
-          releaseFailureActionVisible: true
+          summaryActionVisible: true
         });
       };
       const wxApi = getWx();
@@ -251,7 +252,7 @@ function createWorkoutPageDefinition({
     onViewSummary() {
       const view = this.data.view;
       if (
-        !this.data.releaseFailureActionVisible ||
+        !this.data.summaryActionVisible ||
         !view ||
         !['completed', 'aborted'].includes(view.state)
       ) {
@@ -260,25 +261,49 @@ function createWorkoutPageDefinition({
       this.redirectToSummary(view);
     },
 
+    showSummaryNavigationFailure() {
+      if (this.pageUnloaded) {
+        return;
+      }
+      this.summaryNavigationStarted = false;
+      this.summaryNavigationPending = false;
+      this.stopRefreshLoop();
+      this.setData({
+        summaryActionVisible: true,
+        summaryNavigationNotice: '训练总结打开失败，请点击下方按钮重试。'
+      });
+    },
+
     redirectToSummary(view) {
       if (this.pageUnloaded || this.summaryNavigationStarted) {
         return;
       }
       const wxApi = getWx();
       if (typeof wxApi.redirectTo !== 'function') {
+        this.showSummaryNavigationFailure();
         return;
       }
       this.summaryNavigationStarted = true;
       this.summaryNavigationPending = false;
       this.stopRefreshLoop();
-      wxApi.redirectTo({
-        url: `/pages/workout/summary/index?sessionId=${encodeURIComponent(view.sessionId)}`,
-        fail: () => {
-          if (!this.pageUnloaded) {
-            this.summaryNavigationStarted = false;
+      try {
+        wxApi.redirectTo({
+          url: `/pages/workout/summary/index?sessionId=${encodeURIComponent(view.sessionId)}`,
+          success: () => {
+            if (!this.pageUnloaded) {
+              this.setData({
+                summaryActionVisible: false,
+                summaryNavigationNotice: null
+              });
+            }
+          },
+          fail: () => {
+            this.showSummaryNavigationFailure();
           }
-        }
-      });
+        });
+      } catch (_error) {
+        this.showSummaryNavigationFailure();
+      }
     },
 
     startRefreshLoop() {

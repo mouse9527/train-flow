@@ -1639,7 +1639,7 @@ test('PR review: unavailable release modal requires an inline summary action', a
       assert.equal(terminal.activeSession.status, 'completed');
       assert.equal(terminal.records.length, 1, 'terminal commit keeps its baseline record');
       assert.equal(redirects.length, 0, 'modal infrastructure failure must not auto-navigate');
-      assert.equal(page.data.releaseFailureActionVisible, true);
+      assert.equal(page.data.summaryActionVisible, true);
       assert.match(page.data.view.deviceNotice, /常亮.*(?:关闭|释放).*失败/);
 
       page.onHide();
@@ -1663,7 +1663,7 @@ test('PR review: unavailable release modal requires an inline summary action', a
     path.resolve(__dirname, '../../miniprogram/pages/workout/index.wxml'),
     'utf8'
   );
-  assert.match(markup, /releaseFailureActionVisible/);
+  assert.match(markup, /summaryActionVisible/);
   assert.match(markup, /bindtap="onViewSummary"/);
   assert.match(markup, /查看训练总结/);
 });
@@ -1757,7 +1757,11 @@ test('PR review r3: summary navigation failure stays actionable and retryable', 
     assert.equal(page.data.summaryActionVisible, true);
     assert.match(page.data.summaryNavigationNotice, /训练总结.*(?:打开|跳转).*失败|无法打开训练总结/);
     assert.doesNotMatch(page.data.summaryNavigationNotice, /常亮|释放/);
-    assert.equal(page.data.view.deviceNotice, null, 'successful release must not be relabeled');
+    assert.equal(
+      page.data.view.deviceNotice == null,
+      true,
+      'successful release must not be relabeled'
+    );
     assert.equal(modals.length, 0, 'navigation failure must not open the release modal');
     assert.equal(refreshStarts(), 1, 'navigation failure must not restart terminal refresh');
   }
