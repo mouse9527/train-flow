@@ -145,6 +145,9 @@ function buildTimedWorkoutView(session, {
   const previousStep = session.currentStepIndex > 0
     ? session.planSnapshot.steps[session.currentStepIndex - 1]
     : null;
+  const previousStepResult = previousStep
+    ? session.stepResults.find(({ stepId }) => stepId === previousStep.id) || null
+    : null;
   const stepResult = step
     ? session.stepResults.find(({ stepId }) => stepId === step.id) || null
     : null;
@@ -241,6 +244,11 @@ function buildTimedWorkoutView(session, {
         canAlternativeProgress &&
         previousStep &&
         previousStep.kind !== 'interval' &&
+        !(
+          previousStep.kind === 'strength' &&
+          previousStepResult &&
+          previousStepResult.status === 'skipped'
+        ) &&
         !hasPartialStrengthResult
       )),
       next: control('进入下一步', state !== 'expired-awaiting-confirmation', 'primary'),

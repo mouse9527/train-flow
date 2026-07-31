@@ -966,6 +966,49 @@ test('destructive and irreversible page controls require explicit confirmation',
   assert.equal(cancelled.calls.some(([method]) => method === 'endWorkout'), false);
 });
 
+test('Attack: repeated Skip taps share one pending confirmation and cannot skip the following exercise', () => {
+  const calls = [];
+  const pendingModals = [];
+  const runtime = {
+    load() { return pageView(); },
+    skip() {
+      calls.push('skip');
+      return pageView();
+    }
+  };
+  const wxApi = {
+    showModal(options) { pendingModals.push(options); },
+    setKeepScreenOn() {}
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => wxApi,
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({});
+
+  page.onSkip();
+  page.onSkip();
+  assert.equal(
+    pendingModals.length,
+    1,
+    'a second tap while confirmation is pending must not create a second destructive intent'
+  );
+  pendingModals[0].success({ confirm: true, cancel: false });
+  assert.deepEqual(calls, ['skip']);
+});
+
 test('workout page declares native timer components, large timer states and thumb-safe controls', () => {
   const root = path.resolve(__dirname, '../..');
   const pageJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.json'), 'utf8'));

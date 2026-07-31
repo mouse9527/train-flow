@@ -317,9 +317,13 @@ function assertWorkoutSession(session) {
     'session.setTargetOverrides'
   );
   for (const [stepId, targetSets] of Object.entries(setTargetOverrides)) {
-    const overriddenStep = session.planSnapshot.steps.find(({ id }) => id === stepId);
+    const overriddenStepIndex = session.planSnapshot.steps.findIndex(({ id }) => id === stepId);
+    const overriddenStep = session.planSnapshot.steps[overriddenStepIndex];
     if (!overriddenStep || overriddenStep.kind !== 'strength') {
       throw new TypeError('session.setTargetOverrides must reference strength PlanSnapshot steps');
+    }
+    if (overriddenStepIndex > session.currentStepIndex) {
+      throw new TypeError('session.setTargetOverrides cannot reference a future unreachable step');
     }
     assertSafeInteger(targetSets, `session.setTargetOverrides.${stepId}`, 1);
   }
@@ -863,6 +867,12 @@ function applyTransition(session, command, timerEngine) {
     const previousResult = findStepResult(session, previousStep.id);
     if (!previousResult || previousResult.status === 'in_progress') {
       throw createSessionError('Previous step has no terminal result', 'SESSION_PREVIOUS_UNAVAILABLE');
+    }
+    if (previousStep.kind === 'strength' && previousResult.status === 'skipped') {
+      throw createSessionError(
+        'Skipped strength execution requires a dedicated correction flow',
+        'SESSION_PREVIOUS_CORRECTION_REQUIRED'
+      );
     }
     session.timer = null;
     session.activeSetStartedAt = null;

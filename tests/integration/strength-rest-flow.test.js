@@ -3,6 +3,7 @@ const test = require('node:test');
 
 const {
   applyWorkoutCommand,
+  assertWorkoutSession,
   createWorkoutSession
 } = require('../../miniprogram/domain/execution/workout-session');
 const {
@@ -102,6 +103,18 @@ function manualThenStrengthPlan() {
   plan.id = 'plan_manual_then_strength_attack';
   plan.title = '手动后力量攻击夹具';
   plan.steps = [{ ...manual, order: 1 }, strength];
+  return plan;
+}
+
+function strengthThenManualPlan() {
+  const plan = strengthPlan();
+  const manual = manualPlan().steps[0];
+  plan.id = 'plan_strength_then_manual_attack';
+  plan.title = '力量后手动攻击夹具';
+  plan.steps = [
+    { ...plan.steps[0], order: 1, sets: 2, restSeconds: 30 },
+    { ...manual, order: 2 }
+  ];
   return plan;
 }
 
@@ -691,4 +704,73 @@ test('Attack: reopened strength correction can replace actuals while retaining t
     'the prior actual values remain recoverable from the immutable command audit'
   );
   assert.equal(replaced.processedCommands.at(-1).type, 'complete_set');
+});
+
+test('Attack: previous after a partially completed strength skip is explicitly unavailable and never crashes validation', () => {
+  let session = createWorkoutSession({
+    plan: strengthThenManualPlan(),
+    sessionId: 'session_skipped_strength_previous_attack',
+    originDeviceId: 'device_skipped_strength_previous_attack',
+    commandKey: 'start_skipped_strength_previous_attack',
+    nowMs: START_AT
+  });
+  const strengthStepId = session.planSnapshot.steps[0].id;
+  session = applyWorkoutCommand(
+    session,
+    command('complete_set', 1, 'skipped_strength_set_1', START_AT + 1_000, {
+      stepId: strengthStepId,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null
+    })
+  ).session;
+  session = applyWorkoutCommand(
+    session,
+    command('skip_step_and_start_next', 2, 'skipped_strength_remaining_sets', START_AT + 2_000, {
+      stepId: strengthStepId
+    })
+  ).session;
+  assert.equal(session.currentStepIndex, 1);
+  assert.equal(session.stepResults[0].status, 'skipped');
+  assert.equal(session.stepResults[0].setResults.length, 1);
+
+  const view = buildTimedWorkoutView(session, { nowMs: START_AT + 2_000 });
+  assert.equal(
+    view.controls.previous.disabled,
+    true,
+    'a partial skipped strength result needs a dedicated correction flow before Previous is offered'
+  );
+  const beforePrevious = clone(session);
+  assert.throws(
+    () => applyWorkoutCommand(
+      session,
+      command('previous_step', 3, 'previous_after_skipped_strength', START_AT + 3_000)
+    ),
+    (error) => error && [
+      'SESSION_PREVIOUS_UNAVAILABLE',
+      'SESSION_PREVIOUS_CORRECTION_REQUIRED'
+    ].includes(error.code),
+    'the domain must reject this impossible cursor/result shape before final invariant validation'
+  );
+  assert.deepEqual(session, beforePrevious, 'rejected Previous performs zero mutation');
+});
+
+test('Attack: restored Session rejects set-target overrides for future strength steps that no command could reach', () => {
+  const session = createWorkoutSession({
+    plan: manualThenStrengthPlan(),
+    sessionId: 'session_future_override_attack',
+    originDeviceId: 'device_future_override_attack',
+    commandKey: 'start_future_override_attack',
+    nowMs: START_AT
+  });
+  const futureStrengthStepId = session.planSnapshot.steps[1].id;
+  const forged = clone(session);
+  forged.setTargetOverrides = { [futureStrengthStepId]: 3 };
+
+  assert.throws(
+    () => assertWorkoutSession(forged),
+    /setTargetOverrides|future|current|unreachable/i,
+    'restore validation must reject an override that cannot be produced before reaching its step'
+  );
+  assert.equal(session.setTargetOverrides, undefined, 'the valid source Session remains unchanged');
 });

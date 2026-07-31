@@ -188,20 +188,38 @@ function createWorkoutPageDefinition({
 
     confirm({ title, content, confirmText = '确认', controlName, method }) {
       const control = this.data.view && this.data.view.controls && this.data.view.controls[controlName];
-      if (!control || control.disabled) {
+      if (!control || control.disabled || this.pendingConfirmation) {
         return;
       }
-      getWx().showModal({
-        title,
-        content,
-        confirmText,
-        cancelText: '取消',
-        success: ({ confirm }) => {
-          if (confirm) {
-            this.invoke(controlName, method);
-          }
+      const intent = { controlName, method };
+      this.pendingConfirmation = intent;
+      const settle = (confirmed) => {
+        if (this.pendingConfirmation !== intent) {
+          return;
         }
-      });
+        this.pendingConfirmation = null;
+        if (confirmed) {
+          this.invoke(controlName, method);
+        }
+      };
+      try {
+        getWx().showModal({
+          title,
+          content,
+          confirmText,
+          cancelText: '取消',
+          success: ({ confirm }) => settle(confirm === true),
+          fail: () => settle(false),
+          complete: () => {
+            if (this.pendingConfirmation === intent) {
+              settle(false);
+            }
+          }
+        });
+      } catch (error) {
+        settle(false);
+        throw error;
+      }
     },
 
     onStart() { this.invoke('start', 'start'); },
