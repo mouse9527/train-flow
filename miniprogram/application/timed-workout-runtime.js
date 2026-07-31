@@ -146,11 +146,11 @@ class TimedWorkoutRuntime {
       Array.isArray(snapshot.notifications.attemptedExpiredOccurrences)
       ? snapshot.notifications.attemptedExpiredOccurrences
       : [];
-    if (attemptedOccurrences.includes(occurrenceId)) {
-      this.notifiedOccurrences.add(occurrenceId);
+    if (activeExpirationDeliveries.has(occurrenceId)) {
       return;
     }
-    if (activeExpirationDeliveries.has(occurrenceId)) {
+    if (attemptedOccurrences.includes(occurrenceId)) {
+      this.notifiedOccurrences.add(occurrenceId);
       return;
     }
     activeExpirationDeliveries.add(occurrenceId);

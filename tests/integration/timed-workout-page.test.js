@@ -289,6 +289,94 @@ test('asynchronous notification API failure requeues the attempted delivery for 
   assert.equal(attempts, 2);
 });
 
+test('reentrant runtime retries after the active notification attempt explicitly fails', async () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const database = createLocalDatabase({ storage, now: () => clock });
+  const plans = createDefaultPlans({ now: () => START_AT });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_notification_active_failure', createdAt: START_AT };
+    draft.plans.push(...clone(plans));
+  });
+
+  let seedSequence = 0;
+  const seed = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_notification_active_failure',
+    commandKeyFactory: (type) => `notification_active_seed_${type}_${++seedSequence}`,
+    notifyExpired() {}
+  });
+  seed.load({ planId: plans[0].id });
+  seed.start();
+  clock = START_AT + 6 * 60_000;
+
+  let attempts = 0;
+  let rejectActiveAttempt;
+  let sequenceA = 0;
+  const runtimeA = createTimedWorkoutRuntime({
+    database: createLocalDatabase({ storage, now: () => clock }),
+    now: () => clock,
+    idFactory: () => 'must_restore_notification_active_failure_a',
+    commandKeyFactory: (type) => `notification_active_a_${type}_${++sequenceA}`,
+    notifyExpired() {
+      attempts += 1;
+      const activeAttempt = new Promise((resolve, reject) => {
+        rejectActiveAttempt = reject;
+      });
+      activeAttempt.catch(() => {});
+      return activeAttempt;
+    }
+  });
+
+  const retriedDeliveries = [];
+  let sequenceB = 0;
+  const runtimeB = createTimedWorkoutRuntime({
+    database: createLocalDatabase({ storage, now: () => clock }),
+    now: () => clock,
+    idFactory: () => 'must_restore_notification_active_failure_b',
+    commandKeyFactory: (type) => `notification_active_b_${type}_${++sequenceB}`,
+    notifyExpired(occurrenceId) {
+      attempts += 1;
+      retriedDeliveries.push(occurrenceId);
+      return Promise.resolve();
+    }
+  });
+
+  const expiredA = runtimeA.load({});
+  assert.equal(expiredA.state, 'expired-awaiting-confirmation');
+  assert.equal(attempts, 1);
+  const attempted = runtimeA.database.load();
+  assert.equal(attempted.notifications.expiredOccurrences.length, 0);
+  assert.equal(attempted.notifications.pendingExpiredOccurrences.length, 0);
+  assert.equal(attempted.notifications.attemptedExpiredOccurrences.length, 1);
+
+  const expiredB = runtimeB.load({});
+  assert.equal(expiredB.state, 'expired-awaiting-confirmation');
+  runtimeB.render();
+  assert.equal(attempts, 1, 'the active delivery guard must suppress reentrant delivery');
+
+  rejectActiveAttempt(new Error('notification API unavailable'));
+  await new Promise((resolve) => setImmediate(resolve));
+  const pending = runtimeA.database.load();
+  assert.equal(pending.notifications.expiredOccurrences.length, 0);
+  assert.equal(pending.notifications.pendingExpiredOccurrences.length, 1);
+  assert.equal(pending.notifications.attemptedExpiredOccurrences.length, 0);
+
+  runtimeB.render();
+  assert.equal(attempts, 2, 'the observing runtime must retry after explicit failure');
+  assert.equal(retriedDeliveries.length, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  const delivered = runtimeB.database.load();
+  assert.deepEqual(delivered.notifications.expiredOccurrences, retriedDeliveries);
+  assert.deepEqual(delivered.notifications.pendingExpiredOccurrences, []);
+  assert.deepEqual(delivered.notifications.attemptedExpiredOccurrences, []);
+
+  runtimeA.render();
+  runtimeB.render();
+  assert.equal(attempts, 2);
+});
+
 test('successful notification with delivered persistence failure leaves attempted state and never resends', async () => {
   const ACTIVE_KEY = 'train_flow:v1:db:active';
   const SLOT_KEYS = {
