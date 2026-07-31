@@ -129,6 +129,7 @@ function buildWorkoutCompletionSummary(session) {
 
 function createWorkoutCompletionFact(session, feedback = {}) {
   assertTerminalSession(session);
+  const summary = buildWorkoutCompletionSummary(session);
   const normalizedFeedback = normalizeWorkoutFeedback({
     rpe: feedback.rpe,
     weightBeforeKg: feedback.weightBeforeKg,
@@ -147,6 +148,9 @@ function createWorkoutCompletionFact(session, feedback = {}) {
     startedAt: session.startedAt,
     endedAt: session.endedAt,
     elapsedActiveSeconds: session.elapsedActiveSeconds,
+    completedStepCount: summary.completedStepCount,
+    skippedStepCount: summary.skippedStepCount,
+    totalStepCount: summary.totalStepCount,
     planSnapshot: JSON.parse(JSON.stringify(session.planSnapshot)),
     stepResults: JSON.parse(JSON.stringify(session.stepResults)),
     feedback: {
