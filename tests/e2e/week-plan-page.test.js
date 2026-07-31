@@ -125,6 +125,40 @@ test('plan page loads the confirmed seven-day week through the application servi
   assert.equal(page.data.week.days[0].discomfortLabel, '有不适');
 });
 
+test('plan page refreshes record statuses on show without losing the selected day', (t) => {
+  const { page, database } = createPageHarness(t);
+  database.commit((draft) => {
+    draft.records.push(canonicalPageRecord({
+      id: 'record_page_lifecycle_refresh',
+      status: 'incomplete'
+    }));
+  });
+  page.onLoad({
+    weekStart: '2026-08-03',
+    selectedDate: '2026-08-06'
+  });
+
+  assert.equal(page.data.week.selectedDay.trainingDate, '2026-08-06');
+  assert.equal(page.data.week.days[0].completionLabel, '未完成');
+  assert.equal(page.data.week.days[0].skippedLabel, '无跳过');
+  assert.equal(page.data.week.days[0].discomfortLabel, '无不适');
+
+  database.commit((draft) => {
+    const record = draft.records.find(({ id }) => id === 'record_page_lifecycle_refresh');
+    record.status = 'completed';
+    record.stepResults = [{ stepId: 'step_page_lifecycle_skipped', status: 'skipped' }];
+    record.feedback.pain.knee = true;
+    record.updatedAt += 1_000;
+    record.revision += 1;
+  });
+  page.onShow();
+
+  assert.equal(page.data.week.selectedDay.trainingDate, '2026-08-06');
+  assert.equal(page.data.week.days[0].completionLabel, '已完成');
+  assert.equal(page.data.week.days[0].skippedLabel, '有跳过');
+  assert.equal(page.data.week.days[0].discomfortLabel, '有不适');
+});
+
 test('plan page navigates to an empty adjacent week without cloning the initial plan', (t) => {
   const { page } = createPageHarness(t);
   page.onLoad({});

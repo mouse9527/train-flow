@@ -27,6 +27,17 @@ Page({
     this.loadWeek(query.weekStart, query.selectedDate || null);
   },
 
+  onShow() {
+    const week = this.data.week;
+    if (!week) {
+      return;
+    }
+    this.loadWeek(
+      week.weekStart,
+      week.selectedDay ? week.selectedDay.trainingDate : null
+    );
+  },
+
   loadWeek(weekStart, selectedDate = null) {
     this.setData({
       week: application.getWeekPlan({ weekStart, selectedDate })
