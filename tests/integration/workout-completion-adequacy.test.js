@@ -412,6 +412,7 @@ test('summary load proves every canonical record semantic and metadata field bef
     ['total count', (record) => { record.totalStepCount = 0; }],
     ['record identity', (record) => { record.id = 'forged-record'; }],
     ['created timestamp', (record) => { record.createdAt = 'forged'; }],
+    ['negative timestamps', (record) => { record.createdAt = -2; record.updatedAt = -1; }],
     ['updated timestamp order', (record) => { record.updatedAt = record.createdAt - 1; }],
     ['record revision', (record) => { record.revision = 0; }],
     ['computed feedback field', (record) => { record.feedback.safetyAdvice = 'forged'; }],

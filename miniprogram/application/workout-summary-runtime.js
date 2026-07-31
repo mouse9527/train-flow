@@ -88,7 +88,9 @@ function canonicalStoredFeedback(feedback) {
 function recordMetadataMatches(record, session) {
   return record.id === `record_${session.id}` &&
     Number.isSafeInteger(record.createdAt) &&
+    record.createdAt >= 0 &&
     Number.isSafeInteger(record.updatedAt) &&
+    record.updatedAt >= 0 &&
     record.updatedAt >= record.createdAt &&
     Number.isSafeInteger(record.revision) &&
     record.revision >= 1;
