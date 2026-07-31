@@ -322,3 +322,91 @@ test('Attack: negative TrainingRecord metadata timestamps — reject impossible 
   );
   assert.ok(loadError, 'negative createdAt/updatedAt metadata must fail closed');
 });
+
+test('Post-Spar hardening: same-status terminal ABA with changed facts rejects stale feedback save', () => {
+  const sharedSessionId = 'session_post_spar_same_status_aba';
+  const firstCompleted = terminalSession({
+    id: sharedSessionId,
+    status: 'completed',
+    plan: manualPlan('plan_post_spar_same_status_a', '2026-08-28'),
+    endedAt: START_AT + 60_000
+  });
+  const replacementCompleted = terminalSession({
+    id: sharedSessionId,
+    status: 'completed',
+    plan: manualPlan('plan_post_spar_same_status_b', '2026-08-29'),
+    endedAt: START_AT + 120_000
+  });
+  assert.equal(firstCompleted.sessionRevision, replacementCompleted.sessionRevision);
+  assert.equal(firstCompleted.status, replacementCompleted.status);
+  assert.notEqual(firstCompleted.endedAt, replacementCompleted.endedAt);
+  assert.notDeepEqual(firstCompleted.planSnapshot, replacementCompleted.planSnapshot);
+
+  const database = createLocalDatabase({
+    storage: new StorageDouble(),
+    now: () => START_AT + 130_000
+  });
+  database.commit((draft) => {
+    draft.install = {
+      deviceId: 'device_post_spar_same_status_aba',
+      createdAt: START_AT
+    };
+    draft.activeSession = clone(firstCompleted);
+  });
+
+  const runtime = createWorkoutSummaryRuntime({ database });
+  runtime.load();
+  database.commit((draft) => {
+    draft.activeSession = clone(replacementCompleted);
+  });
+
+  assert.throws(
+    () => runtime.saveFeedback({ rpe: 6, note: 'PRIVATE_STALE_SAME_STATUS_FEEDBACK' }),
+    /总结已过期/
+  );
+  assert.equal(database.load().records.length, 0);
+});
+
+test('Post-Spar hardening: isolated persisted stepResults tamper fails closed with counts unchanged', () => {
+  const completed = terminalSession({
+    id: 'session_post_spar_step_results_tamper',
+    status: 'completed',
+    plan: manualPlan('plan_post_spar_step_results_tamper', '2026-08-30'),
+    endedAt: START_AT + 60_000
+  });
+  const database = createLocalDatabase({
+    storage: new StorageDouble(),
+    now: () => START_AT + 90_000
+  });
+  database.commit((draft) => {
+    draft.install = {
+      deviceId: 'device_post_spar_step_results_tamper',
+      createdAt: START_AT
+    };
+    draft.activeSession = clone(completed);
+  });
+  const runtime = createWorkoutSummaryRuntime({ database });
+  runtime.load();
+  runtime.saveFeedback({ rpe: 5 });
+
+  const original = database.load().records[0];
+  const counts = {
+    completedStepCount: original.completedStepCount,
+    skippedStepCount: original.skippedStepCount,
+    totalStepCount: original.totalStepCount
+  };
+  database.commit((draft) => {
+    draft.records[0].stepResults[0].status = 'skipped';
+  });
+  const tampered = database.load().records[0];
+  assert.deepEqual({
+    completedStepCount: tampered.completedStepCount,
+    skippedStepCount: tampered.skippedStepCount,
+    totalStepCount: tampered.totalStepCount
+  }, counts);
+
+  assert.throws(
+    () => createWorkoutSummaryRuntime({ database }).load(),
+    /记录.*当前总结不匹配/
+  );
+});
