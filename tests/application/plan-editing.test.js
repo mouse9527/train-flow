@@ -481,3 +481,51 @@ test('a newer source revision creates a new copy intent and can explicitly refre
   assert.equal(refreshed.plan.title, '来源计划 revision 2');
   assert.equal(runtime.repository.findByDate(target.trainingDate).id, refreshed.plan.id);
 });
+
+test('copying a plan onto its own training date fails closed and preserves the active source', () => {
+  const runtime = createRuntime();
+  const source = runtime.repository.findByDate('2026-08-03');
+  const before = runtime.database.load();
+  runtime.storage.clearOperations();
+
+  const result = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: source.trainingDate,
+    commandKey: 'copy-onto-self',
+    confirmReplace: true,
+    expectedTargetRevision: source.revision
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'PLAN_COPY_SAME_DATE');
+  assert.match(result.fieldErrors['plan.trainingDate'], /其他日期/);
+  assert.deepEqual(runtime.repository.findById(source.id), source);
+  assert.deepEqual(runtime.database.load(), before);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('closing editor sessions prevents stale tokens from writing and keeps the session registry bounded', () => {
+  const runtime = createRuntime();
+  const first = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+  const second = runtime.application.openPlanEditor({ planId: 'plan_20260804_builtin' });
+  assert.equal(runtime.application.editorSessions.size, 2);
+
+  assert.equal(runtime.application.closePlanEditor(first.editorSessionId), true);
+  assert.equal(runtime.application.editorSessions.size, 1);
+  first.draft.title = '关闭后不应保存';
+  const before = runtime.database.load();
+  runtime.storage.clearOperations();
+  const closedSave = runtime.application.savePlanDraft({
+    editorSessionId: first.editorSessionId,
+    draft: first.draft,
+    expectedRevision: first.expectedRevision
+  });
+  assert.equal(closedSave.ok, false);
+  assert.equal(closedSave.code, 'PLAN_EDITOR_SESSION_INVALID');
+  assert.deepEqual(runtime.database.load(), before);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+
+  assert.equal(runtime.application.closePlanEditor(second.editorSessionId), true);
+  assert.equal(runtime.application.closePlanEditor(second.editorSessionId), false);
+  assert.equal(runtime.application.editorSessions.size, 0);
+});

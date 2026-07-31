@@ -81,6 +81,19 @@ test('editor loads a detached plan with future-session notice and kind-specific 
   assert.equal(page.data.stepViews[3].showRest, true);
 });
 
+test('editor releases its application session on unload and cannot persist afterward', (t) => {
+  const { page, database } = createPageHarness(t);
+  page.onLoad({ planId: 'plan_20260803_builtin' });
+  const before = database.load();
+
+  page.onUnload();
+  page.onPlanTextInput(event({ value: '关闭后修改', dataset: { field: 'title' } }));
+  page.onSave();
+
+  assert.equal(page.data.saveState, 'error');
+  assert.deepEqual(database.load(), before);
+});
+
 test('editor changes fields, adds/deletes/reorders steps and surfaces validation without a partial save', (t) => {
   const { page, database } = createPageHarness(t);
   page.onLoad({ planId: 'plan_20260803_builtin' });

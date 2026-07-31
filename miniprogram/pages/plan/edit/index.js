@@ -109,6 +109,12 @@ Page({
     this.refreshViews();
   },
 
+  onUnload() {
+    if (this.data.editorSessionId) {
+      application.closePlanEditor(this.data.editorSessionId);
+    }
+  },
+
   refreshViews(fieldErrors = this.data.fieldErrors) {
     const draft = this.data.draft;
     this.setData({
@@ -290,8 +296,10 @@ Page({
     }
     this.setData({
       copyState: 'error',
-      copyMessage: result.fieldErrors && result.fieldErrors['plan.revision']
-        ? result.fieldErrors['plan.revision']
+      copyMessage: result.fieldErrors && (
+        result.fieldErrors['plan.revision'] || result.fieldErrors['plan.trainingDate']
+      )
+        ? result.fieldErrors['plan.revision'] || result.fieldErrors['plan.trainingDate']
         : '复制失败，请稍后重试。'
     });
   }

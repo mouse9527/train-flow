@@ -148,6 +148,10 @@ class PlanApplicationService {
     return session;
   }
 
+  closePlanEditor(editorSessionId) {
+    return this.editorSessions.delete(editorSessionId);
+  }
+
   addPlanDraftStep({ editorSessionId, draft, kind, name }) {
     const session = this.requireEditorSession(editorSessionId, draft);
     const id = this.idFactory({ entity: 'step', purpose: 'editor-add', kind });
@@ -265,6 +269,13 @@ class PlanApplicationService {
     const source = this.repository.findById(sourcePlanId);
     if (source === null) {
       throw new Error(`WorkoutPlan ${sourcePlanId} is unavailable`);
+    }
+    if (targetDate === source.trainingDate) {
+      return {
+        ok: false,
+        code: 'PLAN_COPY_SAME_DATE',
+        fieldErrors: { 'plan.trainingDate': '请选择与来源计划不同的其他日期' }
+      };
     }
     const fingerprint = computeChecksum({
       command: 'copy_plan_to_date',
