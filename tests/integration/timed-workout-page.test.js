@@ -1550,6 +1550,119 @@ test('PR review: terminal keep-screen release settles before summary navigation'
   }
 });
 
+test('PR review: unavailable release modal requires an inline summary action', async (t) => {
+  for (const modalMode of ['missing', 'throw', 'fail']) {
+    await t.test(modalMode, async () => {
+      const database = createLocalDatabase({
+        storage: new StorageDouble(),
+        now: () => START_AT
+      });
+      const sourcePlan = createDefaultPlans({ now: () => START_AT })
+        .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+      const plan = {
+        ...clone(sourcePlan),
+        id: `plan_release_modal_${modalMode}`,
+        trainingDate: '2026-08-12',
+        templateSource: null,
+        steps: [{
+          ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+          id: `manual_release_modal_${modalMode}`,
+          order: 1
+        }]
+      };
+      database.commit((draft) => {
+        draft.install = { deviceId: `device_release_modal_${modalMode}`, createdAt: START_AT };
+        draft.settings.keepScreenOn = true;
+        draft.settings.vibrationEnabled = false;
+        draft.settings.soundEnabled = false;
+        draft.settings.voiceEnabled = false;
+        draft.plans.push(plan);
+      });
+
+      let sequence = 0;
+      const runtime = createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT + 60_000,
+        idFactory: () => `session_release_modal_${modalMode}`,
+        commandKeyFactory: (type) => `release_modal_${modalMode}_${type}_${++sequence}`,
+        deviceAdapterFactory() {
+          return {
+            setKeepScreen(enabled) {
+              return Promise.resolve({ supported: enabled });
+            },
+            notify() { return Promise.resolve({ delivered: true }); }
+          };
+        }
+      });
+      const redirects = [];
+      const wxApi = {
+        redirectTo(options) { redirects.push(options); }
+      };
+      if (modalMode === 'throw') {
+        wxApi.showModal = () => { throw new Error('showModal unavailable'); };
+      } else if (modalMode === 'fail') {
+        wxApi.showModal = ({ fail, complete }) => {
+          fail(new Error('showModal failed'));
+          complete();
+        };
+      }
+      const {
+        createWorkoutPageDefinition
+      } = require('../../miniprogram/pages/workout/index');
+      const definition = createWorkoutPageDefinition({
+        runtimeFactory: () => runtime,
+        getWx: () => wxApi,
+        setIntervalFn: () => 1,
+        clearIntervalFn() {},
+        setTimeoutFn: () => 1,
+        clearTimeoutFn() {}
+      });
+      const page = {
+        ...definition,
+        data: clone(definition.data),
+        setData(next) { this.data = { ...this.data, ...next }; }
+      };
+      page.onLoad({ planId: plan.id });
+      page.onStart();
+      page.onCompleteManual({
+        currentTarget: {
+          dataset: {
+            stepId: page.data.view.step.id,
+            sessionRevision: page.data.view.sessionRevision
+          }
+        }
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const terminal = database.load();
+      assert.equal(terminal.activeSession.status, 'completed');
+      assert.equal(terminal.records.length, 1, 'terminal commit keeps its baseline record');
+      assert.equal(redirects.length, 0, 'modal infrastructure failure must not auto-navigate');
+      assert.equal(page.data.releaseFailureActionVisible, true);
+      assert.match(page.data.view.deviceNotice, /常亮.*(?:关闭|释放).*失败/);
+
+      page.onViewSummary();
+      page.onViewSummary();
+      assert.equal(redirects.length, 1, 'explicit CTA navigates exactly once');
+      assert.match(redirects[0].url, /session_release_modal_/);
+
+      page.onUnload();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(database.load().records.length, 1, 'redirect unload must not duplicate records');
+      assert.equal(redirects.length, 1, 'redirect unload must not navigate again');
+    });
+  }
+
+  const markup = fs.readFileSync(
+    path.resolve(__dirname, '../../miniprogram/pages/workout/index.wxml'),
+    'utf8'
+  );
+  assert.match(markup, /releaseFailureActionVisible/);
+  assert.match(markup, /bindtap="onViewSummary"/);
+  assert.match(markup, /查看训练总结/);
+});
+
 test('workout page declares native timer components, large timer states and thumb-safe controls', () => {
   const root = path.resolve(__dirname, '../..');
   const pageJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.json'), 'utf8'));
