@@ -32,6 +32,18 @@ const { StorageDouble, clone } = require('../helpers/storage-double');
 
 const START_AT = 1785717300000;
 const PAIN_FIELDS = ['knee', 'lowerBack', 'ankleOrToe', 'dizziness'];
+const COMMON_CONSOLE_METHODS = ['log', 'error', 'warn', 'info', 'debug', 'trace', 'dir', 'table'];
+
+function sensitiveConsoleCalls(source) {
+  const calls = [];
+  const callPattern = /console\.(log|error|warn|info|debug|trace|dir|table)\s*\(([\s\S]*?)\)/gi;
+  for (const match of source.matchAll(callPattern)) {
+    if (/feedback|rpe|pain|note|weight/i.test(match[2])) {
+      calls.push(match[0]);
+    }
+  }
+  return calls;
+}
 
 function customPlan(kind, { sets = 1, restSeconds = null } = {}) {
   const plans = createDefaultPlans({ now: () => START_AT });
@@ -149,6 +161,26 @@ test('RPE is required at save boundary, accepts 1 and 10, while empty optional w
   }
 });
 
+test('summary runtime rejects missing RPE before any record write and saves both RPE boundaries', () => {
+  for (const [status, rpe] of [['completed', 1], ['aborted', 10]]) {
+    const session = status === 'completed'
+      ? completedSession(`session_rpe_boundary_${rpe}`)
+      : abortedSession(`session_rpe_boundary_${rpe}`);
+    const database = databaseWithTerminal(session);
+    const runtime = createWorkoutSummaryRuntime({ database, now: () => session.endedAt + 1_000 });
+    runtime.load();
+
+    assert.throws(() => runtime.saveFeedback({}), /RPE.*required/i);
+    assert.equal(database.load().records.length, 0, 'invalid feedback must not mutate records');
+
+    const saved = runtime.saveFeedback({ rpe, weightBeforeKg: '', note: '' }).fact;
+    assert.equal(database.load().records.length, 1);
+    assert.equal(saved.feedback.rpe, rpe);
+    assert.equal(saved.feedback.weightBeforeKg, null);
+    assert.equal(saved.feedback.note, '');
+  }
+});
+
 test('completed and aborted Sessions share one terminal guard for representative commands', () => {
   for (const terminal of [completedSession(), abortedSession()]) {
     const stepId = terminal.planSnapshot.steps[0].id;
@@ -159,6 +191,51 @@ test('completed and aborted Sessions share one terminal guard for representative
       ['abort', { reason: 'late' }],
       ['previous_step', {}]
     ]) {
+      assert.throws(
+        () => transition(terminal, type, terminal.endedAt + 1_000, payload),
+        (error) => error && error.code === 'SESSION_TERMINAL',
+        `${terminal.status} must reject ${type}`
+      );
+    }
+  }
+});
+
+test('every declared workout command is guarded for both terminal statuses', () => {
+  const commandCases = [
+    ['start_step', { stepId: 'step_terminal_guard' }],
+    ['checkpoint', { reason: 'manual' }],
+    ['pause', { reason: 'terminal-guard' }],
+    ['resume', { reason: 'terminal-guard' }],
+    ['confirm_clock_anomaly', { reason: 'clock-confirmed' }],
+    ['adjust_timer', { deltaSeconds: 30 }],
+    ['complete_step', { stepId: 'step_terminal_guard' }],
+    ['confirm_next', { stepId: 'step_terminal_guard' }],
+    ['confirm_next_and_start_next', { stepId: 'step_terminal_guard' }],
+    ['early_complete_step', { stepId: 'step_terminal_guard' }],
+    ['early_complete_step_and_start_next', { stepId: 'step_terminal_guard' }],
+    ['skip_step', { stepId: 'step_terminal_guard' }],
+    ['skip_step_and_start_next', { stepId: 'step_terminal_guard' }],
+    ['previous_step', {}],
+    ['start_set', { stepId: 'step_terminal_guard', setNumber: 1 }],
+    ['complete_set', { stepId: 'step_terminal_guard', setNumber: 1, reps: 1, weightKg: null }],
+    ['add_set', { stepId: 'step_terminal_guard' }],
+    ['reduce_set', { stepId: 'step_terminal_guard' }],
+    ['abort', { reason: 'terminal-guard' }]
+  ];
+  const domainSource = fs.readFileSync(
+    path.resolve(__dirname, '../../miniprogram/domain/execution/workout-session.js'),
+    'utf8'
+  );
+  const payloadBlock = domainSource.match(
+    /const COMMAND_PAYLOAD_FIELDS = Object\.freeze\(\{([\s\S]*?)\n\}\);/
+  );
+  assert.ok(payloadBlock, 'command declaration must remain discoverable by the adequacy test');
+  const declaredCommands = [...payloadBlock[1].matchAll(/^\s{2}([a-z_]+):/gm)]
+    .map((match) => match[1]);
+  assert.deepEqual(commandCases.map(([type]) => type), declaredCommands);
+
+  for (const terminal of [completedSession(), abortedSession()]) {
+    for (const [type, payload] of commandCases) {
       assert.throws(
         () => transition(terminal, type, terminal.endedAt + 1_000, payload),
         (error) => error && error.code === 'SESSION_TERMINAL',
@@ -184,6 +261,29 @@ test('completed and aborted summary-to-record persistence is symmetric without e
     'WorkoutSessionAborted'
   ]);
   assert.notEqual(records[0].occurrenceId, records[1].occurrenceId);
+});
+
+test('completed and aborted persistence materializes exactly one record with symmetric statistics', () => {
+  for (const session of [completedSession('session_exact_completed'), abortedSession('session_exact_aborted')]) {
+    const database = databaseWithTerminal(session);
+    let nowMs = session.endedAt + 1_000;
+    const runtime = createWorkoutSummaryRuntime({ database, now: () => nowMs });
+    const first = runtime.saveFeedback({ rpe: 5 }).fact;
+    nowMs += 1_000;
+    const second = runtime.saveFeedback({ rpe: 6 }).fact;
+    const records = database.load().records;
+
+    assert.equal(records.length, 1, `${session.status} must materialize exactly one record`);
+    assert.equal(first.id, second.id);
+    assert.equal(second.revision, 2);
+    assert.equal(second.status, session.status);
+    assert.equal(second.eventType, session.status === 'completed'
+      ? 'WorkoutSessionCompleted'
+      : 'WorkoutSessionAborted');
+    assert.equal(second.elapsedActiveSeconds, session.elapsedActiveSeconds);
+    assert.equal(second.stepResults.length, session.stepResults.length);
+    assert.deepEqual(second.stepResults, session.stepResults);
+  }
 });
 
 test('keep-screen stays off before step start, follows settings after start, and releases on every exit', async () => {
@@ -236,6 +336,26 @@ test('keep-screen stays off before step start, follows settings after start, and
   await Promise.resolve();
 });
 
+test('keepScreenOn false never requests true even after load and actual workout start', () => {
+  const plan = customPlan('timed');
+  const calls = [];
+  const runtime = createTimedWorkoutRuntime({
+    database: databaseWithPlan(plan, { keepScreenOn: false }),
+    now: () => START_AT,
+    idFactory: () => 'session_keep_screen_disabled',
+    commandKeyFactory: (type) => `keep_disabled_${type}`,
+    deviceAdapterFactory() {
+      return {
+        setKeepScreen(enabled) { calls.push(enabled); return { supported: true }; },
+        notify() { return Promise.resolve({ delivered: true }); }
+      };
+    }
+  });
+  runtime.load({ planId: plan.id });
+  runtime.start();
+  assert.equal(calls.includes(true), false);
+});
+
 test('sync throw, Promise rejection and release failure never roll back terminal commits and stay visible', async () => {
   for (const [terminalAction, expectedStatus, notifyMode] of [
     ['completeManual', 'completed', 'reject'],
@@ -266,6 +386,44 @@ test('sync throw, Promise rejection and release failure never roll back terminal
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(database.load().activeSession.status, expectedStatus);
     assert.match(runtime.render().deviceNotice, /不可用|视觉提示/);
+  }
+});
+
+test('release-only throw and rejection preserve terminal commit with a release-specific visible notice', async () => {
+  for (const [failureMode, terminalAction, expectedStatus] of [
+    ['throw', 'earlyComplete', 'completed'],
+    ['reject', 'endWorkout', 'aborted']
+  ]) {
+    const plan = customPlan('timed');
+    const database = databaseWithPlan(plan, { keepScreenOn: true });
+    const notificationCalls = [];
+    const runtime = createTimedWorkoutRuntime({
+      database,
+      now: () => START_AT + 20_000,
+      idFactory: () => `session_release_only_${failureMode}`,
+      commandKeyFactory: (type) => `release_only_${failureMode}_${type}`,
+      deviceAdapterFactory() {
+        return {
+          setKeepScreen(enabled) {
+            if (enabled) return Promise.resolve({ supported: true });
+            if (failureMode === 'throw') throw new Error('release-only throw');
+            return Promise.reject(new Error('release-only rejection'));
+          },
+          notify(input) {
+            notificationCalls.push(input);
+            return Promise.resolve({ delivered: true });
+          }
+        };
+      }
+    });
+    runtime.load({ planId: plan.id });
+    runtime.start();
+    runtime[terminalAction]();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(database.load().activeSession.status, expectedStatus);
+    assert.equal(notificationCalls.length, 1, 'notification succeeds and is not the failure source');
+    assert.match(runtime.render().deviceNotice, /常亮.*(?:关闭|释放).*失败/);
   }
 });
 
@@ -353,9 +511,12 @@ test('rest expiration occurrence is labeled correctly and stays deduplicated acr
 
 test('privacy remains silent across normalize, fact, save/load and device failure paths', async () => {
   const captured = [];
-  const methods = ['log', 'error', 'warn', 'info', 'debug'];
-  const originals = Object.fromEntries(methods.map((method) => [method, console[method]]));
-  methods.forEach((method) => { console[method] = (...args) => captured.push([method, args]); });
+  const originals = Object.fromEntries(COMMON_CONSOLE_METHODS.map(
+    (method) => [method, console[method]]
+  ));
+  COMMON_CONSOLE_METHODS.forEach((method) => {
+    console[method] = (...args) => captured.push([method, args]);
+  });
   try {
     const session = completedSession('session_privacy_adequacy');
     const rawFeedback = {
@@ -388,7 +549,7 @@ test('privacy remains silent across normalize, fact, save/load and device failur
     });
     await adapter.notify({ occurrenceId: 'privacy-device-failure', visualMessage: '训练提醒' });
   } finally {
-    methods.forEach((method) => { console[method] = originals[method]; });
+    COMMON_CONSOLE_METHODS.forEach((method) => { console[method] = originals[method]; });
   }
   assert.deepEqual(captured, []);
 });
@@ -404,6 +565,8 @@ test('source privacy scan and all safety alarm flags lock positive non-diagnosti
   }
 
   const root = path.resolve(__dirname, '../..');
+  assert.equal(sensitiveConsoleCalls(`console.log(\n  feedback\n);`).length, 1);
+  assert.equal(sensitiveConsoleCalls(`console.trace(\n  privateNote\n);`).length, 1);
   const sourceFiles = [];
   function visit(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -416,11 +579,7 @@ test('source privacy scan and all safety alarm flags lock positive non-diagnosti
   for (const file of sourceFiles) {
     const source = fs.readFileSync(file, 'utf8');
     assert.doesNotMatch(source, /SYNTHETIC_PRIVATE_FEEDBACK_SENTINEL/, file);
-    assert.doesNotMatch(
-      source,
-      /console\.(?:log|error|warn|info|debug)\s*\([^\n]*(?:feedback|rpe|pain|note|weight)/i,
-      file
-    );
+    assert.deepEqual(sensitiveConsoleCalls(source), [], file);
   }
 });
 
