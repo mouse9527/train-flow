@@ -254,6 +254,14 @@ function createWeekPlanView({
     summariesByDate.get(`${plan.trainingDate}\u0000${plan.timezone}`) || null,
     effectiveSelectedDate
   ));
+  const plannedDates = new Set(plansInWeek.map(({ trainingDate }) => trainingDate));
+  const emptyDates = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index))
+    .filter((trainingDate) => !plannedDates.has(trainingDate))
+    .map((trainingDate) => ({
+      trainingDate,
+      dateLabel: formatDate(trainingDate),
+      weekday: WEEKDAY_LABELS[assertDate(trainingDate, 'empty trainingDate').getUTCDay()]
+    }));
 
   return {
     weekStart,
@@ -263,7 +271,8 @@ function createWeekPlanView({
     nextWeekStart: addDays(weekStart, 7),
     isEmpty: days.length === 0,
     emptyMessage: days.length === 0 ? '这一周还没有训练计划' : null,
-    emptyGuidance: days.length === 0 ? '可使用上方按钮切换到有训练安排的周' : null,
+    emptyGuidance: days.length === 0 ? '可在下方选择日期并新增训练日' : null,
+    emptyDates,
     days,
     selectedDay: days.find(({ trainingDate }) => trainingDate === effectiveSelectedDate) || null
   };

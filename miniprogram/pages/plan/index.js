@@ -64,5 +64,25 @@ Page({
     wx.navigateTo({
       url: `/pages/workout/index?planId=${encodeURIComponent(selectedDay.id)}`
     });
+  },
+
+  onEditPlan() {
+    const selectedDay = this.data.week && this.data.week.selectedDay;
+    if (!selectedDay) {
+      return;
+    }
+    wx.navigateTo({
+      url: `/pages/plan/edit/index?planId=${encodeURIComponent(selectedDay.id)}`
+    });
+  },
+
+  onCreatePlan(event) {
+    const trainingDate = event.currentTarget.dataset.date;
+    if (!trainingDate) {
+      return;
+    }
+    wx.navigateTo({
+      url: `/pages/plan/edit/index?trainingDate=${encodeURIComponent(trainingDate)}`
+    });
   }
 });

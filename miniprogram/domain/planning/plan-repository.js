@@ -312,6 +312,87 @@ class PlanRepository {
     return clone(committed.plans.find(({ id }) => id === candidate.id));
   }
 
+  replaceForDate(plan, { expectedTargetPlanId, expectedTargetRevision } = {}) {
+    assertExpectedRevision(expectedTargetRevision);
+    if (typeof expectedTargetPlanId !== 'string' || expectedTargetPlanId.length === 0) {
+      throw new Error('expectedTargetPlanId must be a non-empty string');
+    }
+    if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
+      throw new Error('replacement plan must be an object');
+    }
+    const timestamp = this.now();
+    if (!Number.isFinite(timestamp)) {
+      throw new Error('PlanRepository now must return a finite epoch timestamp');
+    }
+    const snapshot = this.database.load();
+    assertUniquePlanIds(snapshot.plans);
+    const target = snapshot.plans.find(
+      ({ trainingDate, status }) => status !== 'deleted' && trainingDate === plan.trainingDate
+    ) || null;
+    const actualRevision = target ? target.revision : 0;
+    if (
+      !target ||
+      target.id !== expectedTargetPlanId ||
+      actualRevision !== expectedTargetRevision
+    ) {
+      throw createRepositoryError(
+        `Plan replacement conflict: expected ${expectedTargetPlanId}@${expectedTargetRevision}, actual ${target ? `${target.id}@${actualRevision}` : 'empty'}`,
+        'PLAN_REVISION_CONFLICT'
+      );
+    }
+    if (snapshot.plans.some(({ id }) => id === plan.id)) {
+      throw createRepositoryError(`Persisted plan ID ${plan.id} already exists`, 'PLAN_ID_INTEGRITY_ERROR');
+    }
+
+    const candidate = {
+      ...plan,
+      status: 'scheduled',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null,
+      revision: 1
+    };
+    const tombstone = {
+      ...clone(target),
+      status: 'deleted',
+      updatedAt: timestamp,
+      deletedAt: timestamp,
+      revision: target.revision + 1
+    };
+    assertWorkoutPlan(candidate);
+    assertWorkoutPlan(tombstone);
+    const detachedCandidate = clone(candidate);
+    const detachedTombstone = clone(tombstone);
+
+    const committed = this.database.commit((draft) => {
+      assertUniquePlanIds(draft.plans);
+      const currentIndex = draft.plans.findIndex(
+        ({ trainingDate, status }) => status !== 'deleted' && trainingDate === detachedCandidate.trainingDate
+      );
+      const current = currentIndex === -1 ? null : draft.plans[currentIndex];
+      const currentRevision = current ? current.revision : 0;
+      if (
+        !current ||
+        current.id !== expectedTargetPlanId ||
+        currentRevision !== expectedTargetRevision
+      ) {
+        throw createRepositoryError(
+          `Plan replacement conflict: expected ${expectedTargetPlanId}@${expectedTargetRevision}, actual ${current ? `${current.id}@${currentRevision}` : 'empty'}`,
+          'PLAN_REVISION_CONFLICT'
+        );
+      }
+      if (draft.plans.some(({ id }) => id === detachedCandidate.id)) {
+        throw createRepositoryError(
+          `Persisted plan ID ${detachedCandidate.id} already exists`,
+          'PLAN_ID_INTEGRITY_ERROR'
+        );
+      }
+      draft.plans[currentIndex] = clone(detachedTombstone);
+      draft.plans.push(clone(detachedCandidate));
+    }, snapshot.localRevision);
+    return clone(committed.plans.find(({ id }) => id === detachedCandidate.id));
+  }
+
   delete(id, expectedRevision) {
     assertExpectedRevision(expectedRevision);
     if (typeof id !== 'string' || id.length === 0) {

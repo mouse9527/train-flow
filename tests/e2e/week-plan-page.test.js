@@ -160,19 +160,46 @@ test('plan page refreshes record statuses on show without losing the selected da
 });
 
 test('plan page navigates to an empty adjacent week without cloning the initial plan', (t) => {
-  const { page } = createPageHarness(t);
+  const { page, navigations } = createPageHarness(t);
   page.onLoad({});
 
   page.onNextWeek();
   assert.equal(page.data.week.weekStart, '2026-08-10');
   assert.equal(page.data.week.isEmpty, true);
   assert.equal(page.data.week.days.length, 0);
+  assert.deepEqual(
+    page.data.week.emptyDates.map(({ trainingDate }) => trainingDate),
+    ['2026-08-10', '2026-08-11', '2026-08-12', '2026-08-13', '2026-08-14', '2026-08-15', '2026-08-16']
+  );
   assert.equal(page.data.week.emptyMessage, '这一周还没有训练计划');
-  assert.equal(page.data.week.emptyGuidance, '可使用上方按钮切换到有训练安排的周');
+  assert.match(page.data.week.emptyGuidance, /新增训练日/);
+  page.onCreatePlan({ currentTarget: { dataset: { date: '2026-08-12' } } });
+  assert.deepEqual(navigations, [
+    '/pages/plan/edit/index?trainingDate=2026-08-12'
+  ]);
 
   page.onPreviousWeek();
   assert.equal(page.data.week.weekStart, '2026-08-03');
   assert.equal(page.data.week.days.length, 7);
+});
+
+test('plan page exposes a create action for a missing date inside a partially planned week', (t) => {
+  const { page, database, navigations } = createPageHarness(t);
+  page.onLoad({});
+  database.commit((draft) => {
+    const plan = draft.plans.find(({ trainingDate }) => trainingDate === '2026-08-06');
+    plan.status = 'deleted';
+    plan.updatedAt += 1;
+    plan.deletedAt = plan.updatedAt;
+    plan.revision += 1;
+  });
+
+  page.onShow();
+  assert.deepEqual(page.data.week.emptyDates.map(({ trainingDate }) => trainingDate), ['2026-08-06']);
+  page.onCreatePlan({ currentTarget: { dataset: { date: '2026-08-06' } } });
+  assert.deepEqual(navigations, [
+    '/pages/plan/edit/index?trainingDate=2026-08-06'
+  ]);
 });
 
 test('plan page selects any day and exposes ordered kind-specific detail', (t) => {
@@ -203,6 +230,17 @@ test('Sunday renders rest guidance and cannot launch a workout', (t) => {
   assert.deepEqual(navigations, []);
 });
 
+test('selected plan can navigate to its editor', (t) => {
+  const { page, navigations } = createPageHarness(t);
+  page.onLoad({});
+
+  page.onEditPlan();
+
+  assert.deepEqual(navigations, [
+    '/pages/plan/edit/index?planId=plan_20260803_builtin'
+  ]);
+});
+
 test('plan WXML binds week navigation, seven-day selection, statuses, detail and conditional start action', () => {
   const wxml = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/plan/index.wxml'), 'utf8');
   const dayLoopTag = wxml.match(/<view\b(?=[^>]*wx:for="\{\{week\.days\}\}")[^>]*>/s);
@@ -220,8 +258,11 @@ test('plan WXML binds week navigation, seven-day selection, statuses, detail and
   assert.match(wxml, /step\.metrics/);
   assert.match(wxml, /step\.targets/);
   assert.match(wxml, /safetyNotices/);
+  assert.match(wxml, /bindtap="onEditPlan"/);
   assert.match(wxml, /wx:if="\{\{week\.selectedDay\.canStartWorkout\}\}"[^>]*bindtap="onStartWorkout"/);
   assert.match(wxml, /\{\{week\.emptyMessage\}\}/);
   assert.match(wxml, /\{\{week\.emptyGuidance\}\}/);
+  assert.match(wxml, /week\.emptyDates/);
+  assert.match(wxml, /bindtap="onCreatePlan"/);
   assert.doesNotMatch(wxml, /返回上一周/);
 });

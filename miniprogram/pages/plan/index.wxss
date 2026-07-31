@@ -104,6 +104,34 @@
   font-weight: 600;
 }
 
+.empty-date-list {
+  margin-bottom: 24rpx;
+  padding: 22rpx;
+  border: 1rpx solid #dce8f5;
+  border-radius: 20rpx;
+  background: #f7fbff;
+}
+
+.empty-date-heading {
+  margin-bottom: 12rpx;
+  color: #25313c;
+  font-size: 26rpx;
+  font-weight: 700;
+}
+
+.empty-date-action {
+  margin: 10rpx 0 0;
+  border-radius: 12rpx;
+  background: #ffffff;
+  color: #2468a6;
+  font-size: 24rpx;
+  line-height: 68rpx;
+}
+
+.empty-date-action::after {
+  border-color: #c9dff3;
+}
+
 .week-list {
   overflow: hidden;
   margin-bottom: 24rpx;
@@ -259,14 +287,33 @@
   line-height: 1.6;
 }
 
-.start-workout {
-  margin: 24rpx 0;
+.detail-actions {
+  display: flex;
+  margin: 24rpx -6rpx;
+}
+
+.start-workout,
+.edit-plan {
+  flex: 1;
+  margin: 0 6rpx;
   border-radius: 14rpx;
-  background: #2d7dd2;
-  color: #ffffff;
   font-size: 28rpx;
   font-weight: 600;
   line-height: 82rpx;
+}
+
+.start-workout {
+  background: #2d7dd2;
+  color: #ffffff;
+}
+
+.edit-plan {
+  background: #eef6ff;
+  color: #2468a6;
+}
+
+.edit-plan::after {
+  border: none;
 }
 
 .rest-guidance {

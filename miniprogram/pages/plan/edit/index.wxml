@@ -1,0 +1,160 @@
+<view class="editor-page" wx:if="{{draft}}">
+  <view class="editor-hero">
+    <text class="eyebrow">TRAINFLOW · PLAN STUDIO</text>
+    <view class="hero-row">
+      <view>
+        <view class="hero-title">编辑训练计划</view>
+        <text class="hero-date">{{draft.trainingDate}} · revision {{expectedRevision}}</text>
+      </view>
+      <text class="draft-chip">{{isNew ? '新训练日' : '草稿隔离'}}</text>
+    </view>
+    <text class="future-notice">{{futureStartNotice}}</text>
+  </view>
+
+  <view class="error-banner" wx:if="{{errorSummary}}">{{errorSummary}}</view>
+  <text class="field-error section-error" wx:if="{{planErrors.general}}">{{planErrors.general}}</text>
+  <view class="save-banner" wx:if="{{saveMessage}}">{{saveMessage}}</view>
+
+  <view class="editor-section plan-basics">
+    <view class="section-heading">
+      <text class="section-number">01</text>
+      <view>
+        <view class="section-title">计划信息</view>
+        <text class="section-copy">名称与说明只保存在当前草稿，保存成功后才写入。</text>
+      </view>
+    </view>
+    <text class="field-label">计划标题 *</text>
+    <input class="field-input {{planErrors.title ? 'field-invalid' : ''}}" value="{{draft.title}}" data-field="title" bindinput="onPlanTextInput" placeholder="例如：下肢力量与快走" />
+    <text class="field-error" wx:if="{{planErrors.title}}">{{planErrors.title}}</text>
+    <text class="field-label">计划说明</text>
+    <textarea class="field-textarea" value="{{draft.summary}}" data-field="summary" bindinput="onPlanTextInput" auto-height />
+    <text class="field-error" wx:if="{{planErrors.revision}}">{{planErrors.revision}}</text>
+  </view>
+
+  <view class="editor-section">
+    <view class="section-heading">
+      <text class="section-number">02</text>
+      <view>
+        <view class="section-title">训练步骤</view>
+        <text class="section-copy">按动作类型显示所需字段；使用箭头调整执行顺序。</text>
+      </view>
+    </view>
+    <text class="field-error section-error" wx:if="{{planErrors.steps}}">{{planErrors.steps}}</text>
+
+    <view class="step-editor" wx:for="{{stepViews}}" wx:key="id" wx:for-item="step">
+      <view class="step-editor-head">
+        <view class="step-index">{{step.position}}</view>
+        <view class="step-identity">
+          <text class="step-kind">{{step.kind}}</text>
+          <text class="step-id">{{step.id}}</text>
+        </view>
+        <view class="step-actions">
+          <button class="icon-button" disabled="{{!step.canMoveUp}}" data-step-id="{{step.id}}" data-direction="up" bindtap="onMoveStep">↑</button>
+          <button class="icon-button" data-step-id="{{step.id}}" data-direction="down" bindtap="onMoveStep">↓</button>
+          <button class="icon-button danger" data-step-id="{{step.id}}" bindtap="onDeleteStep">删</button>
+        </view>
+      </view>
+
+      <text class="field-error section-error" wx:if="{{step.errors.general}}">{{step.errors.general}}</text>
+
+      <text class="field-label">动作名称 *</text>
+      <input class="field-input {{step.errors.name ? 'field-invalid' : ''}}" value="{{step.name}}" data-step-id="{{step.id}}" data-field="name" bindinput="onStepTextInput" />
+      <text class="field-error" wx:if="{{step.errors.name}}">{{step.errors.name}}</text>
+
+      <view class="field-grid">
+        <view class="field-cell" wx:if="{{step.showDuration}}">
+          <text class="field-label">持续秒数</text>
+          <input class="field-input compact {{step.errors.durationSeconds ? 'field-invalid' : ''}}" type="number" value="{{step.durationSeconds}}" data-step-id="{{step.id}}" data-field="durationSeconds" bindinput="onStepNumberInput" />
+          <text class="field-error" wx:if="{{step.errors.durationSeconds}}">{{step.errors.durationSeconds}}</text>
+        </view>
+        <view class="field-cell" wx:if="{{step.showSets}}">
+          <text class="field-label">组数</text>
+          <input class="field-input compact {{step.errors.sets ? 'field-invalid' : ''}}" type="number" value="{{step.sets}}" data-step-id="{{step.id}}" data-field="sets" bindinput="onStepNumberInput" />
+          <text class="field-error" wx:if="{{step.errors.sets}}">{{step.errors.sets}}</text>
+        </view>
+        <view class="field-cell" wx:if="{{step.showReps}}">
+          <text class="field-label">次数</text>
+          <input class="field-input compact {{step.errors.reps ? 'field-invalid' : ''}}" type="number" value="{{step.reps}}" data-step-id="{{step.id}}" data-field="reps" bindinput="onStepNumberInput" />
+          <text class="field-error" wx:if="{{step.errors.reps}}">{{step.errors.reps}}</text>
+        </view>
+        <view class="field-cell" wx:if="{{step.showRest}}">
+          <text class="field-label">组间休息秒数</text>
+          <input class="field-input compact {{step.errors.restSeconds ? 'field-invalid' : ''}}" type="number" value="{{step.restSeconds}}" data-step-id="{{step.id}}" data-field="restSeconds" bindinput="onStepNumberInput" />
+          <text class="field-error" wx:if="{{step.errors.restSeconds}}">{{step.errors.restSeconds}}</text>
+        </view>
+      </view>
+
+      <view class="target-panel" wx:if="{{step.showTargets}}">
+        <text class="target-title">器械目标（可留空）</text>
+        <view class="target-line">
+          <text class="target-name">速度 km/h</text>
+          <input class="target-input" type="digit" value="{{step.speedMin}}" placeholder="最低" data-step-id="{{step.id}}" data-target="speedKph" data-bound="min" bindinput="onStepNumberInput" />
+          <text class="target-separator">—</text>
+          <input class="target-input" type="digit" value="{{step.speedMax}}" placeholder="最高" data-step-id="{{step.id}}" data-target="speedKph" data-bound="max" bindinput="onStepNumberInput" />
+        </view>
+        <text class="field-error" wx:if="{{step.errors.speedKph}}">{{step.errors.speedKph}}</text>
+        <view class="target-line">
+          <text class="target-name">坡度 %</text>
+          <input class="target-input" type="digit" value="{{step.inclineMin}}" placeholder="最低" data-step-id="{{step.id}}" data-target="inclinePercent" data-bound="min" bindinput="onStepNumberInput" />
+          <text class="target-separator">—</text>
+          <input class="target-input" type="digit" value="{{step.inclineMax}}" placeholder="最高" data-step-id="{{step.id}}" data-target="inclinePercent" data-bound="max" bindinput="onStepNumberInput" />
+        </view>
+        <text class="field-error" wx:if="{{step.errors.inclinePercent}}">{{step.errors.inclinePercent}}</text>
+        <view class="target-line">
+          <text class="target-name">阻力</text>
+          <input class="target-input" type="digit" value="{{step.resistanceMin}}" placeholder="最低" data-step-id="{{step.id}}" data-target="resistance" data-bound="min" bindinput="onStepNumberInput" />
+          <text class="target-separator">—</text>
+          <input class="target-input" type="digit" value="{{step.resistanceMax}}" placeholder="最高" data-step-id="{{step.id}}" data-target="resistance" data-bound="max" bindinput="onStepNumberInput" />
+        </view>
+        <text class="field-error" wx:if="{{step.errors.resistance}}">{{step.errors.resistance}}</text>
+      </view>
+
+      <view class="optional-row">
+        <view>
+          <text class="field-label inline-label">可选动作</text>
+          <text class="field-hint">训练中允许跳过</text>
+        </view>
+        <switch checked="{{step.optional}}" data-step-id="{{step.id}}" bindchange="onStepOptionalChange" color="#2376c9" />
+      </view>
+      <text class="field-label">替代动作（用逗号分隔）</text>
+      <input class="field-input" value="{{step.alternativeText}}" data-step-id="{{step.id}}" data-field="alternatives" bindinput="onStepTextInput" placeholder="例如：椭圆机，户外快走" />
+    </view>
+
+    <view class="add-step-row">
+      <picker class="kind-picker" mode="selector" range="{{stepKindLabels}}" value="{{addKindIndex}}" bindchange="onAddKindChange">
+        <view class="picker-value">新增类型：{{stepKindLabels[addKindIndex]}} ▾</view>
+      </picker>
+      <button class="add-step-button" bindtap="onAddStep">＋ 添加步骤</button>
+    </view>
+  </view>
+
+  <button class="save-button" bindtap="onSave">保存当前计划</button>
+
+  <view class="editor-section copy-section" wx:if="{{!isNew}}">
+    <view class="section-heading">
+      <text class="section-number">03</text>
+      <view>
+        <view class="section-title">复制到日期</view>
+        <text class="section-copy">复制会生成新的计划与步骤 ID，不与当前计划共享可变数据。</text>
+      </view>
+    </view>
+    <view class="copy-row">
+      <picker class="date-picker" mode="date" value="{{copyDate}}" bindchange="onCopyDateChange">
+        <view class="picker-value">{{copyDate}}</view>
+      </picker>
+      <button class="copy-button" bindtap="onCopyPlan">复制计划</button>
+    </view>
+    <text class="copy-message {{copyState === 'error' ? 'copy-error' : ''}}" wx:if="{{copyMessage}}">{{copyMessage}}</text>
+
+    <view class="confirmation-card" wx:if="{{copyConfirmation.visible}}">
+      <text class="confirmation-label">需要明确确认</text>
+      <text class="confirmation-message">{{copyConfirmation.message}}</text>
+      <text class="confirmation-revision">目标 plan ID: {{copyConfirmation.targetPlanId}}</text>
+      <text class="confirmation-revision">目标 expected revision: {{copyConfirmation.targetRevision}}</text>
+      <view class="confirmation-actions">
+        <button class="cancel-button" bindtap="onCancelCopy">取消</button>
+        <button class="confirm-button" bindtap="onConfirmCopy">确认替换</button>
+      </view>
+    </view>
+  </view>
+</view>
