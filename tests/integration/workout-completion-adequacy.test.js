@@ -208,7 +208,7 @@ test('summary runtime rejects missing RPE before any record write and saves both
       : abortedSession(`session_rpe_boundary_${rpe}`);
     const database = databaseWithTerminal(session);
     const runtime = createWorkoutSummaryRuntime({ database, now: () => session.endedAt + 1_000 });
-    runtime.load();
+    runtime.load({ sessionId: session.id });
 
     assert.throws(() => runtime.saveFeedback({}), /RPE.*required/i);
     assert.equal(database.load().records.length, 0, 'invalid feedback must not mutate records');
@@ -292,7 +292,7 @@ test('completed and aborted summary-to-record persistence is symmetric without e
       database: databaseWithTerminal(session),
       now: () => session.endedAt + 1_000
     });
-    assert.equal(runtime.load().summary.status, session.status);
+    assert.equal(runtime.load({ sessionId: session.id }).summary.status, session.status);
     records.push(runtime.saveFeedback({ rpe: session.status === 'completed' ? 4 : 8 }).fact);
   }
   assert.deepEqual(records.map(({ status }) => status), ['completed', 'aborted']);
@@ -308,6 +308,7 @@ test('completed and aborted persistence materializes exactly one record with sym
     const database = databaseWithTerminal(session);
     let nowMs = session.endedAt + 1_000;
     const runtime = createWorkoutSummaryRuntime({ database, now: () => nowMs });
+    runtime.load({ sessionId: session.id });
     const first = runtime.saveFeedback({ rpe: 5 }).fact;
     nowMs += 1_000;
     const second = runtime.saveFeedback({ rpe: 6 }).fact;
@@ -330,7 +331,7 @@ test('reloaded completed and aborted records persist symmetric terminal statisti
   for (const session of [pausedSkippedCompletedSession(), mixedResultAbortedSession()]) {
     const database = databaseWithTerminal(session);
     const runtime = createWorkoutSummaryRuntime({ database, now: () => session.endedAt + 1_000 });
-    runtime.load();
+    runtime.load({ sessionId: session.id });
     runtime.saveFeedback({ rpe: session.status === 'completed' ? 4 : 8 });
 
     const reloaded = database.load();
@@ -358,7 +359,7 @@ test('legacy records without a stored fingerprint fail closed on conflict and up
     database,
     now: () => completed.endedAt + 1_000
   });
-  firstRuntime.load();
+  firstRuntime.load({ sessionId: completed.id });
   firstRuntime.saveFeedback({
     rpe: 7,
     pain: { knee: true },
@@ -373,7 +374,7 @@ test('legacy records without a stored fingerprint fail closed on conflict and up
     draft.activeSession = clone(replacement);
   });
   assert.throws(
-    () => createWorkoutSummaryRuntime({ database }).load(),
+    () => createWorkoutSummaryRuntime({ database }).load({ sessionId: completed.id }),
     /记录.*当前总结不匹配/
   );
 
@@ -384,7 +385,7 @@ test('legacy records without a stored fingerprint fail closed on conflict and up
     database,
     now: () => completed.endedAt + 2_000
   });
-  const loaded = legacyRuntime.load();
+  const loaded = legacyRuntime.load({ sessionId: completed.id });
   assert.equal(loaded.saved, true);
   assert.equal(loaded.feedback.note, 'LEGACY_PRIVATE_FEEDBACK');
   legacyRuntime.saveFeedback({ rpe: 6, pain: { knee: true }, note: '' });
@@ -426,12 +427,12 @@ test('summary load proves every canonical record semantic and metadata field bef
       database,
       now: () => session.endedAt + 1_000
     });
-    runtime.load();
+    runtime.load({ sessionId: session.id });
     runtime.saveFeedback({ rpe: 7, note: 'PRIVATE_CANONICAL_RECORD_FEEDBACK' });
     database.commit((draft) => mutate(draft.records[0]));
 
     assert.throws(
-      () => createWorkoutSummaryRuntime({ database }).load(),
+      () => createWorkoutSummaryRuntime({ database }).load({ sessionId: session.id }),
       /记录.*当前总结不匹配/,
       label
     );
@@ -711,9 +712,9 @@ test('privacy remains silent across normalize, fact, save/load and device failur
     const feedback = normalizeWorkoutFeedback(rawFeedback);
     createWorkoutCompletionFact(session, feedback);
     const runtime = createWorkoutSummaryRuntime({ database: databaseWithTerminal(session) });
-    runtime.load();
+    runtime.load({ sessionId: session.id });
     runtime.saveFeedback(rawFeedback);
-    runtime.load();
+    runtime.load({ sessionId: session.id });
     const adapter = createWechatDeviceAdapter({
       wxApi: {
         vibrateLong() { throw new Error('synthetic failure'); },

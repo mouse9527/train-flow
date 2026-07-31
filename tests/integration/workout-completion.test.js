@@ -315,7 +315,7 @@ test('summary runtime atomically saves one private completion fact without writi
   harness.setNow(START_AT + 95_000);
   harness.runtime.endWorkout();
   const summaryRuntime = createWorkoutSummaryRuntime({ database: harness.database });
-  const loaded = summaryRuntime.load();
+  const loaded = summaryRuntime.load({ sessionId: 'session_completion_runtime' });
   assert.equal(loaded.summary.status, 'aborted');
 
   const logged = [];

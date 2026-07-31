@@ -75,7 +75,7 @@ test('Attack: stale summary submit after active Session replacement — reject i
     database,
     now: () => START_AT + 110_000
   });
-  const loaded = runtime.load();
+  const loaded = runtime.load({ sessionId: completed.id });
   assert.equal(loaded.summary.sessionId, completed.id);
 
   database.commit((draft) => {
@@ -135,7 +135,7 @@ test('Attack: terminal Session identity/revision ABA — reject same-id same-rev
     database,
     now: () => START_AT + 110_000
   });
-  const loaded = runtime.load();
+  const loaded = runtime.load({ sessionId: completed.id });
   assert.equal(loaded.summary.status, 'completed');
 
   database.commit((draft) => {
@@ -191,7 +191,7 @@ test('Attack: persisted record ABA on a fresh summary runtime — reject instead
     database,
     now: () => START_AT + 110_000
   });
-  completedRuntime.load();
+  completedRuntime.load({ sessionId: completed.id });
   completedRuntime.saveFeedback({
     rpe: 9,
     pain: { dizziness: true },
@@ -207,7 +207,7 @@ test('Attack: persisted record ABA on a fresh summary runtime — reject instead
   let loadedState = null;
   let loadError = null;
   try {
-    loadedState = replacementRuntime.load();
+    loadedState = replacementRuntime.load({ sessionId: sharedSessionId });
   } catch (error) {
     loadError = error;
   }
@@ -244,7 +244,7 @@ test('Attack: tampered derived TrainingRecord semantics outside source fingerpri
     database,
     now: () => START_AT + 110_000
   });
-  originalRuntime.load();
+  originalRuntime.load({ sessionId: aborted.id });
   originalRuntime.saveFeedback({ rpe: 6 });
   const originalRecord = database.load().records[0];
   assert.match(originalRecord.sourceSessionFingerprint, /^[a-f0-9]{64}$/);
@@ -263,7 +263,7 @@ test('Attack: tampered derived TrainingRecord semantics outside source fingerpri
   let loadedState = null;
   let loadError = null;
   try {
-    loadedState = reloadedRuntime.load();
+    loadedState = reloadedRuntime.load({ sessionId: aborted.id });
   } catch (error) {
     loadError = error;
   }
@@ -299,7 +299,7 @@ test('Attack: negative TrainingRecord metadata timestamps — reject impossible 
     database,
     now: () => START_AT + 110_000
   });
-  originalRuntime.load();
+  originalRuntime.load({ sessionId: completed.id });
   originalRuntime.saveFeedback({ rpe: 5 });
 
   database.commit((draft) => {
@@ -310,7 +310,7 @@ test('Attack: negative TrainingRecord metadata timestamps — reject impossible 
   let loadedState = null;
   let loadError = null;
   try {
-    loadedState = createWorkoutSummaryRuntime({ database }).load();
+    loadedState = createWorkoutSummaryRuntime({ database }).load({ sessionId: completed.id });
   } catch (error) {
     loadError = error;
   }
@@ -355,7 +355,7 @@ test('Post-Spar hardening: same-status terminal ABA with changed facts rejects s
   });
 
   const runtime = createWorkoutSummaryRuntime({ database });
-  runtime.load();
+  runtime.load({ sessionId: firstCompleted.id });
   database.commit((draft) => {
     draft.activeSession = clone(replacementCompleted);
   });
@@ -454,7 +454,7 @@ test('Test Adequacy Round 6: each isolated terminal fact replacement rejects sta
         draft.activeSession = clone(completed);
       });
       const runtime = createWorkoutSummaryRuntime({ database });
-      runtime.load();
+      runtime.load({ sessionId: completed.id });
       database.commit((draft) => {
         draft.activeSession = clone(replacement);
       });
@@ -487,7 +487,7 @@ test('Post-Spar hardening: isolated persisted stepResults tamper fails closed wi
     draft.activeSession = clone(completed);
   });
   const runtime = createWorkoutSummaryRuntime({ database });
-  runtime.load();
+  runtime.load({ sessionId: completed.id });
   runtime.saveFeedback({ rpe: 5 });
 
   const original = database.load().records[0];
@@ -507,7 +507,7 @@ test('Post-Spar hardening: isolated persisted stepResults tamper fails closed wi
   }, counts);
 
   assert.throws(
-    () => createWorkoutSummaryRuntime({ database }).load(),
+    () => createWorkoutSummaryRuntime({ database }).load({ sessionId: completed.id }),
     /记录.*当前总结不匹配/
   );
 });

@@ -50,7 +50,9 @@ function createWorkoutSummaryPageDefinition({
         ? fixtureRuntimeFactory({ status: query.status })
         : runtimeFactory();
       try {
-        const state = this.runtime.load();
+        const state = useFixture
+          ? this.runtime.load()
+          : this.runtime.load({ sessionId: query.sessionId });
         const feedback = state.feedback || createWorkoutFeedbackDraft();
         this.setData({
           summary: state.summary,

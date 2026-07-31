@@ -4,65 +4,25 @@ const {
   createWorkoutFeedbackDraft,
   normalizeWorkoutFeedback
 } = require('./workout-application-service');
+const {
+  findTrainingRecords,
+  isPlainObject,
+  recordMatchesTerminalSource,
+  terminalFactFingerprint,
+  terminalSourceFromRecord
+} = require('../domain/execution/training-record');
 const { createLocalDatabase } = require('../services/local-database');
-const { canonicalize, computeChecksum } = require('../utils/checksum');
+const { canonicalize } = require('../utils/checksum');
 
-const TERMINAL_RECORD_FACT_FIELDS = Object.freeze([
-  'schemaVersion',
-  'occurrenceId',
-  'eventType',
-  'sourceSessionId',
-  'status',
-  'trainingDate',
-  'startedAt',
-  'endedAt',
-  'elapsedActiveSeconds',
-  'completedStepCount',
-  'skippedStepCount',
-  'totalStepCount',
-  'planSnapshot',
-  'stepResults'
-]);
 const STORED_FEEDBACK_FIELDS = Object.freeze([
   'rpe',
   'weightBeforeKg',
   'pain',
   'note'
 ]);
-const TERMINAL_RECORD_FIELDS = new Set([
-  ...TERMINAL_RECORD_FACT_FIELDS,
-  'feedback',
-  'sourceSessionFingerprint',
-  'id',
-  'createdAt',
-  'updatedAt',
-  'revision'
-]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
-}
-
-function terminalFactFingerprint(source) {
-  return computeChecksum({
-    sourceSessionId: source.sourceSessionId === undefined ? source.id : source.sourceSessionId,
-    planSnapshot: source.planSnapshot,
-    trainingDate: source.trainingDate,
-    status: source.status,
-    startedAt: source.startedAt,
-    endedAt: source.endedAt,
-    elapsedActiveSeconds: source.elapsedActiveSeconds,
-    stepResults: source.stepResults
-  });
-}
-
-function isPlainObject(value) {
-  return Boolean(
-    value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    Object.getPrototypeOf(value) === Object.prototype
-  );
 }
 
 function hasExactFields(value, fields) {
@@ -85,138 +45,147 @@ function canonicalStoredFeedback(feedback) {
   }
 }
 
-function recordMetadataMatches(record, session) {
-  return record.id === `record_${session.id}` &&
-    Number.isSafeInteger(record.createdAt) &&
-    record.createdAt >= 0 &&
-    Number.isSafeInteger(record.updatedAt) &&
-    record.updatedAt >= 0 &&
-    record.updatedAt >= record.createdAt &&
-    Number.isSafeInteger(record.revision) &&
-    record.revision >= 1;
-}
-
-function recordMatchesTerminalFact(record, session, fingerprint) {
-  if (
-    !isPlainObject(record) ||
-    Object.keys(record).some((field) => !TERMINAL_RECORD_FIELDS.has(field)) ||
-    TERMINAL_RECORD_FACT_FIELDS.some(
-      (field) => !Object.prototype.hasOwnProperty.call(record, field)
-    ) ||
-    !Object.prototype.hasOwnProperty.call(record, 'feedback') ||
-    !Object.prototype.hasOwnProperty.call(record, 'id') ||
-    !Object.prototype.hasOwnProperty.call(record, 'createdAt') ||
-    !Object.prototype.hasOwnProperty.call(record, 'updatedAt') ||
-    !Object.prototype.hasOwnProperty.call(record, 'revision') ||
-    !recordMetadataMatches(record, session) ||
-    !canonicalStoredFeedback(record.feedback)
-  ) {
+function recordMatchesTerminalFact(record, source, { requireFingerprint = false } = {}) {
+  if (!recordMatchesTerminalSource(record, source)) {
     return false;
   }
-
-  const expectedFact = createWorkoutCompletionFact(session, {
-    rpe: 1,
-    weightBeforeKg: null,
-    pain: {},
-    note: ''
-  });
-  if (TERMINAL_RECORD_FACT_FIELDS.some(
-    (field) => canonicalize(record[field]) !== canonicalize(expectedFact[field])
-  )) {
+  if (record.feedback !== null && !canonicalStoredFeedback(record.feedback)) {
     return false;
   }
-
-  const derivedFingerprint = terminalFactFingerprint(record);
-  if (
-    Object.prototype.hasOwnProperty.call(record, 'sourceSessionFingerprint') &&
-    record.sourceSessionFingerprint !== derivedFingerprint
-  ) {
-    return false;
-  }
-  return derivedFingerprint === fingerprint;
-}
-
-function findBoundRecord(records, session, fingerprint) {
-  const canonicalRecordId = `record_${session.id}`;
-  const candidates = records.filter(
-    (record) => record && (
-      record.sourceSessionId === session.id || record.id === canonicalRecordId
-    )
+  const hasFingerprint = Object.prototype.hasOwnProperty.call(
+    record,
+    'sourceSessionFingerprint'
   );
+  return (!requireFingerprint || hasFingerprint) &&
+    (!hasFingerprint || record.sourceSessionFingerprint === terminalFactFingerprint(source));
+}
+
+function findBoundRecord(records, source, options) {
+  const candidates = findTrainingRecords(records, source.id);
   if (candidates.length === 0) {
     return null;
   }
   if (
     candidates.length !== 1 ||
-    !recordMatchesTerminalFact(candidates[0], session, fingerprint)
+    !recordMatchesTerminalFact(candidates[0], source, options)
   ) {
     throw new Error('训练记录与当前总结不匹配，请重新打开后再试');
   }
   return candidates[0];
 }
 
+function requireRequestedSessionId(input) {
+  if (
+    !isPlainObject(input) ||
+    typeof input.sessionId !== 'string' ||
+    input.sessionId.length === 0
+  ) {
+    throw new Error('sessionId is required for workout summary');
+  }
+  return input.sessionId;
+}
+
+function resolveSummarySource(snapshot, sessionId) {
+  const active = snapshot.activeSession;
+  if (
+    active &&
+    active.id === sessionId &&
+    ['completed', 'aborted'].includes(active.status)
+  ) {
+    return {
+      source: active,
+      record: findBoundRecord(snapshot.records, active)
+    };
+  }
+
+  const candidates = findTrainingRecords(snapshot.records, sessionId);
+  if (candidates.length === 0) {
+    throw new Error('找不到指定训练的总结记录');
+  }
+  if (candidates.length !== 1) {
+    throw new Error('指定训练存在冲突的总结记录');
+  }
+  const record = candidates[0];
+  let source;
+  try {
+    source = terminalSourceFromRecord(record);
+  } catch (_error) {
+    throw new Error('指定训练的总结记录已损坏');
+  }
+  if (!recordMatchesTerminalFact(record, source, { requireFingerprint: true })) {
+    throw new Error('指定训练的总结记录已损坏或不匹配');
+  }
+  return { source, record };
+}
+
 class WorkoutSummaryRuntime {
   constructor({ database = createLocalDatabase(), now = Date.now } = {}) {
     this.database = database;
     this.now = now;
+    this.boundSessionId = null;
     this.sessionFingerprint = null;
   }
 
-  load() {
+  load(input) {
+    const sessionId = requireRequestedSessionId(input);
     const snapshot = this.database.load();
-    const session = snapshot.activeSession;
-    if (!session || !['completed', 'aborted'].includes(session.status)) {
-      throw new Error('没有可总结的已结束训练');
-    }
-    this.sessionFingerprint = terminalFactFingerprint(session);
-    const existing = findBoundRecord(snapshot.records, session, this.sessionFingerprint);
+    const { source, record } = resolveSummarySource(snapshot, sessionId);
+    this.boundSessionId = sessionId;
+    this.sessionFingerprint = terminalFactFingerprint(source);
     return {
-      summary: buildWorkoutCompletionSummary(session),
-      feedback: existing
-        ? normalizeWorkoutFeedback(existing.feedback)
+      summary: buildWorkoutCompletionSummary(source),
+      feedback: record && record.feedback !== null
+        ? normalizeWorkoutFeedback(record.feedback)
         : createWorkoutFeedbackDraft(),
-      saved: Boolean(existing)
+      saved: Boolean(record && record.feedback !== null)
     };
   }
 
   saveFeedback(input) {
     const feedback = normalizeWorkoutFeedback(input);
-    const snapshot = this.database.load();
-    const session = snapshot.activeSession;
-    if (!session || !['completed', 'aborted'].includes(session.status)) {
-      throw new Error('训练尚未结束，不能保存总结反馈');
+    if (!this.boundSessionId || !this.sessionFingerprint) {
+      throw new Error('训练总结尚未绑定 sessionId，请重新打开后再保存反馈');
     }
-    if (
-      this.sessionFingerprint &&
-      terminalFactFingerprint(session) !== this.sessionFingerprint
-    ) {
+    const snapshot = this.database.load();
+    let resolved;
+    try {
+      resolved = resolveSummarySource(snapshot, this.boundSessionId);
+    } catch (_error) {
       throw new Error('训练总结已过期，请重新打开后再保存反馈');
     }
-    const fact = createWorkoutCompletionFact(session, feedback);
-    const sessionFingerprint = terminalFactFingerprint(session);
-    const savedAt = this.now();
-    const existing = findBoundRecord(snapshot.records, session, sessionFingerprint);
+    const { source, record: existing } = resolved;
+    if (terminalFactFingerprint(source) !== this.sessionFingerprint) {
+      throw new Error('训练总结已过期，请重新打开后再保存反馈');
+    }
+    const fact = createWorkoutCompletionFact(source, feedback);
+    const sessionFingerprint = terminalFactFingerprint(source);
+    const savedAt = Math.max(this.now(), existing ? existing.updatedAt : 0);
     const record = {
       ...fact,
       sourceSessionFingerprint: sessionFingerprint,
-      id: existing ? existing.id : `record_${session.id}`,
+      id: existing ? existing.id : `record_${source.id}`,
       createdAt: existing ? existing.createdAt : savedAt,
       updatedAt: savedAt,
       revision: existing ? existing.revision + 1 : 1
     };
-    if (!recordMatchesTerminalFact(record, session, sessionFingerprint)) {
+    if (!recordMatchesTerminalFact(record, source, { requireFingerprint: true })) {
       throw new Error('训练记录生成失败，请重新打开后再保存反馈');
     }
     const committed = this.database.commit((draft) => {
       if (existing === null) {
-        draft.records.push(clone(record));
-      } else {
-        const index = draft.records.findIndex(
-          (candidate) => candidate && candidate.id === existing.id
-        );
-        if (index === -1) {
+        if (findTrainingRecords(draft.records, source.id).length !== 0) {
           throw new Error('训练记录已变化，请重新打开后再保存反馈');
         }
+        draft.records.push(clone(record));
+      } else {
+        const candidates = findTrainingRecords(draft.records, source.id);
+        if (
+          candidates.length !== 1 ||
+          canonicalize(candidates[0]) !== canonicalize(existing)
+        ) {
+          throw new Error('训练记录已变化，请重新打开后再保存反馈');
+        }
+        const index = draft.records.indexOf(candidates[0]);
         draft.records[index] = clone(record);
       }
     }, snapshot.localRevision);
