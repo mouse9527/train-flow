@@ -30,8 +30,10 @@ built-in 2026 plan remains reproducible after those calendar dates have passed:
 - `pages/today/index?date=2026-08-09` — rest day with no start action.
 - `pages/today/index?date=2026-08-10` — honest no-plan state.
 
-Fixtures are read-only view inputs. They do not commit records or sessions to
-the local database.
+These query parameters are enabled only when the Mini Program environment is
+`develop`. `trial` and `release` ignore both `date` and `fixture` and render the
+real `currentTrainingDate`. Fixtures are read-only view inputs; they do not
+commit records or sessions to the local database.
 
 ## Privacy
 

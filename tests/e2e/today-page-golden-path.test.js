@@ -74,30 +74,40 @@ function withWxDouble(callback, { envVersion = 'develop' } = {}) {
   }
 }
 
-test('Today page renders repository-backed scheduled, completed, rest and empty fixtures', () => {
-  const scheduled = loadTodayPage();
-  scheduled.onLoad({ date: '2026-08-03' });
-  assert.equal(scheduled.data.view.state, 'scheduled');
-  assert.equal(scheduled.data.view.primaryAction.id, 'start');
-  assert.ok(scheduled.data.view.steps.length > 1);
+function withFrozenNow(now, callback) {
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    callback();
+  } finally {
+    Date.now = originalNow;
+  }
+}
 
+test('Today page renders repository-backed scheduled, completed, rest and empty fixtures', () => {
   withWxDouble(() => {
+    const scheduled = loadTodayPage();
+    scheduled.onLoad({ date: '2026-08-03' });
+    assert.equal(scheduled.data.view.state, 'scheduled');
+    assert.equal(scheduled.data.view.primaryAction.id, 'start');
+    assert.ok(scheduled.data.view.steps.length > 1);
+
     const completed = loadTodayPage();
     completed.onLoad({ date: '2026-08-03', fixture: 'completed' });
     assert.equal(completed.data.view.state, 'completed');
     assert.equal(completed.data.view.weekSummary.completionRate, 17);
     assert.equal(completed.data.view.completedSessionSummary.durationLabel, '34 分钟');
+
+    const rest = loadTodayPage();
+    rest.onLoad({ date: '2026-08-09' });
+    assert.equal(rest.data.view.state, 'rest');
+    assert.equal(rest.data.view.primaryAction, null);
+
+    const empty = loadTodayPage();
+    empty.onLoad({ date: '2026-08-10' });
+    assert.equal(empty.data.view.state, 'empty');
+    assert.equal(empty.data.view.steps.length, 0);
   });
-
-  const rest = loadTodayPage();
-  rest.onLoad({ date: '2026-08-09' });
-  assert.equal(rest.data.view.state, 'rest');
-  assert.equal(rest.data.view.primaryAction, null);
-
-  const empty = loadTodayPage();
-  empty.onLoad({ date: '2026-08-10' });
-  assert.equal(empty.data.view.state, 'empty');
-  assert.equal(empty.data.view.steps.length, 0);
 });
 
 test('Today page routes only the primary action supplied by TodayPlanView', () => {
@@ -172,16 +182,26 @@ test('developer fixtures are anonymous, date-selectable read models and never pe
   assert.doesNotMatch(runtimeSource, /realName|openId|weightKg|heartRate|medicalHistory/);
 });
 
-test('production env ignores user-controlled fixture query while develop env accepts it', () => {
-  withWxDouble(() => {
-    const develop = loadTodayPage();
-    develop.onLoad({ date: '2026-08-03', fixture: 'completed' });
-    assert.equal(develop.data.view.state, 'completed');
-  }, { envVersion: 'develop' });
+test('release and trial ignore user-controlled date/fixture while develop accepts it', () => {
+  const now = Date.UTC(2026, 6, 31, 0, 0, 0);
+  const query = { date: '2026-08-03', fixture: 'completed' };
 
-  withWxDouble(() => {
-    const release = loadTodayPage();
-    release.onLoad({ date: '2026-08-03', fixture: 'completed' });
-    assert.equal(release.data.view.state, 'scheduled');
-  }, { envVersion: 'release' });
+  withFrozenNow(now, () => {
+    for (const envVersion of ['release', 'trial']) {
+      withWxDouble(() => {
+        const page = loadTodayPage();
+        const { currentTrainingDate } = require('../../miniprogram/pages/today/index');
+        page.onLoad(query);
+        assert.equal(page.data.view.selectedDate, currentTrainingDate(now));
+        assert.equal(page.data.view.state, 'empty');
+      }, { envVersion });
+    }
+
+    withWxDouble(() => {
+      const develop = loadTodayPage();
+      develop.onLoad(query);
+      assert.equal(develop.data.view.selectedDate, query.date);
+      assert.equal(develop.data.view.state, 'completed');
+    }, { envVersion: 'develop' });
+  });
 });

@@ -27,10 +27,11 @@ Page({
   },
 
   onLoad(query = {}) {
+    const allowDeveloperFixtures = developerFixturesEnabled();
     this.runtime = createTodayPlanRuntime({
-      selectedDate: query.date || currentTrainingDate(),
-      fixture: query.fixture || null,
-      allowDeveloperFixtures: developerFixturesEnabled()
+      selectedDate: allowDeveloperFixtures && query.date ? query.date : currentTrainingDate(),
+      fixture: allowDeveloperFixtures ? query.fixture || null : null,
+      allowDeveloperFixtures
     });
     this.refresh();
   },
