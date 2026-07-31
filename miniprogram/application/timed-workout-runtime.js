@@ -524,9 +524,11 @@ class TimedWorkoutRuntime {
   }
 
   onHide() {
-    const view = this.checkpoint('checkpointOnHide', 'hide');
-    this.setKeepScreen(false);
-    return view;
+    try {
+      return this.checkpoint('checkpointOnHide', 'hide');
+    } finally {
+      this.setKeepScreen(false);
+    }
   }
 
   onShow() {
@@ -536,9 +538,11 @@ class TimedWorkoutRuntime {
   }
 
   onUnload() {
-    const view = this.checkpoint('checkpointOnUnload', 'unload');
-    this.setKeepScreen(false);
-    return view;
+    try {
+      return this.checkpoint('checkpointOnUnload', 'unload');
+    } finally {
+      this.setKeepScreen(false);
+    }
   }
 
   materializeDeadline() {
