@@ -100,3 +100,63 @@ test('Attack: stale summary submit after active Session replacement — reject i
   );
   assert.ok(saveError, 'stale summary runtime must reject after the active Session identity changes');
 });
+
+test('Attack: terminal Session identity/revision ABA — reject same-id same-revision replacement with different terminal fact', () => {
+  const sharedSessionId = 'session_spar_summary_aba';
+  const completed = terminalSession({
+    id: sharedSessionId,
+    status: 'completed',
+    plan: manualPlan('plan_spar_summary_aba_a', '2026-08-22'),
+    endedAt: START_AT + 60_000
+  });
+  const abortedReplacement = terminalSession({
+    id: sharedSessionId,
+    status: 'aborted',
+    plan: manualPlan('plan_spar_summary_aba_b', '2026-08-23'),
+    endedAt: START_AT + 90_000
+  });
+  assert.equal(completed.sessionRevision, abortedReplacement.sessionRevision);
+  assert.notEqual(completed.status, abortedReplacement.status);
+  assert.notEqual(completed.endedAt, abortedReplacement.endedAt);
+
+  const database = createLocalDatabase({
+    storage: new StorageDouble(),
+    now: () => START_AT + 100_000
+  });
+  database.commit((draft) => {
+    draft.install = {
+      deviceId: 'device_spar_summary_binding',
+      createdAt: START_AT
+    };
+    draft.activeSession = clone(completed);
+  });
+
+  const runtime = createWorkoutSummaryRuntime({
+    database,
+    now: () => START_AT + 110_000
+  });
+  const loaded = runtime.load();
+  assert.equal(loaded.summary.status, 'completed');
+
+  database.commit((draft) => {
+    draft.activeSession = clone(abortedReplacement);
+  });
+
+  let saveError = null;
+  try {
+    runtime.saveFeedback({
+      rpe: 7,
+      pain: { lowerBack: true },
+      note: 'PRIVATE_FEEDBACK_FOR_COMPLETED_ABA_SESSION'
+    });
+  } catch (error) {
+    saveError = error;
+  }
+
+  assert.equal(
+    database.load().records.length,
+    0,
+    'id/revision equality must not authorize feedback persistence for a different terminal fact'
+  );
+  assert.ok(saveError, 'terminal identity ABA must be rejected as a stale summary');
+});
