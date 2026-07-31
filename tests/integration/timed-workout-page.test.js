@@ -1009,6 +1009,54 @@ test('Attack: repeated Skip taps share one pending confirmation and cannot skip 
   assert.deepEqual(calls, ['skip']);
 });
 
+test('Attack: an unloaded page invalidates pending Skip callbacks before they can mutate Session state', () => {
+  const calls = [];
+  const pendingModals = [];
+  const runtime = {
+    load() { return pageView(); },
+    onUnload() {
+      calls.push('onUnload');
+      return pageView();
+    },
+    skip() {
+      calls.push('skip');
+      return pageView();
+    }
+  };
+  const wxApi = {
+    showModal(options) { pendingModals.push(options); },
+    setKeepScreenOn() {}
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory: () => runtime,
+    getWx: () => wxApi,
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({});
+  page.onSkip();
+  assert.equal(pendingModals.length, 1);
+
+  page.onUnload();
+  pendingModals[0].success({ confirm: true, cancel: false });
+  pendingModals[0].complete();
+  assert.deepEqual(
+    calls,
+    ['onUnload'],
+    'a late modal callback from a destroyed page must not execute a destructive runtime command'
+  );
+});
+
 test('workout page declares native timer components, large timer states and thumb-safe controls', () => {
   const root = path.resolve(__dirname, '../..');
   const pageJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.json'), 'utf8'));

@@ -101,6 +101,7 @@ function createWorkoutPageDefinition({
 
     onUnload() {
       this.isVisible = false;
+      this.pendingConfirmation = null;
       this.stopRefreshLoop();
       if (this.runtime) {
         this.syncView(this.runtime.onUnload());

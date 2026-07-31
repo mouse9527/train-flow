@@ -774,3 +774,18 @@ test('Attack: restored Session rejects set-target overrides for future strength 
   );
   assert.equal(session.setTargetOverrides, undefined, 'the valid source Session remains unchanged');
 });
+
+test('Attack: restored current-step set override requires matching add/reduce command audit evidence', () => {
+  const session = startedStrengthSession();
+  const stepId = session.planSnapshot.steps[0].id;
+  const forged = clone(session);
+  forged.setTargetOverrides = { [stepId]: 3 };
+
+  assert.throws(
+    () => assertWorkoutSession(forged),
+    /setTargetOverrides|command|audit|revision/i,
+    'an override without a revisioned add/reduce command is not a reachable persisted Session'
+  );
+  assert.equal(session.sessionRevision, 1);
+  assert.equal(session.processedCommands.length, 1);
+});

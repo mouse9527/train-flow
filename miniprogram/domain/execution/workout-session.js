@@ -195,6 +195,68 @@ function assertCommandRecord(record, index) {
   assertSafeInteger(record.sessionRevision, `${label}.sessionRevision`, 1);
 }
 
+function assertSetTargetOverrideAudit(session, setTargetOverrides) {
+  const auditedOverrides = new Map();
+  for (const record of session.processedCommands) {
+    if (record.type !== 'add_set' && record.type !== 'reduce_set') {
+      continue;
+    }
+    let fingerprint;
+    try {
+      fingerprint = JSON.parse(record.fingerprint);
+    } catch (error) {
+      throw new TypeError('session set-target command audit fingerprint must be valid JSON');
+    }
+    if (
+      !fingerprint ||
+      typeof fingerprint !== 'object' ||
+      Array.isArray(fingerprint) ||
+      canonicalize(fingerprint) !== record.fingerprint
+    ) {
+      throw new TypeError('session set-target command audit fingerprint must be canonical');
+    }
+    const auditedCommand = {
+      type: fingerprint.type,
+      expectedSessionRevision: fingerprint.expectedSessionRevision,
+      commandKey: record.key,
+      nowMs: fingerprint.nowMs,
+      payload: fingerprint.payload
+    };
+    assertCommand(auditedCommand);
+    if (
+      auditedCommand.type !== record.type ||
+      auditedCommand.expectedSessionRevision !== record.sessionRevision - 1
+    ) {
+      throw new TypeError('session set-target command audit revision is inconsistent');
+    }
+    const stepId = auditedCommand.payload.stepId;
+    const step = session.planSnapshot.steps.find(({ id }) => id === stepId);
+    if (!step || step.kind !== 'strength') {
+      throw new TypeError('session set-target command audit must reference a strength step');
+    }
+    const previousTarget = auditedOverrides.has(stepId)
+      ? auditedOverrides.get(stepId)
+      : step.sets;
+    const nextTarget = record.type === 'add_set'
+      ? previousTarget + 1
+      : previousTarget - 1;
+    if (!Number.isSafeInteger(nextTarget) || nextTarget < 1) {
+      throw new TypeError('session set-target command audit produced an invalid target');
+    }
+    auditedOverrides.set(stepId, nextTarget);
+  }
+
+  const auditedStepIds = Array.from(auditedOverrides.keys()).sort();
+  const persistedStepIds = Object.keys(setTargetOverrides).sort();
+  if (
+    auditedStepIds.length !== persistedStepIds.length ||
+    auditedStepIds.some((stepId, index) => stepId !== persistedStepIds[index]) ||
+    auditedStepIds.some((stepId) => auditedOverrides.get(stepId) !== setTargetOverrides[stepId])
+  ) {
+    throw new TypeError('session.setTargetOverrides must match add/reduce command audit');
+  }
+}
+
 function assertNullableMeasurement(value, label) {
   if (value !== null && (
     typeof value !== 'number' ||
@@ -484,6 +546,7 @@ function assertWorkoutSession(session) {
   ) {
     throw new TypeError('session latest command revision must match sessionRevision');
   }
+  assertSetTargetOverrideAudit(session, setTargetOverrides);
   assertSafeInteger(session.lastCheckpointAt, 'session.lastCheckpointAt');
   if (session.lastCheckpointAt < session.startedAt) {
     throw new TypeError('session.lastCheckpointAt cannot be before startedAt');
