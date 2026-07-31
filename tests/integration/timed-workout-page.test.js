@@ -1541,6 +1541,11 @@ test('PR review: terminal keep-screen release settles before summary navigation'
         assert.equal(redirects.length, 1, 'acknowledgement should navigate exactly once');
       }
       assert.match(redirects[0].url, /\/pages\/workout\/summary\/index\?sessionId=/);
+      const modalCountAfterRedirect = modals.length;
+      page.onUnload();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(redirects.length, 1, 'redirect-triggered unload must not navigate again');
+      assert.equal(modals.length, modalCountAfterRedirect, 'redirect-triggered unload must not reopen modal');
     });
   }
 });
