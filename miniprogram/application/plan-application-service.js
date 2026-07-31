@@ -11,6 +11,7 @@ const {
 const {
   addDraftStep,
   createPlanDraft,
+  removeDraftStep,
   validatePlanDraft
 } = require('../domain/planning/plan-editor');
 const {
@@ -50,6 +51,8 @@ class PlanApplicationService {
     this.recordSummaryProvider = recordSummaryProvider;
     this.now = now;
     this.idFactory = idFactory || (({ entity }) => `${entity}_${this.now()}_${++sequence}`);
+    this.editorSessionSequence = 0;
+    this.editorSessions = new Map();
   }
 
   initializeDefaultPlans() {
@@ -117,23 +120,103 @@ class PlanApplicationService {
       deletedAt: null,
       revision: 1
     };
+    const detachedDraft = createPlanDraft(draft);
+    const editorSessionId = `editor_session_${++this.editorSessionSequence}`;
+    this.editorSessions.set(editorSessionId, {
+      planId: detachedDraft.id,
+      reservedStepIds: new Set(detachedDraft.steps.map(({ id }) => id)),
+      allowedStepIds: new Set(detachedDraft.steps.map(({ id }) => id)),
+      removedStepIds: new Set(),
+      stepKinds: new Map(detachedDraft.steps.map(({ id, kind }) => [id, kind]))
+    });
     return {
-      draft: createPlanDraft(draft),
+      editorSessionId,
+      draft: detachedDraft,
       expectedRevision: isNew ? 0 : persisted.revision,
       isNew,
       futureStartNotice: '保存后的修改仅应用于下次开始；进行中的训练保持原计划快照不变。'
     };
   }
 
-  addPlanDraftStep({ draft, kind, name }) {
-    return addDraftStep(draft, {
-      id: this.idFactory({ entity: 'step', purpose: 'editor-add', kind }),
+  requireEditorSession(editorSessionId, draft) {
+    const session = this.editorSessions.get(editorSessionId);
+    if (!session || !draft || draft.id !== session.planId) {
+      const error = new Error('Plan editor session is missing or does not match this draft');
+      error.code = 'PLAN_EDITOR_SESSION_INVALID';
+      throw error;
+    }
+    return session;
+  }
+
+  addPlanDraftStep({ editorSessionId, draft, kind, name }) {
+    const session = this.requireEditorSession(editorSessionId, draft);
+    const id = this.idFactory({ entity: 'step', purpose: 'editor-add', kind });
+    if (session.reservedStepIds.has(id)) {
+      const error = new Error(`WorkoutStep ID ${id} was already reserved in this editor session`);
+      error.code = 'PLAN_STEP_ID_REUSED';
+      throw error;
+    }
+    const step = addDraftStep(draft, {
+      id,
       kind,
       name
     });
+    session.reservedStepIds.add(id);
+    session.allowedStepIds.add(id);
+    session.stepKinds.set(id, kind);
+    return step;
   }
 
-  savePlanDraft({ draft, expectedRevision } = {}) {
+  removePlanDraftStep({ editorSessionId, draft, stepId }) {
+    const session = this.requireEditorSession(editorSessionId, draft);
+    removeDraftStep(draft, stepId);
+    session.removedStepIds.add(stepId);
+    session.allowedStepIds.delete(stepId);
+    return draft;
+  }
+
+  validateEditorStepIdentities(editorSessionId, draft) {
+    let session;
+    try {
+      session = this.requireEditorSession(editorSessionId, draft);
+    } catch (error) {
+      return {
+        ok: false,
+        code: error.code,
+        fieldErrors: { 'plan.steps': '编辑会话已失效，请重新加载计划' }
+      };
+    }
+    for (const step of draft.steps) {
+      if (session.removedStepIds.has(step.id)) {
+        return {
+          ok: false,
+          code: 'PLAN_STEP_ID_REUSED',
+          fieldErrors: { 'plan.steps': '已删除步骤的身份不能复用，请重新加载后添加新步骤' }
+        };
+      }
+      if (!session.allowedStepIds.has(step.id)) {
+        return {
+          ok: false,
+          code: 'PLAN_STEP_ID_FORGED',
+          fieldErrors: { 'plan.steps': '检测到不是由当前编辑会话生成的步骤身份，请重新加载' }
+        };
+      }
+      if (session.stepKinds.get(step.id) !== step.kind) {
+        return {
+          ok: false,
+          code: 'PLAN_STEP_ID_REUSED',
+          fieldErrors: { 'plan.steps': '步骤身份不能改作另一种动作类型，请删除后新增步骤' }
+        };
+      }
+    }
+    return { ok: true, session };
+  }
+
+  savePlanDraft({ editorSessionId, draft, expectedRevision } = {}) {
+    const identities = this.validateEditorStepIdentities(editorSessionId, draft);
+    if (!identities.ok) {
+      return identities;
+    }
     const validation = validatePlanDraft(draft);
     if (!validation.valid) {
       return {
@@ -143,9 +226,11 @@ class PlanApplicationService {
       };
     }
     try {
+      const plan = this.repository.save(createPlanDraft(draft), expectedRevision);
+      identities.session.stepKinds = new Map(plan.steps.map(({ id, kind }) => [id, kind]));
       return {
         ok: true,
-        plan: this.repository.save(createPlanDraft(draft), expectedRevision),
+        plan,
         fieldErrors: {}
       };
     } catch (error) {
@@ -184,8 +269,8 @@ class PlanApplicationService {
     const fingerprint = computeChecksum({
       command: 'copy_plan_to_date',
       sourcePlanId,
-      targetDate,
-      commandKey
+      sourceRevision: source.revision,
+      targetDate
     }).slice(0, 20);
     const copyService = createPlanCopyService({
       now: this.now,

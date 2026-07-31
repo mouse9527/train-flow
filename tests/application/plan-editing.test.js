@@ -136,29 +136,94 @@ test('new step defaults expose only fields valid for its kind', () => {
   }
 });
 
-function createRuntime() {
+function createRuntime({ idFactory = null } = {}) {
   const storage = new StorageDouble();
   const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
   const repository = createPlanRepository({ database, now: () => FIXED_NOW + 60_000 });
   const application = createPlanApplicationService({
     repository,
-    now: () => FIXED_NOW + 60_000
+    now: () => FIXED_NOW + 60_000,
+    idFactory
   });
   application.initializeDefaultPlans();
   return { storage, database, repository, application };
 }
+
+test('editor session reserves historical step IDs and rejects removed or forged identities at add and save boundaries', () => {
+  let removedId = null;
+  const runtime = createRuntime({
+    idFactory({ entity }) {
+      if (entity === 'step' && removedId) return removedId;
+      return `${entity}_editor_session_safe`;
+    }
+  });
+  const editor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+  removedId = editor.draft.steps[0].id;
+  const removed = structuredClone(editor.draft.steps[0]);
+  runtime.application.removePlanDraftStep({
+    editorSessionId: editor.editorSessionId,
+    draft: editor.draft,
+    stepId: removedId
+  });
+
+  assert.throws(
+    () => runtime.application.addPlanDraftStep({
+      editorSessionId: editor.editorSessionId,
+      draft: editor.draft,
+      kind: 'manual',
+      name: '复用身份的不同动作'
+    }),
+    (error) => error && error.code === 'PLAN_STEP_ID_REUSED'
+  );
+
+  editor.draft.steps.push({
+    ...removed,
+    order: 80,
+    kind: 'manual',
+    name: '伪造身份动作',
+    durationSeconds: null,
+    sets: 1,
+    reps: 10,
+    restSeconds: null,
+    targets: {}
+  });
+  const before = runtime.database.load();
+  runtime.storage.clearOperations();
+  const reused = runtime.application.savePlanDraft({
+    editorSessionId: editor.editorSessionId,
+    draft: editor.draft,
+    expectedRevision: editor.expectedRevision
+  });
+  assert.equal(reused.ok, false);
+  assert.equal(reused.code, 'PLAN_STEP_ID_REUSED');
+  assert.match(reused.fieldErrors['plan.steps'], /身份|重新加载/);
+  assert.deepEqual(runtime.database.load(), before);
+  assert.deepEqual(runtime.storage.operations.filter(({ type }) => type === 'write'), []);
+
+  editor.draft.steps.pop();
+  editor.draft.steps.push({ ...removed, id: 'step_forged_not_generated', order: 80 });
+  const forged = runtime.application.savePlanDraft({
+    editorSessionId: editor.editorSessionId,
+    draft: editor.draft,
+    expectedRevision: editor.expectedRevision
+  });
+  assert.equal(forged.ok, false);
+  assert.equal(forged.code, 'PLAN_STEP_ID_FORGED');
+});
 
 test('application-generated step IDs remain fresh after a draft step is deleted', () => {
   const runtime = createRuntime();
   const editor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
 
   const first = runtime.application.addPlanDraftStep({
+    editorSessionId: editor.editorSessionId,
     draft: editor.draft,
     kind: 'manual',
     name: '临时动作'
   });
   removeDraftStep(editor.draft, first.id);
   const second = runtime.application.addPlanDraftStep({
+    editorSessionId: editor.editorSessionId,
     draft: editor.draft,
     kind: 'manual',
     name: '新的动作'
@@ -191,6 +256,7 @@ test('saving an editor draft updates the aggregate but leaves an active Session 
   });
 
   const result = runtime.application.savePlanDraft({
+    editorSessionId: editor.editorSessionId,
     draft: editor.draft,
     expectedRevision: editor.expectedRevision
   });
@@ -215,6 +281,7 @@ test('invalid and stale drafts return field errors with zero partial writes', ()
   runtime.storage.clearOperations();
 
   const invalid = runtime.application.savePlanDraft({
+    editorSessionId: editor.editorSessionId,
     draft: editor.draft,
     expectedRevision: editor.expectedRevision
   });
@@ -234,6 +301,7 @@ test('invalid and stale drafts return field errors with zero partial writes', ()
   freshEditor.draft.title = '过期窗口覆盖';
 
   const stale = runtime.application.savePlanDraft({
+    editorSessionId: freshEditor.editorSessionId,
     draft: freshEditor.draft,
     expectedRevision: freshEditor.expectedRevision
   });
@@ -255,6 +323,7 @@ test('an empty date gets a valid custom draft and persists with expected revisio
   assert.equal(editor.draft.steps.length, 1);
   editor.draft.title = '周一自定义训练';
   const saved = runtime.application.savePlanDraft({
+    editorSessionId: editor.editorSessionId,
     draft: editor.draft,
     expectedRevision: editor.expectedRevision
   });
@@ -346,4 +415,69 @@ test('copy-to-existing-date requires confirmation and its exact expected revisio
   assert.equal(replayed.replayed, true);
   assert.equal(replayed.plan.id, replaced.plan.id);
   assert.equal(runtime.repository.findRange(target.trainingDate, target.trainingDate).length, 1);
+});
+
+test('different dialog tap keys still replay one stable source-revision to target-date copy intent', () => {
+  const runtime = createRuntime();
+  const source = runtime.repository.findByDate('2026-08-03');
+  const target = runtime.repository.findByDate('2026-08-04');
+  const beforeRevision = runtime.database.load().localRevision;
+
+  const first = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'dialog-tap-1',
+    confirmReplace: true,
+    expectedTargetRevision: target.revision
+  });
+  const second = runtime.application.copyPlanToDate({
+    sourcePlanId: source.id,
+    targetDate: target.trainingDate,
+    commandKey: 'dialog-tap-2',
+    confirmReplace: true,
+    expectedTargetRevision: first.plan.revision
+  });
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(second.replayed, true);
+  assert.equal(second.plan.id, first.plan.id);
+  assert.equal(runtime.database.load().localRevision, beforeRevision + 1);
+  assert.equal(runtime.repository.findRange(target.trainingDate, target.trainingDate).length, 1);
+});
+
+test('a newer source revision creates a new copy intent and can explicitly refresh the same target date', () => {
+  const runtime = createRuntime();
+  const sourceV1 = runtime.repository.findByDate('2026-08-03');
+  const target = runtime.repository.findByDate('2026-08-04');
+  const first = runtime.application.copyPlanToDate({
+    sourcePlanId: sourceV1.id,
+    targetDate: target.trainingDate,
+    commandKey: 'source-v1-copy',
+    confirmReplace: true,
+    expectedTargetRevision: target.revision
+  });
+  const sourceV2 = runtime.repository.save({
+    ...runtime.repository.findById(sourceV1.id),
+    title: '来源计划 revision 2'
+  }, sourceV1.revision);
+
+  const needsRefreshConfirmation = runtime.application.copyPlanToDate({
+    sourcePlanId: sourceV2.id,
+    targetDate: target.trainingDate,
+    commandKey: 'source-v2-copy'
+  });
+  assert.equal(needsRefreshConfirmation.code, 'PLAN_REPLACE_CONFIRMATION_REQUIRED');
+
+  const refreshed = runtime.application.copyPlanToDate({
+    sourcePlanId: sourceV2.id,
+    targetDate: target.trainingDate,
+    commandKey: 'source-v2-copy-confirm',
+    confirmReplace: true,
+    expectedTargetRevision: needsRefreshConfirmation.targetRevision
+  });
+  assert.equal(refreshed.ok, true);
+  assert.notEqual(refreshed.plan.id, first.plan.id);
+  assert.equal(refreshed.plan.title, '来源计划 revision 2');
+  assert.equal(runtime.repository.findByDate(target.trainingDate).id, refreshed.plan.id);
 });

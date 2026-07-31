@@ -3,7 +3,6 @@ const {
 } = require('../../../application/plan-application-service');
 const {
   moveDraftStep,
-  removeDraftStep,
   updateDraftStep
 } = require('../../../domain/planning/plan-editor');
 const {
@@ -70,6 +69,7 @@ function stepView(step, index, fieldErrors) {
 Page({
   data: {
     draft: null,
+    editorSessionId: null,
     stepViews: [],
     expectedRevision: 0,
     isNew: false,
@@ -100,6 +100,7 @@ Page({
     });
     this.setData({
       draft: editor.draft,
+      editorSessionId: editor.editorSessionId,
       expectedRevision: editor.expectedRevision,
       isNew: editor.isNew,
       futureStartNotice: editor.futureStartNotice,
@@ -176,7 +177,11 @@ Page({
   },
 
   onDeleteStep(event) {
-    removeDraftStep(this.data.draft, event.currentTarget.dataset.stepId);
+    application.removePlanDraftStep({
+      editorSessionId: this.data.editorSessionId,
+      draft: this.data.draft,
+      stepId: event.currentTarget.dataset.stepId
+    });
     this.setData({ draft: this.data.draft, saveState: 'idle' });
     this.refreshViews({});
   },
@@ -188,6 +193,7 @@ Page({
   onAddStep() {
     const kind = STEP_KINDS[this.data.addKindIndex];
     application.addPlanDraftStep({
+      editorSessionId: this.data.editorSessionId,
       draft: this.data.draft,
       kind,
       name: STEP_KIND_LABELS[this.data.addKindIndex] + '步骤'
@@ -198,6 +204,7 @@ Page({
 
   onSave() {
     const result = application.savePlanDraft({
+      editorSessionId: this.data.editorSessionId,
       draft: this.data.draft,
       expectedRevision: this.data.expectedRevision
     });
