@@ -5,16 +5,34 @@ const {
   normalizeWorkoutFeedback
 } = require('./workout-application-service');
 const { createLocalDatabase } = require('../services/local-database');
+const { computeChecksum } = require('../utils/checksum');
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function terminalSessionFingerprint(session) {
+  return computeChecksum({
+    id: session.id,
+    sessionRevision: session.sessionRevision,
+    planId: session.planId,
+    planRevision: session.planRevision,
+    planSnapshot: session.planSnapshot,
+    trainingDate: session.trainingDate,
+    timezone: session.timezone,
+    status: session.status,
+    startedAt: session.startedAt,
+    endedAt: session.endedAt,
+    elapsedActiveSeconds: session.elapsedActiveSeconds,
+    stepResults: session.stepResults
+  });
 }
 
 class WorkoutSummaryRuntime {
   constructor({ database = createLocalDatabase(), now = Date.now } = {}) {
     this.database = database;
     this.now = now;
-    this.session = null;
+    this.sessionFingerprint = null;
   }
 
   load() {
@@ -23,7 +41,7 @@ class WorkoutSummaryRuntime {
     if (!session || !['completed', 'aborted'].includes(session.status)) {
       throw new Error('没有可总结的已结束训练');
     }
-    this.session = clone(session);
+    this.sessionFingerprint = terminalSessionFingerprint(session);
     const existing = snapshot.records.find(
       (record) => record && record.sourceSessionId === session.id
     );
@@ -44,8 +62,8 @@ class WorkoutSummaryRuntime {
       throw new Error('训练尚未结束，不能保存总结反馈');
     }
     if (
-      this.session &&
-      (session.id !== this.session.id || session.sessionRevision !== this.session.sessionRevision)
+      this.sessionFingerprint &&
+      terminalSessionFingerprint(session) !== this.sessionFingerprint
     ) {
       throw new Error('训练总结已过期，请重新打开后再保存反馈');
     }
