@@ -32,11 +32,35 @@ const { StorageDouble, clone } = require('../helpers/storage-double');
 
 const START_AT = 1785717300000;
 const PAIN_FIELDS = ['knee', 'lowerBack', 'ankleOrToe', 'dizziness'];
-const COMMON_CONSOLE_METHODS = ['log', 'error', 'warn', 'info', 'debug', 'trace', 'dir', 'table'];
+const OUTPUT_CONSOLE_METHODS = Object.freeze([
+  'assert',
+  'count',
+  'countReset',
+  'debug',
+  'dir',
+  'dirxml',
+  'error',
+  'group',
+  'groupCollapsed',
+  'info',
+  'log',
+  'profile',
+  'profileEnd',
+  'table',
+  'time',
+  'timeEnd',
+  'timeLog',
+  'timeStamp',
+  'trace',
+  'warn'
+]);
 
 function sensitiveConsoleCalls(source) {
   const calls = [];
-  const callPattern = /console\.(log|error|warn|info|debug|trace|dir|table)\s*\(([\s\S]*?)\)/gi;
+  const callPattern = new RegExp(
+    `console\\.(${OUTPUT_CONSOLE_METHODS.join('|')})\\s*\\(([\\s\\S]*?)\\)`,
+    'gi'
+  );
   for (const match of source.matchAll(callPattern)) {
     if (/feedback|rpe|pain|note|weight/i.test(match[2])) {
       calls.push(match[0]);
@@ -100,6 +124,22 @@ function pausedSkippedCompletedSession() {
     stepId: session.planSnapshot.steps[1].id
   });
   return session;
+}
+
+function mixedResultAbortedSession() {
+  const base = customPlan('manual');
+  base.steps.push(
+    { ...clone(base.steps[0]), id: 'step_adequacy_aborted_second', order: 2 },
+    { ...clone(base.steps[0]), id: 'step_adequacy_aborted_third', order: 3 }
+  );
+  let session = startSession(base, 'session_mixed_result_aborted');
+  session = transition(session, 'skip_step', START_AT + 10_000, {
+    stepId: session.planSnapshot.steps[0].id
+  });
+  session = transition(session, 'complete_step', START_AT + 30_000, {
+    stepId: session.planSnapshot.steps[1].id
+  });
+  return transition(session, 'abort', START_AT + 45_000, { reason: 'user-ended-workout' });
 }
 
 function abortedSession(id = 'session_adequacy_aborted') {
@@ -283,6 +323,31 @@ test('completed and aborted persistence materializes exactly one record with sym
     assert.equal(second.elapsedActiveSeconds, session.elapsedActiveSeconds);
     assert.equal(second.stepResults.length, session.stepResults.length);
     assert.deepEqual(second.stepResults, session.stepResults);
+  }
+});
+
+test('reloaded completed and aborted records persist symmetric terminal statistics and identity fields', () => {
+  for (const session of [pausedSkippedCompletedSession(), mixedResultAbortedSession()]) {
+    const database = databaseWithTerminal(session);
+    const runtime = createWorkoutSummaryRuntime({ database, now: () => session.endedAt + 1_000 });
+    runtime.load();
+    runtime.saveFeedback({ rpe: session.status === 'completed' ? 4 : 8 });
+
+    const reloaded = database.load();
+    assert.equal(reloaded.records.length, 1);
+    const persisted = reloaded.records[0];
+    const expected = buildWorkoutCompletionSummary(session);
+    assert.equal(persisted.sourceSessionId, session.id);
+    assert.equal(persisted.status, session.status);
+    assert.equal(persisted.eventType, session.status === 'completed'
+      ? 'WorkoutSessionCompleted'
+      : 'WorkoutSessionAborted');
+    assert.equal(persisted.elapsedActiveSeconds, expected.elapsedActiveSeconds);
+    assert.equal(persisted.completedStepCount, expected.completedStepCount);
+    assert.equal(persisted.skippedStepCount, expected.skippedStepCount);
+    assert.equal(persisted.totalStepCount, expected.totalStepCount);
+    assert.equal(persisted.revision, 1);
+    assert.deepEqual(persisted.stepResults, session.stepResults);
   }
 });
 
@@ -511,10 +576,10 @@ test('rest expiration occurrence is labeled correctly and stays deduplicated acr
 
 test('privacy remains silent across normalize, fact, save/load and device failure paths', async () => {
   const captured = [];
-  const originals = Object.fromEntries(COMMON_CONSOLE_METHODS.map(
+  const originals = Object.fromEntries(OUTPUT_CONSOLE_METHODS.map(
     (method) => [method, console[method]]
   ));
-  COMMON_CONSOLE_METHODS.forEach((method) => {
+  OUTPUT_CONSOLE_METHODS.forEach((method) => {
     console[method] = (...args) => captured.push([method, args]);
   });
   try {
@@ -549,7 +614,13 @@ test('privacy remains silent across normalize, fact, save/load and device failur
     });
     await adapter.notify({ occurrenceId: 'privacy-device-failure', visualMessage: '训练提醒' });
   } finally {
-    COMMON_CONSOLE_METHODS.forEach((method) => { console[method] = originals[method]; });
+    OUTPUT_CONSOLE_METHODS.forEach((method) => {
+      if (originals[method] === undefined) {
+        delete console[method];
+      } else {
+        console[method] = originals[method];
+      }
+    });
   }
   assert.deepEqual(captured, []);
 });
@@ -567,6 +638,9 @@ test('source privacy scan and all safety alarm flags lock positive non-diagnosti
   const root = path.resolve(__dirname, '../..');
   assert.equal(sensitiveConsoleCalls(`console.log(\n  feedback\n);`).length, 1);
   assert.equal(sensitiveConsoleCalls(`console.trace(\n  privateNote\n);`).length, 1);
+  assert.equal(sensitiveConsoleCalls(`console.assert(true,\n  pain\n);`).length, 1);
+  assert.equal(sensitiveConsoleCalls(`console.timeLog('feedback-timer',\n  weight\n);`).length, 1);
+  assert.equal(sensitiveConsoleCalls(`console.dirxml(\n  rpe\n);`).length, 1);
   const sourceFiles = [];
   function visit(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
