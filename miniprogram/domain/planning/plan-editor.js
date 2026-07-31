@@ -38,7 +38,7 @@ function estimateModeledSeconds(steps) {
       return total + (step.sets * step.reps * 5) + ((step.sets - 1) * step.restSeconds);
     }
     if (step.kind === 'manual') {
-      return total + (step.sets * step.reps * 5);
+      return total + ((step.sets ?? 1) * step.reps * 5);
     }
     if (step.kind === 'rest_day') {
       return total;

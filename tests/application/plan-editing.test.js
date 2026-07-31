@@ -147,6 +147,12 @@ test('modeled duration uses the documented formula for every WorkoutStep kind', 
   ]), 120 + (3 * 40) + (2 * 15) + (4 * 8 * 5) + (3 * 60) + (2 * 12 * 5));
 });
 
+test('modeled duration counts reps-only manual steps at five seconds per rep', () => {
+  assert.equal(estimateModeledSeconds([
+    { kind: 'manual', sets: null, reps: 10 }
+  ]), 50);
+});
+
 function createRuntime({ idFactory = null } = {}) {
   const storage = new StorageDouble();
   const database = createLocalDatabase({ storage, now: () => FIXED_NOW });
