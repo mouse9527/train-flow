@@ -275,3 +275,50 @@ test('Attack: tampered derived TrainingRecord semantics outside source fingerpri
   );
   assert.ok(loadError, 'tampered derived record semantics must fail closed');
 });
+
+test('Attack: negative TrainingRecord metadata timestamps — reject impossible ordered values instead of treating them as valid', () => {
+  const completed = terminalSession({
+    id: 'session_spar_negative_record_metadata',
+    status: 'completed',
+    plan: manualPlan('plan_spar_negative_record_metadata', '2026-08-27'),
+    endedAt: START_AT + 60_000
+  });
+  const database = createLocalDatabase({
+    storage: new StorageDouble(),
+    now: () => START_AT + 100_000
+  });
+  database.commit((draft) => {
+    draft.install = {
+      deviceId: 'device_spar_summary_binding',
+      createdAt: START_AT
+    };
+    draft.activeSession = clone(completed);
+  });
+
+  const originalRuntime = createWorkoutSummaryRuntime({
+    database,
+    now: () => START_AT + 110_000
+  });
+  originalRuntime.load();
+  originalRuntime.saveFeedback({ rpe: 5 });
+
+  database.commit((draft) => {
+    draft.records[0].createdAt = -2;
+    draft.records[0].updatedAt = -1;
+  });
+
+  let loadedState = null;
+  let loadError = null;
+  try {
+    loadedState = createWorkoutSummaryRuntime({ database }).load();
+  } catch (error) {
+    loadError = error;
+  }
+
+  assert.equal(
+    loadedState,
+    null,
+    'ordered negative metadata is still impossible and must not authorize record loading'
+  );
+  assert.ok(loadError, 'negative createdAt/updatedAt metadata must fail closed');
+});
