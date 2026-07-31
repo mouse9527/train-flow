@@ -967,6 +967,143 @@ test('page lifecycle delegates to the runtime while interval refresh never mutat
   );
 });
 
+test('PR review: page unload destroys the runtime adapter once after checkpoint success or throw', async (t) => {
+  for (const checkpointMode of ['success', 'throw']) {
+    await t.test(checkpointMode, () => {
+      const storage = new StorageDouble();
+      const database = createLocalDatabase({ storage, now: () => START_AT });
+      const plan = createDefaultPlans({ now: () => START_AT })[0];
+      database.commit((draft) => {
+        draft.install = { deviceId: `device_unload_destroy_${checkpointMode}`, createdAt: START_AT };
+        draft.plans.push(clone(plan));
+      });
+      let destroyCount = 0;
+      let sequence = 0;
+      const runtime = createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT,
+        idFactory: () => `session_unload_destroy_${checkpointMode}`,
+        commandKeyFactory: (type) => `unload_destroy_${checkpointMode}_${type}_${++sequence}`,
+        deviceAdapterFactory() {
+          return {
+            setKeepScreen() { return { supported: true }; },
+            destroy() { destroyCount += 1; }
+          };
+        }
+      });
+      const {
+        createWorkoutPageDefinition
+      } = require('../../miniprogram/pages/workout/index');
+      const definition = createWorkoutPageDefinition({
+        runtimeFactory: () => runtime,
+        getWx: () => ({}),
+        setIntervalFn: () => 1,
+        clearIntervalFn() {},
+        setTimeoutFn: () => 1,
+        clearTimeoutFn() {}
+      });
+      const page = {
+        ...definition,
+        data: clone(definition.data),
+        setData(next) { this.data = { ...this.data, ...next }; }
+      };
+      page.onLoad({ planId: plan.id });
+      if (checkpointMode === 'throw') {
+        runtime.service.checkpointOnUnload = () => {
+          throw new Error('checkpoint unload failed');
+        };
+        assert.throws(() => page.onUnload(), /checkpoint unload failed/);
+      } else {
+        page.onUnload();
+      }
+      page.onUnload();
+      assert.equal(destroyCount, 1, 'runtime/device adapter destroy must be idempotent');
+    });
+  }
+});
+
+test('PR review: repeated page unload destroys the real InnerAudioContext exactly once', async () => {
+  const storage = new StorageDouble();
+  const database = createLocalDatabase({ storage, now: () => START_AT + 60_000 });
+  const sourcePlan = createDefaultPlans({ now: () => START_AT })
+    .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+  const plan = {
+    ...clone(sourcePlan),
+    id: 'plan_audio_destroy_on_unload',
+    trainingDate: '2026-08-12',
+    templateSource: null,
+    steps: [{
+      ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+      id: 'manual_audio_destroy_on_unload',
+      order: 1
+    }]
+  };
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_audio_destroy_on_unload', createdAt: START_AT };
+    draft.settings.keepScreenOn = true;
+    draft.settings.vibrationEnabled = false;
+    draft.settings.soundEnabled = true;
+    draft.settings.voiceEnabled = false;
+    draft.plans.push(plan);
+  });
+  let audioCreateCount = 0;
+  let audioDestroyCount = 0;
+  let sequence = 0;
+  const wxApi = {
+    createInnerAudioContext() {
+      audioCreateCount += 1;
+      return {
+        src: null,
+        play() {},
+        destroy() { audioDestroyCount += 1; }
+      };
+    },
+    setKeepScreenOn({ success }) { success(); },
+    showToast({ success }) { success(); }
+  };
+  const {
+    createWorkoutPageDefinition
+  } = require('../../miniprogram/pages/workout/index');
+  const definition = createWorkoutPageDefinition({
+    runtimeFactory({ deviceAdapterFactory }) {
+      return createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT + 60_000,
+        idFactory: () => 'session_audio_destroy_on_unload',
+        commandKeyFactory: (type) => `audio_destroy_${type}_${++sequence}`,
+        deviceAdapterFactory
+      });
+    },
+    getWx: () => wxApi,
+    setIntervalFn: () => 1,
+    clearIntervalFn() {},
+    setTimeoutFn: () => 1,
+    clearTimeoutFn() {}
+  });
+  const page = {
+    ...definition,
+    data: clone(definition.data),
+    setData(next) { this.data = { ...this.data, ...next }; }
+  };
+  page.onLoad({ planId: plan.id });
+  page.onStart();
+  page.onCompleteManual({
+    currentTarget: {
+      dataset: {
+        stepId: page.data.view.step.id,
+        sessionRevision: page.data.view.sessionRevision
+      }
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(database.load().activeSession.status, 'completed');
+  assert.equal(audioCreateCount, 1);
+
+  page.onUnload();
+  page.onUnload();
+  assert.equal(audioDestroyCount, 1);
+});
+
 test('develop strength mode selects the deterministic fixture while release and planId navigation stay production-backed', () => {
   const calls = [];
   const productionRuntime = {
