@@ -220,3 +220,58 @@ test('Attack: persisted record ABA on a fresh summary runtime — reject instead
   assert.ok(loadError, 'conflicting sourceSessionId/occurrence identity must fail closed');
   assert.equal(database.load().records.length, 1, 'conflict detection must not mutate records');
 });
+
+test('Attack: tampered derived TrainingRecord semantics outside source fingerprint — reject forged event identity and counts', () => {
+  const aborted = terminalSession({
+    id: 'session_spar_record_semantics',
+    status: 'aborted',
+    plan: manualPlan('plan_spar_record_semantics', '2026-08-26'),
+    endedAt: START_AT + 90_000
+  });
+  const database = createLocalDatabase({
+    storage: new StorageDouble(),
+    now: () => START_AT + 100_000
+  });
+  database.commit((draft) => {
+    draft.install = {
+      deviceId: 'device_spar_summary_binding',
+      createdAt: START_AT
+    };
+    draft.activeSession = clone(aborted);
+  });
+
+  const originalRuntime = createWorkoutSummaryRuntime({
+    database,
+    now: () => START_AT + 110_000
+  });
+  originalRuntime.load();
+  originalRuntime.saveFeedback({ rpe: 6 });
+  const originalRecord = database.load().records[0];
+  assert.match(originalRecord.sourceSessionFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(originalRecord.eventType, 'WorkoutSessionAborted');
+
+  database.commit((draft) => {
+    const record = draft.records[0];
+    record.occurrenceId = '["workout-session-terminal","forged","completed",0]';
+    record.eventType = 'WorkoutSessionCompleted';
+    record.completedStepCount = 999;
+    record.skippedStepCount = 999;
+    record.totalStepCount = 0;
+  });
+
+  const reloadedRuntime = createWorkoutSummaryRuntime({ database });
+  let loadedState = null;
+  let loadError = null;
+  try {
+    loadedState = reloadedRuntime.load();
+  } catch (error) {
+    loadError = error;
+  }
+
+  assert.equal(
+    loadedState,
+    null,
+    'record event identity and summary counts must be proven, not trusted outside the fingerprint'
+  );
+  assert.ok(loadError, 'tampered derived record semantics must fail closed');
+});
