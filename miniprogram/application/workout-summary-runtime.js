@@ -43,6 +43,12 @@ class WorkoutSummaryRuntime {
     if (!session || !['completed', 'aborted'].includes(session.status)) {
       throw new Error('训练尚未结束，不能保存总结反馈');
     }
+    if (
+      this.session &&
+      (session.id !== this.session.id || session.sessionRevision !== this.session.sessionRevision)
+    ) {
+      throw new Error('训练总结已过期，请重新打开后再保存反馈');
+    }
     const fact = createWorkoutCompletionFact(session, feedback);
     const savedAt = this.now();
     const existingIndex = snapshot.records.findIndex(
