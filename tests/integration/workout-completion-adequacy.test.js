@@ -439,6 +439,7 @@ test('real WXML binds both terminal summaries, all feedback controls and the saf
   assert.match(markup, /summary\.status === 'completed'/);
   assert.match(markup, /训练已中止/);
   assert.match(markup, /bindinput="onRpeChange"/);
+  assert.match(markup, /RPE（1–10，必填）/);
   assert.match(markup, /bindinput="onWeightInput"/);
   assert.equal((markup.match(/bindchange="onPainChange"/g) || []).length, 4);
   assert.match(markup, /bindinput="onNoteInput"/);

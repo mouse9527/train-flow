@@ -22,8 +22,8 @@
       <text class="section-copy">以下内容属于私人训练数据，仅保存在本机。</text>
 
       <label class="field">
-        <text class="field__label">RPE（1–10，可选）</text>
-        <input class="field__input" type="number" value="{{rpe}}" placeholder="1 表示轻松，10 表示极限" bindinput="onRpeChange" />
+        <text class="field__label">RPE（1–10，必填）</text>
+        <input class="field__input" type="number" value="{{rpe}}" placeholder="必填：1 表示轻松，10 表示极限" bindinput="onRpeChange" />
       </label>
       <label class="field">
         <text class="field__label">训练前体重（kg，可选）</text>

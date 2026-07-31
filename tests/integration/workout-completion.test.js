@@ -10,6 +10,7 @@ const {
 const {
   buildWorkoutCompletionSummary,
   createWorkoutCompletionFact,
+  createWorkoutFeedbackDraft,
   normalizeWorkoutFeedback
 } = require('../../miniprogram/application/workout-application-service');
 const {
@@ -88,7 +89,7 @@ test('completed and aborted summaries preserve honest status, active duration an
   assert.equal(aborted.totalStepCount, 1);
 });
 
-test('feedback accepts explicit nullable values and rejects out-of-range or unstructured health input', () => {
+test('feedback requires RPE, accepts nullable optional values and rejects invalid health input', () => {
   assert.deepEqual(normalizeWorkoutFeedback({
     rpe: 7,
     weightBeforeKg: 62.5,
@@ -115,10 +116,10 @@ test('feedback accepts explicit nullable values and rejects out-of-range or unst
 
   assert.throws(() => normalizeWorkoutFeedback({ rpe: 0 }), /RPE.*1.*10/i);
   assert.throws(() => normalizeWorkoutFeedback({ rpe: 11 }), /RPE.*1.*10/i);
-  assert.throws(() => normalizeWorkoutFeedback({ weightBeforeKg: -1 }), /weight/i);
-  assert.throws(() => normalizeWorkoutFeedback({ weightBeforeKg: 62.55 }), /weight/i);
-  assert.throws(() => normalizeWorkoutFeedback({ pain: { customDiagnosis: true } }), /pain/i);
-  assert.throws(() => normalizeWorkoutFeedback({ note: 'x'.repeat(501) }), /note/i);
+  assert.throws(() => normalizeWorkoutFeedback({ rpe: 5, weightBeforeKg: -1 }), /weight/i);
+  assert.throws(() => normalizeWorkoutFeedback({ rpe: 5, weightBeforeKg: 62.55 }), /weight/i);
+  assert.throws(() => normalizeWorkoutFeedback({ rpe: 5, pain: { customDiagnosis: true } }), /pain/i);
+  assert.throws(() => normalizeWorkoutFeedback({ rpe: 5, note: 'x'.repeat(501) }), /note/i);
 });
 
 test('completion facts distinguish event types, carry validated feedback and are stable by occurrence', () => {
@@ -202,7 +203,7 @@ test('device notifications honor settings, deduplicate occurrences and degrade t
 });
 
 test('alarm pain selection returns stop-and-seek-help guidance without diagnosis', () => {
-  const feedback = normalizeWorkoutFeedback({ pain: { dizziness: true } });
+  const feedback = normalizeWorkoutFeedback({ rpe: 5, pain: { dizziness: true } });
   assert.equal(feedback.hasSafetyAlarm, true);
   assert.match(feedback.safetyAdvice, /停止训练/);
   assert.match(feedback.safetyAdvice, /寻求.*帮助/);
@@ -253,7 +254,7 @@ test('runtime honors keep-screen settings and releases on hide, terminal complet
   const loaded = harness.runtime.load({ planId: harness.plan.id });
   assert.notEqual(loaded.state, 'recovery-error', loaded.recoveryError && loaded.recoveryError.message);
   await Promise.resolve();
-  assert.deepEqual(harness.deviceCalls[0], ['screen', true]);
+  assert.deepEqual(harness.deviceCalls[0], ['screen', false]);
 
   harness.runtime.onHide();
   harness.runtime.onShow();
@@ -264,7 +265,7 @@ test('runtime honors keep-screen settings and releases on hide, terminal complet
 
   assert.deepEqual(
     harness.deviceCalls.filter(([kind]) => kind === 'screen').map(([, enabled]) => enabled),
-    [true, false, true, false, false]
+    [false, false, false, false, false]
   );
   const terminalNotifications = harness.deviceCalls.filter(
     ([kind, input]) => kind === 'notify' && input.kind === 'session-completed'
@@ -380,7 +381,7 @@ test('summary page exposes completed/aborted facts, validated feedback controls 
           skippedStepCount: 0,
           totalStepCount: 1
         },
-        feedback: normalizeWorkoutFeedback({}),
+        feedback: createWorkoutFeedbackDraft(),
         saved: false
       };
     },

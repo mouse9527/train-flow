@@ -3,6 +3,8 @@ const {
   createWorkoutSummaryRuntime
 } = require('../../../application/workout-summary-runtime');
 const {
+  SAFETY_ADVICE,
+  createWorkoutFeedbackDraft,
   normalizeWorkoutFeedback
 } = require('../../../application/workout-application-service');
 
@@ -49,7 +51,7 @@ function createWorkoutSummaryPageDefinition({
         : runtimeFactory();
       try {
         const state = this.runtime.load();
-        const feedback = state.feedback || normalizeWorkoutFeedback({});
+        const feedback = state.feedback || createWorkoutFeedbackDraft();
         this.setData({
           summary: state.summary,
           rpe: feedback.rpe === null ? '' : String(feedback.rpe),
@@ -82,17 +84,20 @@ function createWorkoutSummaryPageDefinition({
     },
 
     refreshSafetyAdvice() {
+      const hasSafetyAlarm = Object.values(this.data.pain).some((value) => value === true);
+      const safetyAdvice = hasSafetyAlarm ? SAFETY_ADVICE : null;
+      const safetyNotices = safetyAdvice
+        ? [safetyAdvice, '此提示不会用于诊断；症状严重或持续时，请及时寻求合适帮助。']
+        : [];
       try {
-        const feedback = normalizeWorkoutFeedback(this.feedbackInput());
+        normalizeWorkoutFeedback(this.feedbackInput());
         this.setData({
-          safetyAdvice: feedback.safetyAdvice,
-          safetyNotices: feedback.safetyAdvice
-            ? [feedback.safetyAdvice, '此提示不会用于诊断；症状严重或持续时，请及时寻求合适帮助。']
-            : [],
+          safetyAdvice,
+          safetyNotices,
           validationError: null
         });
       } catch (error) {
-        this.setData({ validationError: error.message });
+        this.setData({ safetyAdvice, safetyNotices, validationError: error.message });
       }
     },
 

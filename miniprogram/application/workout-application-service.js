@@ -16,12 +16,28 @@ function assertPlainObject(value, label) {
 
 function normalizeNullableRpe(value) {
   if (value === undefined || value === null || value === '') {
-    return null;
+    throw new TypeError('RPE is required and must be an integer between 1 and 10');
   }
   if (!Number.isSafeInteger(value) || value < 1 || value > 10) {
     throw new TypeError('RPE must be an integer between 1 and 10');
   }
   return value;
+}
+
+function createWorkoutFeedbackDraft() {
+  return {
+    rpe: null,
+    weightBeforeKg: null,
+    pain: {
+      knee: false,
+      lowerBack: false,
+      ankleOrToe: false,
+      dizziness: false
+    },
+    note: '',
+    hasSafetyAlarm: false,
+    safetyAdvice: null
+  };
 }
 
 function normalizeNullableWeight(value) {
@@ -256,5 +272,6 @@ module.exports = {
   buildWorkoutCompletionSummary,
   createWorkoutApplicationService,
   createWorkoutCompletionFact,
+  createWorkoutFeedbackDraft,
   normalizeWorkoutFeedback
 };

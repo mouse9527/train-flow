@@ -132,6 +132,31 @@ class TimedWorkoutRuntime {
     this.runDeviceEffect('keep-screen', () => this.deviceAdapter.setKeepScreen(enabled));
   }
 
+  hasStartedActivity() {
+    if (!this.session || ['completed', 'aborted'].includes(this.session.status)) {
+      return false;
+    }
+    if (this.session.activeSetStartedAt !== null && this.session.activeSetStartedAt !== undefined) {
+      return true;
+    }
+    const activityCommands = new Set([
+      'start_step',
+      'complete_step',
+      'confirm_next',
+      'confirm_next_and_start_next',
+      'early_complete_step',
+      'early_complete_step_and_start_next',
+      'skip_step',
+      'skip_step_and_start_next',
+      'previous_step',
+      'start_set',
+      'complete_set',
+      'add_set',
+      'reduce_set'
+    ]);
+    return this.session.processedCommands.some(({ type }) => activityCommands.has(type));
+  }
+
   load({ planId } = {}) {
     try {
       this.ensureService();
@@ -157,11 +182,7 @@ class TimedWorkoutRuntime {
       } else {
         throw new Error('没有可恢复的训练，请从今日训练重新开始');
       }
-      if (this.session.status === 'completed' || this.session.status === 'aborted') {
-        this.setKeepScreen(false);
-      } else {
-        this.setKeepScreen(true);
-      }
+      this.setKeepScreen(this.hasStartedActivity());
       return this.render();
     } catch (error) {
       this.lastError = error;
@@ -387,6 +408,8 @@ class TimedWorkoutRuntime {
     this.session = applied.session;
     if (this.session.status === 'completed' || this.session.status === 'aborted') {
       this.setKeepScreen(false);
+    } else {
+      this.setKeepScreen(this.hasStartedActivity());
     }
     return this.render();
   }
@@ -501,9 +524,7 @@ class TimedWorkoutRuntime {
 
   onShow() {
     const view = this.checkpoint('restoreOnShow', 'show');
-    if (this.session && !['completed', 'aborted'].includes(this.session.status)) {
-      this.setKeepScreen(true);
-    }
+    this.setKeepScreen(this.hasStartedActivity());
     return view;
   }
 

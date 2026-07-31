@@ -1,6 +1,7 @@
 const {
   buildWorkoutCompletionSummary,
   createWorkoutCompletionFact,
+  createWorkoutFeedbackDraft,
   normalizeWorkoutFeedback
 } = require('./workout-application-service');
 const { createLocalDatabase } = require('../services/local-database');
@@ -30,7 +31,7 @@ class WorkoutSummaryRuntime {
       summary: buildWorkoutCompletionSummary(session),
       feedback: existing
         ? normalizeWorkoutFeedback(existing.feedback)
-        : normalizeWorkoutFeedback({}),
+        : createWorkoutFeedbackDraft(),
       saved: Boolean(existing)
     };
   }
