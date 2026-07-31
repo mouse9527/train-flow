@@ -488,6 +488,37 @@ test('keep-screen stays off before step start, follows settings after start, and
   await Promise.resolve();
 });
 
+test('hide and unload release keep-screen even when their checkpoint throws synchronously', () => {
+  for (const [lifecycleMethod, checkpointMethod] of [
+    ['onHide', 'checkpointOnHide'],
+    ['onUnload', 'checkpointOnUnload']
+  ]) {
+    const plan = customPlan('timed');
+    const calls = [];
+    const runtime = createTimedWorkoutRuntime({
+      database: databaseWithPlan(plan),
+      now: () => START_AT,
+      idFactory: () => `session_release_after_${lifecycleMethod}`,
+      commandKeyFactory: (type) => `release_after_${lifecycleMethod}_${type}`,
+      deviceAdapterFactory() {
+        return {
+          setKeepScreen(enabled) { calls.push(enabled); return { supported: true }; },
+          notify() { return Promise.resolve({ delivered: true }); }
+        };
+      }
+    });
+    runtime.load({ planId: plan.id });
+    runtime.start();
+    assert.equal(calls.at(-1), true, `${lifecycleMethod} precondition`);
+    runtime.service[checkpointMethod] = () => {
+      throw new Error(`${checkpointMethod} failed`);
+    };
+
+    assert.throws(() => runtime[lifecycleMethod](), new RegExp(`${checkpointMethod} failed`));
+    assert.equal(calls.at(-1), false, `${lifecycleMethod} must release in finally`);
+  }
+});
+
 test('keepScreenOn false never requests true even after load and actual workout start', () => {
   const plan = customPlan('timed');
   const calls = [];
