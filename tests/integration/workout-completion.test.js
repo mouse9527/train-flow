@@ -94,7 +94,9 @@ test('feedback accepts explicit nullable values and rejects out-of-range or unst
       ankleOrToe: false,
       dizziness: true
     },
-    note: '训练后感觉偏累'
+    note: '训练后感觉偏累',
+    hasSafetyAlarm: true,
+    safetyAdvice: '请立即停止训练，并根据症状严重程度寻求专业医疗或紧急帮助。'
   });
 
   assert.throws(() => normalizeWorkoutFeedback({ rpe: 0 }), /RPE.*1.*10/i);
