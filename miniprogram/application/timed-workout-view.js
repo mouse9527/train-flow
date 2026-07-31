@@ -167,7 +167,7 @@ function buildTimedWorkoutView(session, {
       resume: control('继续', state !== 'paused'),
       confirmClock: control('确认时间后继续', !requiresConfirmation, 'primary'),
       previous: control('上一步', !(
-        canProgress &&
+        canAlternativeProgress &&
         previousStep &&
         previousStep.kind !== 'strength' &&
         previousStep.kind !== 'interval'

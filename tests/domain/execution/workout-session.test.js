@@ -339,6 +339,135 @@ test('expired timed step rejects conflicting progression and only confirm_next m
   assert.equal(confirmed.stepResults[0].status, 'completed');
 });
 
+test('expired interval step rejects ordinary completion and confirm_next owns the set boundary', () => {
+  const session = startedSession(intervalPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    session,
+    command('start_step', 1, 'interval_expired_start', NOW, { stepId })
+  ).session;
+  const expired = applyWorkoutCommand(
+    running,
+    command('checkpoint', 2, 'interval_expired_checkpoint', running.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+  const beforeRejected = structuredClone(expired);
+
+  assert.equal(expired.currentSet, 1);
+  assert.equal(expired.timer.mode, 'step');
+  assert.equal(expired.timer.status, 'expired');
+  assert.throws(
+    () => applyWorkoutCommand(
+      expired,
+      command('complete_step', 3, 'interval_expired_ordinary_complete', expired.lastCheckpointAt, {
+        stepId
+      })
+    ),
+    (error) => error && error.code === 'SESSION_CONFIRM_NEXT_REQUIRED'
+  );
+  assert.deepEqual(expired, beforeRejected);
+  assert.equal(expired.sessionRevision, 3);
+
+  const confirmed = applyWorkoutCommand(
+    expired,
+    command('confirm_next', 3, 'interval_expired_confirm', expired.lastCheckpointAt, { stepId })
+  ).session;
+  assert.equal(confirmed.sessionRevision, 4);
+  assert.equal(confirmed.currentSet, 2);
+  assert.equal(confirmed.timer.mode, 'rest');
+  assert.equal(confirmed.timer.status, 'running');
+  assert.equal(confirmed.stepResults[0].setResults.length, 1);
+});
+
+test('expired step rejects previous correction and preserves the current occurrence boundary', () => {
+  const base = startedSession(timedPlan());
+  const firstStepId = base.planSnapshot.steps[0].id;
+  const firstRunning = applyWorkoutCommand(
+    base,
+    command('start_step', 1, 'expired_previous_first_start', NOW, { stepId: firstStepId })
+  ).session;
+  const secondReady = applyWorkoutCommand(
+    firstRunning,
+    command('early_complete_step', 2, 'expired_previous_first_complete', NOW + 1_000, {
+      stepId: firstStepId
+    })
+  ).session;
+  const secondStepId = secondReady.planSnapshot.steps[1].id;
+  const secondRunning = applyWorkoutCommand(
+    secondReady,
+    command('start_step', 3, 'expired_previous_second_start', NOW + 1_000, {
+      stepId: secondStepId
+    })
+  ).session;
+  const expired = applyWorkoutCommand(
+    secondRunning,
+    command('checkpoint', 4, 'expired_previous_checkpoint', secondRunning.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+  const beforeRejected = structuredClone(expired);
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      expired,
+      command('previous_step', 5, 'expired_previous_rejected', expired.lastCheckpointAt)
+    ),
+    (error) => error && error.code === 'SESSION_CONFIRM_NEXT_REQUIRED'
+  );
+  assert.deepEqual(expired, beforeRejected);
+  assert.equal(expired.currentStepIndex, 1);
+  assert.equal(expired.timer.status, 'expired');
+});
+
+test('expired strength rest rejects generic progression while complete_set retains explicit set intent', () => {
+  const session = startedSession(threeSetStrengthPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+  const resting = applyWorkoutCommand(
+    session,
+    command('complete_set', 1, 'strength_rest_set_one', NOW + 1_000, {
+      stepId,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+  const expired = applyWorkoutCommand(
+    resting,
+    command('checkpoint', 2, 'strength_rest_expired', resting.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+
+  for (const [type, code] of [
+    ['skip_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['early_complete_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['complete_step', 'SESSION_CONFIRM_NEXT_REQUIRED']
+  ]) {
+    assert.throws(
+      () => applyWorkoutCommand(
+        expired,
+        command(type, 3, `strength_rest_reject_${type}`, expired.lastCheckpointAt, { stepId })
+      ),
+      (error) => error && error.code === code
+    );
+  }
+
+  const secondSet = applyWorkoutCommand(
+    expired,
+    command('complete_set', 3, 'strength_rest_set_two', expired.lastCheckpointAt, {
+      stepId,
+      setNumber: 2,
+      reps: 10,
+      weightKg: 22.5
+    })
+  ).session;
+  assert.equal(secondSet.sessionRevision, 4);
+  assert.equal(secondSet.currentSet, 3);
+  assert.equal(secondSet.timer.mode, 'rest');
+  assert.equal(secondSet.timer.status, 'running');
+});
+
 test('early completion requires a started non-expired timed occurrence', () => {
   const session = startedSession(timedPlan());
   const stepId = session.planSnapshot.steps[0].id;
@@ -419,7 +548,7 @@ test('timer mode and duration must remain bound to the current PlanSnapshot step
   ).session;
   const intervalRest = applyWorkoutCommand(
     intervalStep,
-    command('complete_step', 2, 'planned_interval_rest', NOW + 60_000, {
+    command('confirm_next', 2, 'planned_interval_rest', NOW + 60_000, {
       stepId: intervalStepId
     })
   ).session;
@@ -748,7 +877,7 @@ test('set-tracking steps cannot omit a required rest boundary after the first se
   ).session;
   const intervalAfterSet = applyWorkoutCommand(
     intervalRunning,
-    command('complete_step', 2, 'required_interval_rest', NOW + 60_000, {
+    command('confirm_next', 2, 'required_interval_rest', NOW + 60_000, {
       stepId: intervalStepId
     })
   ).session;
@@ -940,7 +1069,7 @@ test('interval rest expiry starts every next set and completes the full interval
     nowMs = session.timer.expectedEndAt;
     session = applyWorkoutCommand(
       session,
-      command('complete_step', session.sessionRevision, `interval_complete_${setNumber}`, nowMs, {
+      command('confirm_next', session.sessionRevision, `interval_complete_${setNumber}`, nowMs, {
         stepId: step.id
       })
     ).session;

@@ -144,6 +144,30 @@ test('expired occurrence notification stays deduplicated after runtime and page 
   assert.equal(new Set(harness.notifications).size, 1);
 });
 
+test('expired second step disables previous and rejects correction with zero persistence', () => {
+  const harness = createHarness();
+  harness.runtime.load({ planId: harness.plans[0].id });
+  harness.runtime.start();
+  harness.setNow(START_AT + 1_000);
+  harness.runtime.earlyComplete();
+  harness.setNow(harness.runtime.session.timer.expectedEndAt);
+  const expired = harness.runtime.onShow();
+  const before = harness.database.load();
+
+  assert.equal(expired.state, 'expired-awaiting-confirmation');
+  assert.equal(expired.currentStepIndex, 1);
+  assert.equal(expired.controls.previous.disabled, true);
+  assert.throws(
+    () => harness.runtime.previous(),
+    (error) => error && error.code === 'SESSION_CONFIRM_NEXT_REQUIRED'
+  );
+  const after = harness.database.load();
+  assert.equal(after.localRevision, before.localRevision);
+  assert.equal(after.activeSession.sessionRevision, before.activeSession.sessionRevision);
+  assert.equal(after.activeSession.currentStepIndex, 1);
+  assert.equal(after.activeSession.timer.status, 'expired');
+});
+
 test('skip, early complete and confirm next each persist one atomic revision with next timer started', () => {
   const scenarios = [
     {

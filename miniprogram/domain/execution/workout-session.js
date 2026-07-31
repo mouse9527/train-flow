@@ -647,6 +647,7 @@ function applyTransition(session, command, timerEngine) {
   const transitionNowMs = confirmsClockAnomaly
     ? command.nowMs
     : Math.max(command.nowMs, session.lastCheckpointAt);
+  const hasExpiredTimer = session.timer !== null && session.timer.status === 'expired';
 
   if (command.type === 'checkpoint') {
     return;
@@ -719,6 +720,12 @@ function applyTransition(session, command, timerEngine) {
     return;
   }
   if (command.type === 'previous_step') {
+    if (hasExpiredTimer) {
+      throw createSessionError(
+        'Expired step requires explicit next confirmation before correction',
+        'SESSION_CONFIRM_NEXT_REQUIRED'
+      );
+    }
     if (session.currentStepIndex === 0) {
       throw createSessionError('Session is already at the first step', 'SESSION_PREVIOUS_UNAVAILABLE');
     }
@@ -767,9 +774,7 @@ function applyTransition(session, command, timerEngine) {
     return;
   }
   if (
-    session.timer !== null &&
-    session.timer.mode === 'step' &&
-    session.timer.status === 'expired' &&
+    hasExpiredTimer &&
     (progressionType === 'skip_step' || progressionType === 'early_complete_step')
   ) {
     throw createSessionError(
@@ -777,7 +782,10 @@ function applyTransition(session, command, timerEngine) {
       'SESSION_EXPIRED_CONFIRMATION_REQUIRED'
     );
   }
-  if (progressionType === 'complete_step' && step.kind === 'timed') {
+  if (
+    progressionType === 'complete_step' &&
+    (step.kind === 'timed' || hasExpiredTimer)
+  ) {
     throw createSessionError(
       'Timed step completion requires confirm_next',
       'SESSION_CONFIRM_NEXT_REQUIRED'
