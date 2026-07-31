@@ -1,4 +1,4 @@
-function createAudioService({ wxApi, source = '/assets/workout-notification.mp3' } = {}) {
+function createAudioService({ wxApi, source = '/assets/workout-notification.m4a' } = {}) {
   let context = null;
 
   function ensureContext() {
