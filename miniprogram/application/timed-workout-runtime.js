@@ -124,16 +124,62 @@ class TimedWorkoutRuntime {
       this.notifiedOccurrences.add(occurrenceId);
       return;
     }
-    this.database.commit((draft) => {
-      if (!draft.notifications) {
-        draft.notifications = { expiredOccurrences: [] };
+    const pendingOccurrences = snapshot.notifications &&
+      Array.isArray(snapshot.notifications.pendingExpiredOccurrences)
+      ? snapshot.notifications.pendingExpiredOccurrences
+      : [];
+    if (!pendingOccurrences.includes(occurrenceId)) {
+      try {
+        this.database.commit((draft) => {
+          if (!draft.notifications) {
+            draft.notifications = {
+              expiredOccurrences: [],
+              pendingExpiredOccurrences: []
+            };
+          }
+          if (!Array.isArray(draft.notifications.pendingExpiredOccurrences)) {
+            draft.notifications.pendingExpiredOccurrences = [];
+          }
+          if (!draft.notifications.pendingExpiredOccurrences.includes(occurrenceId)) {
+            draft.notifications.pendingExpiredOccurrences.push(occurrenceId);
+          }
+        }, snapshot.localRevision);
+      } catch (error) {
+        return;
       }
-      if (!draft.notifications.expiredOccurrences.includes(occurrenceId)) {
-        draft.notifications.expiredOccurrences.push(occurrenceId);
-      }
-    }, snapshot.localRevision);
+    }
+
+    try {
+      this.notifyExpired(occurrenceId);
+    } catch (error) {
+      return;
+    }
     this.notifiedOccurrences.add(occurrenceId);
-    this.notifyExpired(occurrenceId);
+
+    try {
+      const deliverySnapshot = this.database.load();
+      this.database.commit((draft) => {
+        if (!draft.notifications) {
+          draft.notifications = {
+            expiredOccurrences: [],
+            pendingExpiredOccurrences: []
+          };
+        }
+        if (!Array.isArray(draft.notifications.pendingExpiredOccurrences)) {
+          draft.notifications.pendingExpiredOccurrences = [];
+        }
+        draft.notifications.pendingExpiredOccurrences =
+          draft.notifications.pendingExpiredOccurrences.filter(
+            (pendingOccurrenceId) => pendingOccurrenceId !== occurrenceId
+          );
+        if (!draft.notifications.expiredOccurrences.includes(occurrenceId)) {
+          draft.notifications.expiredOccurrences.push(occurrenceId);
+        }
+      }, deliverySnapshot.localRevision);
+    } catch (error) {
+      // The external notification already succeeded. A later runtime can reconcile
+      // any still-pending durable state without suppressing the current view.
+    }
   }
 
   execute(type, payload = {}) {

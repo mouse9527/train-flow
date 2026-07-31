@@ -20,6 +20,21 @@ function assertNonNegativeInteger(value, label) {
   }
 }
 
+function assertUniqueStringArray(value, label) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+  const invalidValue = value.find(
+    (entry) => typeof entry !== 'string' || entry.length === 0
+  );
+  if (invalidValue !== undefined) {
+    throw new Error(`${label} must contain non-empty strings`);
+  }
+  if (new Set(value).size !== value.length) {
+    throw new Error(`${label} must be unique`);
+  }
+}
+
 function createValidationError(message, code) {
   const error = new Error(message);
   error.code = code;
@@ -149,20 +164,15 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   }
   if (snapshot.notifications !== undefined) {
     assertPlainObject(snapshot.notifications, 'notifications');
-    if (!Array.isArray(snapshot.notifications.expiredOccurrences)) {
-      throw new Error('notifications.expiredOccurrences must be an array');
-    }
-    const invalidOccurrence = snapshot.notifications.expiredOccurrences.find(
-      (occurrenceId) => typeof occurrenceId !== 'string' || occurrenceId.length === 0
+    assertUniqueStringArray(
+      snapshot.notifications.expiredOccurrences,
+      'notifications.expiredOccurrences'
     );
-    if (invalidOccurrence !== undefined) {
-      throw new Error('notifications.expiredOccurrences must contain non-empty strings');
-    }
-    if (
-      new Set(snapshot.notifications.expiredOccurrences).size !==
-      snapshot.notifications.expiredOccurrences.length
-    ) {
-      throw new Error('notifications.expiredOccurrences must be unique');
+    if (snapshot.notifications.pendingExpiredOccurrences !== undefined) {
+      assertUniqueStringArray(
+        snapshot.notifications.pendingExpiredOccurrences,
+        'notifications.pendingExpiredOccurrences'
+      );
     }
   }
   assertPlainObject(snapshot.statisticsProjection, 'statisticsProjection');

@@ -144,6 +144,79 @@ test('expired occurrence notification stays deduplicated after runtime and page 
   assert.equal(new Set(harness.notifications).size, 1);
 });
 
+test('notification claim pointer failure stays retryable and rebuild delivers the occurrence', () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const innerDatabase = createLocalDatabase({ storage, now: () => clock });
+  const plans = createDefaultPlans({ now: () => START_AT });
+  innerDatabase.commit((draft) => {
+    draft.install = { deviceId: 'device_notification_pointer_failure', createdAt: START_AT };
+    draft.plans.push(...clone(plans));
+  });
+
+  let failNotificationPointer = true;
+  const database = {
+    load() {
+      return innerDatabase.load();
+    },
+    commit(mutator, expectedRevision) {
+      const before = innerDatabase.load();
+      const preview = clone(before);
+      mutator(preview);
+      if (
+        failNotificationPointer &&
+        JSON.stringify(preview.notifications) !== JSON.stringify(before.notifications)
+      ) {
+        failNotificationPointer = false;
+        storage.failNextWrite(
+          'train_flow:v1:db:active',
+          new Error('notification pointer write unavailable')
+        );
+      }
+      return innerDatabase.commit(mutator, expectedRevision);
+    }
+  };
+  const delivered = [];
+  let firstSequence = 0;
+  const first = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_notification_pointer_failure',
+    commandKeyFactory: (type) => `notification_first_${type}_${++firstSequence}`,
+    notifyExpired: (occurrenceId) => delivered.push(occurrenceId)
+  });
+  first.load({ planId: plans[0].id });
+  first.start();
+  clock = START_AT + 6 * 60_000;
+
+  const expired = first.onShow();
+  assert.equal(expired.state, 'expired-awaiting-confirmation');
+  assert.equal(delivered.length, 0, 'ambiguous claim commit must not send before takeover');
+  const ambiguous = innerDatabase.load();
+  assert.deepEqual(
+    ambiguous.notifications.expiredOccurrences,
+    [],
+    'a claim cannot be persisted as a terminal delivered occurrence'
+  );
+
+  let rebuiltSequence = 0;
+  const rebuilt = createTimedWorkoutRuntime({
+    database: createLocalDatabase({ storage, now: () => clock + 1_000 }),
+    now: () => clock + 1_000,
+    idFactory: () => 'must_restore_notification_pointer_failure',
+    commandKeyFactory: (type) => `notification_rebuilt_${type}_${++rebuiltSequence}`,
+    notifyExpired: (occurrenceId) => delivered.push(occurrenceId)
+  });
+  const restored = rebuilt.load({});
+  assert.equal(restored.state, 'expired-awaiting-confirmation');
+  assert.equal(delivered.length, 1);
+  const finalSnapshot = rebuilt.database.load();
+  assert.deepEqual(finalSnapshot.notifications.expiredOccurrences, delivered);
+
+  rebuilt.render();
+  assert.equal(delivered.length, 1, 'confirmed delivery must stay deduplicated');
+});
+
 test('expired second step disables previous and rejects correction with zero persistence', () => {
   const harness = createHarness();
   harness.runtime.load({ planId: harness.plans[0].id });
