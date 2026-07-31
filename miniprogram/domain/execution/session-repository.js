@@ -6,7 +6,8 @@ const {
   createWorkoutSession
 } = require('./workout-session');
 const {
-  ensureTerminalTrainingRecord
+  ensureTerminalTrainingRecord,
+  findTrainingRecords
 } = require('./training-record');
 
 function assertDatabase(database) {
@@ -17,6 +18,15 @@ function assertDatabase(database) {
 
 function isTerminal(session) {
   return session.status === 'completed' || session.status === 'aborted';
+}
+
+function assertSessionIdAvailable(records, sessionId) {
+  if (findTrainingRecords(records, sessionId).length > 0) {
+    throw createSessionError(
+      'Session ID is already reserved by a historical TrainingRecord',
+      'SESSION_ID_REUSED'
+    );
+  }
 }
 
 class SessionRepository {
@@ -68,6 +78,7 @@ class SessionRepository {
         }
         ensureTerminalTrainingRecord(draft.records, draft.activeSession);
       }
+      assertSessionIdAvailable(draft.records, candidate.id);
       draft.activeSession = cloneWorkoutSession(candidate);
     }, snapshot.localRevision);
     assertWorkoutSession(committed.activeSession);
