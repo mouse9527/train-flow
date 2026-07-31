@@ -110,10 +110,22 @@ function createWorkoutPageDefinition({
 
     onUnload() {
       this.isVisible = false;
+      this.pageUnloaded = true;
       this.pendingConfirmation = null;
+      this.summaryNavigationPending = false;
       this.stopRefreshLoop();
-      if (this.runtime) {
-        this.syncView(this.runtime.onUnload());
+      const runtime = this.runtime;
+      try {
+        if (runtime) {
+          this.syncView(runtime.onUnload());
+        }
+      } finally {
+        if (runtime && typeof runtime.destroy === 'function') {
+          runtime.destroy();
+        }
+        if (this.runtime === runtime) {
+          this.runtime = null;
+        }
       }
     },
 

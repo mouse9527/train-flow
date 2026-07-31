@@ -30,6 +30,7 @@ function callWxApi(wxApi, methodName, options = {}) {
 function createWechatDeviceAdapter({ wxApi, audioService, settings = {} } = {}) {
   const audio = audioService || createAudioService({ wxApi });
   const deliveredOccurrences = new Set();
+  let destroyed = false;
 
   async function bestEffort(effect, failures) {
     try {
@@ -85,6 +86,10 @@ function createWechatDeviceAdapter({ wxApi, audioService, settings = {} } = {}) 
     },
 
     destroy() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
       if (audio && typeof audio.destroy === 'function') {
         audio.destroy();
       }

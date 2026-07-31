@@ -57,6 +57,7 @@ class TimedWorkoutRuntime {
     this.notifyExpired = notifyExpired;
     this.deviceAdapterFactory = deviceAdapterFactory;
     this.deviceAdapter = null;
+    this.destroyed = false;
     this.settings = null;
     this.deviceNotice = null;
     this.deviceNoticePriority = 0;
@@ -582,6 +583,22 @@ class TimedWorkoutRuntime {
       return this.checkpoint('checkpointOnUnload', 'unload');
     } finally {
       this.setKeepScreen(false);
+    }
+  }
+
+  destroy() {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    const adapter = this.deviceAdapter;
+    this.deviceAdapter = null;
+    if (adapter && typeof adapter.destroy === 'function') {
+      try {
+        adapter.destroy();
+      } catch (error) {
+        // Device cleanup is best effort and must not mask lifecycle errors.
+      }
     }
   }
 

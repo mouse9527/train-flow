@@ -50,10 +50,11 @@ function createAudioService({ wxApi, source = '/assets/workout-notification.m4a'
     },
 
     destroy() {
-      if (context && typeof context.destroy === 'function') {
-        context.destroy();
-      }
+      const audio = context;
       context = null;
+      if (audio && typeof audio.destroy === 'function') {
+        audio.destroy();
+      }
     }
   };
 }
