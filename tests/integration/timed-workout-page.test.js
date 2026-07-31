@@ -1296,6 +1296,118 @@ test('Attack: repeated manual taps keep the original step and revision intent in
   assert.equal(toasts.length, 1, 'the stale second intent should fail visibly without mutating Session');
 });
 
+test('PR review: terminal keep-screen release settles before summary navigation', async (t) => {
+  for (const releaseMode of ['unsupported', 'reject', 'success']) {
+    await t.test(releaseMode, async () => {
+      const storage = new StorageDouble();
+      const database = createLocalDatabase({ storage, now: () => START_AT });
+      const sourcePlan = createDefaultPlans({ now: () => START_AT })
+        .find(({ steps }) => steps.some(({ kind }) => kind === 'manual'));
+      const plan = {
+        ...clone(sourcePlan),
+        id: `plan_terminal_release_${releaseMode}`,
+        trainingDate: '2026-08-11',
+        templateSource: null,
+        steps: [{
+          ...clone(sourcePlan.steps.find(({ kind }) => kind === 'manual')),
+          id: `manual_terminal_release_${releaseMode}`,
+          order: 1
+        }]
+      };
+      database.commit((draft) => {
+        draft.install = { deviceId: `device_terminal_release_${releaseMode}`, createdAt: START_AT };
+        draft.settings.keepScreenOn = true;
+        draft.settings.vibrationEnabled = false;
+        draft.settings.soundEnabled = false;
+        draft.settings.voiceEnabled = false;
+        draft.plans.push(plan);
+      });
+
+      let settleRelease;
+      const terminalRelease = new Promise((resolve, reject) => {
+        settleRelease = releaseMode === 'reject'
+          ? () => reject(new Error('terminal release rejected'))
+          : () => resolve({ supported: releaseMode === 'success' });
+      });
+      let falseCallCount = 0;
+      let sequence = 0;
+      const runtime = createTimedWorkoutRuntime({
+        database,
+        now: () => START_AT + 60_000,
+        idFactory: () => `session_terminal_release_${releaseMode}`,
+        commandKeyFactory: (type) => `terminal_release_${releaseMode}_${type}_${++sequence}`,
+        deviceAdapterFactory() {
+          return {
+            setKeepScreen(enabled) {
+              if (!enabled && ++falseCallCount === 2) {
+                return terminalRelease;
+              }
+              return Promise.resolve({ supported: true });
+            },
+            notify() {
+              return Promise.reject(new Error('notification must not mask release result'));
+            }
+          };
+        }
+      });
+      const modals = [];
+      const redirects = [];
+      const {
+        createWorkoutPageDefinition
+      } = require('../../miniprogram/pages/workout/index');
+      const definition = createWorkoutPageDefinition({
+        runtimeFactory: () => runtime,
+        getWx: () => ({
+          showModal(options) { modals.push(options); },
+          redirectTo(options) { redirects.push(options); }
+        }),
+        setIntervalFn: () => 1,
+        clearIntervalFn() {},
+        setTimeoutFn: () => 1,
+        clearTimeoutFn() {}
+      });
+      const page = {
+        ...definition,
+        data: clone(definition.data),
+        setData(next) { this.data = { ...this.data, ...next }; }
+      };
+      page.onLoad({ planId: plan.id });
+      page.onStart();
+      page.onCompleteManual({
+        currentTarget: {
+          dataset: {
+            stepId: page.data.view.step.id,
+            sessionRevision: page.data.view.sessionRevision
+          }
+        }
+      });
+
+      assert.equal(database.load().activeSession.status, 'completed');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(redirects.length, 0, 'terminal release must settle before redirect');
+      assert.equal(modals.length, 0, 'release result is still pending');
+
+      settleRelease();
+      await new Promise((resolve) => setImmediate(resolve));
+      if (releaseMode === 'success') {
+        assert.equal(modals.length, 0);
+        assert.equal(redirects.length, 1, 'successful release should navigate automatically');
+      } else {
+        assert.equal(redirects.length, 0, 'failed release requires acknowledgement before redirect');
+        assert.equal(modals.length, 1);
+        assert.equal(modals[0].showCancel, false);
+        assert.equal(modals[0].confirmText, '查看总结');
+        assert.match(`${modals[0].title} ${modals[0].content}`, /常亮.*(?:关闭|释放).*失败/);
+        assert.doesNotMatch(`${modals[0].title} ${modals[0].content}`, /设备提醒部分不可用/);
+        modals[0].success({ confirm: true, cancel: false });
+        modals[0].complete();
+        assert.equal(redirects.length, 1, 'acknowledgement should navigate exactly once');
+      }
+      assert.match(redirects[0].url, /\/pages\/workout\/summary\/index\?sessionId=/);
+    });
+  }
+});
+
 test('workout page declares native timer components, large timer states and thumb-safe controls', () => {
   const root = path.resolve(__dirname, '../..');
   const pageJson = JSON.parse(fs.readFileSync(path.join(root, 'miniprogram/pages/workout/index.json'), 'utf8'));
