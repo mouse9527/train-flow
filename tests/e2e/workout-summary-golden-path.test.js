@@ -43,7 +43,7 @@ test('golden path renders honest completed and aborted worked samples on the rea
   }
 });
 
-test('golden path redirects one terminal workout occurrence to summary without duplicate navigation', () => {
+test('golden path redirects one terminal workout occurrence to summary without duplicate navigation', async () => {
   const redirects = [];
   const terminalView = {
     state: 'completed',
@@ -73,6 +73,7 @@ test('golden path redirects one terminal workout occurrence to summary without d
 
   page.onLoad({});
   page.syncView(terminalView);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(redirects, [
     '/pages/workout/summary/index?sessionId=session_golden_terminal'
   ]);
