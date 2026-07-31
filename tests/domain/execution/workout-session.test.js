@@ -440,7 +440,6 @@ test('expired strength rest requires explicit start_set before completing the ne
   ).session;
 
   for (const [type, code] of [
-    ['skip_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
     ['early_complete_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
     ['complete_step', 'SESSION_CONFIRM_NEXT_REQUIRED']
   ]) {
@@ -452,6 +451,14 @@ test('expired strength rest requires explicit start_set before completing the ne
       (error) => error && error.code === code
     );
   }
+
+  const skipped = applyWorkoutCommand(
+    expired,
+    command('skip_step', 3, 'strength_rest_skip_remaining', expired.lastCheckpointAt, { stepId })
+  ).session;
+  assert.equal(skipped.status, 'completed');
+  assert.equal(skipped.stepResults[0].status, 'skipped');
+  assert.equal(skipped.stepResults[0].setResults.length, 1);
 
   assert.throws(
     () => applyWorkoutCommand(
@@ -1159,7 +1166,8 @@ test('strength set-count adjustments are revisioned and cannot remove the active
   ).session;
 
   assert.equal(initial.planSnapshot.steps[0].sets, 3, 'the input Session remains immutable');
-  assert.equal(reduced.planSnapshot.steps[0].sets, 2);
+  assert.equal(reduced.planSnapshot.steps[0].sets, 3);
+  assert.equal(reduced.setTargetOverrides[stepId], 2);
   assert.equal(reduced.sessionRevision, 2);
 
   const expanded = applyWorkoutCommand(
@@ -1167,6 +1175,7 @@ test('strength set-count adjustments are revisioned and cannot remove the active
     command('add_set', 2, 'add_future_set', NOW + 2_000, { stepId })
   ).session;
   assert.equal(expanded.planSnapshot.steps[0].sets, 3);
+  assert.equal(expanded.setTargetOverrides[stepId], 3);
   assert.equal(expanded.processedCommands.at(-1).type, 'add_set');
 
   const oneSet = startedSession(singleSetStrengthPlan());

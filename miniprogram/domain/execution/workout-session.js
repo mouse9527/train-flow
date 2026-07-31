@@ -21,6 +21,7 @@ const SESSION_FIELDS = Object.freeze([
   'elapsedRemainderMilliseconds',
   'currentStepIndex',
   'currentSet',
+  'setTargetOverrides',
   'activeSetStartedAt',
   'timer',
   'stepResults',
@@ -245,7 +246,12 @@ function assertStepResult(result, index) {
 }
 
 function assertWorkoutSession(session) {
-  assertClosedObject(session, SESSION_FIELDS, 'session', ['activeSetStartedAt']);
+  assertClosedObject(
+    session,
+    SESSION_FIELDS,
+    'session',
+    ['activeSetStartedAt', 'setTargetOverrides']
+  );
   if (session.schemaVersion !== SESSION_SCHEMA_VERSION) {
     throw new TypeError(`session.schemaVersion must equal ${SESSION_SCHEMA_VERSION}`);
   }
@@ -302,6 +308,21 @@ function assertWorkoutSession(session) {
     }
   }
   const currentStep = session.planSnapshot.steps[session.currentStepIndex] || null;
+  const setTargetOverrides = hasOwn(session, 'setTargetOverrides')
+    ? session.setTargetOverrides
+    : {};
+  assertClosedObject(
+    setTargetOverrides,
+    Object.keys(setTargetOverrides),
+    'session.setTargetOverrides'
+  );
+  for (const [stepId, targetSets] of Object.entries(setTargetOverrides)) {
+    const overriddenStep = session.planSnapshot.steps.find(({ id }) => id === stepId);
+    if (!overriddenStep || overriddenStep.kind !== 'strength') {
+      throw new TypeError('session.setTargetOverrides must reference strength PlanSnapshot steps');
+    }
+    assertSafeInteger(targetSets, `session.setTargetOverrides.${stepId}`, 1);
+  }
   if (session.timer !== null) {
     assertTimerSnapshot(session.timer);
     if (session.status === 'paused' && session.timer.status !== 'paused') {
@@ -368,15 +389,10 @@ function assertWorkoutSession(session) {
       throw new TypeError('session prior stepResults must be terminal');
     }
     const resultStep = session.planSnapshot.steps[resultIndex];
-    const isStrengthCorrectionResult =
-      !terminal &&
+    const resultTargetSets = targetSetsFor(session, resultStep);
+    const isStrengthCorrectionResult = !terminal &&
       resultIndex === session.currentStepIndex &&
-      resultStep.kind === 'strength' &&
-      result.status === 'completed' &&
-      result.setResults.length === resultStep.sets &&
-      session.currentSet === resultStep.sets &&
-      session.timer === null &&
-      activeSetStartedAt === null;
+      isStrengthCorrectionPosition(session, resultStep, result);
     if (
       session.status !== 'completed' &&
       resultIndex === session.currentStepIndex &&
@@ -390,11 +406,11 @@ function assertWorkoutSession(session) {
         throw new TypeError('session setResults setNumber values must be contiguous from 1');
       }
     });
-    if (resultStep.sets !== null && result.setResults.some(({ setNumber }) => setNumber > resultStep.sets)) {
+    if (resultTargetSets !== null && result.setResults.some(({ setNumber }) => setNumber > resultTargetSets)) {
       throw new TypeError('session setResult cannot exceed PlanSnapshot step sets');
     }
     const tracksSets = resultStep.kind === 'strength' || resultStep.kind === 'interval';
-    if (tracksSets && result.status === 'completed' && result.setResults.length !== resultStep.sets) {
+    if (tracksSets && result.status === 'completed' && result.setResults.length !== resultTargetSets) {
       throw new TypeError('completed session stepResult requires every planned set');
     }
     if (
@@ -493,10 +509,11 @@ function assertWorkoutSession(session) {
   }
   if (!terminal && currentStep) {
     const needsSet = currentStep.kind === 'strength' || currentStep.kind === 'interval';
+    const currentTargetSets = targetSetsFor(session, currentStep);
     if (needsSet !== (session.currentSet !== null)) {
       throw new TypeError('session.currentSet must match the current step kind');
     }
-    if (session.currentSet !== null && session.currentSet > currentStep.sets) {
+    if (session.currentSet !== null && session.currentSet > currentTargetSets) {
       throw new TypeError('session.currentSet cannot exceed current step sets');
     }
     if (
@@ -512,13 +529,7 @@ function assertWorkoutSession(session) {
       currentStep.restSeconds > 0 &&
       session.timer === null &&
       activeSetStartedAt === null &&
-      !session.stepResults.some(({ stepId, status, setResults }) => (
-        stepId === currentStep.id &&
-        currentStep.kind === 'strength' &&
-        status === 'completed' &&
-        setResults.length === currentStep.sets &&
-        session.currentSet === currentStep.sets
-      ))
+      !isStrengthCorrectionPosition(session, currentStep)
     ) {
       throw new TypeError('session currentSet after 1 requires its planned rest or explicit set start');
     }
@@ -605,6 +616,33 @@ function ensureStepResult(session, stepId) {
     session.stepResults.push(result);
   }
   return result;
+}
+
+function targetSetsFor(session, step) {
+  if (
+    step &&
+    step.kind === 'strength' &&
+    session.setTargetOverrides &&
+    hasOwn(session.setTargetOverrides, step.id)
+  ) {
+    return session.setTargetOverrides[step.id];
+  }
+  return step ? step.sets : null;
+}
+
+function isStrengthCorrectionPosition(session, step, result = null) {
+  const stepResult = result || (step ? findStepResult(session, step.id) : null);
+  const targetSets = targetSetsFor(session, step);
+  return Boolean(
+    step &&
+    step.kind === 'strength' &&
+    stepResult &&
+    stepResult.status === 'completed' &&
+    stepResult.setResults.length === targetSets &&
+    session.currentSet === targetSets &&
+    session.timer === null &&
+    (!hasOwn(session, 'activeSetStartedAt') || session.activeSetStartedAt === null)
+  );
 }
 
 function isCurrentStrengthSetStarted(session, step) {
@@ -792,6 +830,19 @@ function applyTransition(session, command, timerEngine) {
     return;
   }
   if (command.type === 'previous_step') {
+    const currentStrengthResult = step && step.kind === 'strength'
+      ? findStepResult(session, step.id)
+      : null;
+    if (
+      currentStrengthResult &&
+      currentStrengthResult.status === 'in_progress' &&
+      currentStrengthResult.setResults.length > 0
+    ) {
+      throw createSessionError(
+        'Partial strength execution requires completion or skip before Previous',
+        'SESSION_PREVIOUS_CORRECTION_REQUIRED'
+      );
+    }
     if (hasExpiredTimer) {
       throw createSessionError(
         'Expired step requires explicit next confirmation before correction',
@@ -817,7 +868,7 @@ function applyTransition(session, command, timerEngine) {
     session.activeSetStartedAt = null;
     session.currentStepIndex = previousIndex;
     if (previousStep.kind === 'strength') {
-      session.currentSet = previousStep.sets;
+      session.currentSet = targetSetsFor(session, previousStep);
       return;
     }
     session.currentSet = null;
@@ -867,18 +918,25 @@ function applyTransition(session, command, timerEngine) {
       );
     }
     const completedSetCount = result ? result.setResults.length : 0;
+    const targetSets = targetSetsFor(session, step);
     if (command.type === 'reduce_set') {
       const minimumSetCount = Math.max(session.currentSet, completedSetCount + 1);
-      if (step.sets <= minimumSetCount) {
+      if (targetSets <= minimumSetCount) {
         throw createSessionError(
           'Cannot remove the current or an already completed set',
           'SESSION_SET_ADJUSTMENT_INVALID'
         );
       }
-      step.sets -= 1;
+      session.setTargetOverrides = {
+        ...(session.setTargetOverrides || {}),
+        [step.id]: targetSets - 1
+      };
       return;
     }
-    step.sets += 1;
+    session.setTargetOverrides = {
+      ...(session.setTargetOverrides || {}),
+      [step.id]: targetSets + 1
+    };
     return;
   }
   if (command.type === 'start_step') {
@@ -905,7 +963,12 @@ function applyTransition(session, command, timerEngine) {
   }
   if (
     hasExpiredTimer &&
-    (progressionType === 'skip_step' || progressionType === 'early_complete_step')
+    (progressionType === 'skip_step' || progressionType === 'early_complete_step') &&
+    !(
+      progressionType === 'skip_step' &&
+      step.kind === 'strength' &&
+      session.timer.mode === 'rest'
+    )
   ) {
     throw createSessionError(
       'Expired step requires explicit next confirmation',
@@ -947,7 +1010,7 @@ function applyTransition(session, command, timerEngine) {
         throw createSessionError('Step timer must expire before completion', 'SESSION_TIMER_NOT_EXPIRED');
       }
     }
-    if (step.kind === 'interval' && session.currentSet < step.sets) {
+    if (step.kind === 'interval' && session.currentSet < targetSetsFor(session, step)) {
       const result = ensureStepResult(session, step.id);
       result.setResults.push({
         setNumber: session.currentSet,
@@ -1030,20 +1093,31 @@ function applyTransition(session, command, timerEngine) {
         'SESSION_SET_NOT_STARTED'
       );
     }
-    if (!isCurrentStrengthSetStarted(session, step)) {
+    const result = ensureStepResult(session, step.id);
+    const correction = isStrengthCorrectionPosition(session, step, result);
+    if (!correction && !isCurrentStrengthSetStarted(session, step)) {
       throw createSessionError('Current set has not been started', 'SESSION_SET_NOT_STARTED');
     }
-    const result = ensureStepResult(session, step.id);
-    if (result.setResults.some(({ setNumber }) => setNumber === command.payload.setNumber)) {
+    const existingSetIndex = result.setResults.findIndex(
+      ({ setNumber }) => setNumber === command.payload.setNumber
+    );
+    if (existingSetIndex !== -1 && !correction) {
       throw createSessionError('Set was already completed', 'SESSION_SET_ALREADY_COMPLETED');
     }
-    result.setResults.push({
+    const setResult = {
       setNumber: command.payload.setNumber,
       reps: command.payload.reps,
       weightKg: command.payload.weightKg,
       completedAt: transitionNowMs
-    });
-    if (session.currentSet === step.sets) {
+    };
+    if (correction) {
+      result.setResults[existingSetIndex] = setResult;
+      result.status = 'in_progress';
+      result.completedAt = null;
+    } else {
+      result.setResults.push(setResult);
+    }
+    if (session.currentSet === targetSetsFor(session, step)) {
       advanceAfterStep(session, step.id, transitionNowMs);
       return;
     }

@@ -90,6 +90,21 @@ function correctionPlan() {
   return plan;
 }
 
+function manualThenStrengthPlan() {
+  const plan = strengthPlan();
+  const manual = manualPlan().steps[0];
+  const strength = {
+    ...plan.steps[0],
+    order: 2,
+    sets: 2,
+    restSeconds: 30
+  };
+  plan.id = 'plan_manual_then_strength_attack';
+  plan.title = '手动后力量攻击夹具';
+  plan.steps = [{ ...manual, order: 1 }, strength];
+  return plan;
+}
+
 test('Attack: distinct-key double tap and concurrent rest expiry cannot bypass explicit start-set', () => {
   const initial = startedStrengthSession();
   const stepId = initial.planSnapshot.steps[0].id;
@@ -473,4 +488,207 @@ test('Attack: previous correction keeps completed strength sets and appends an a
   );
   assert.equal(corrected.sessionRevision, 3);
   assert.equal(corrected.processedCommands.at(-1).type, 'previous_step');
+});
+
+test('Attack: add/reduce set targets are execution overrides and never rewrite the immutable PlanSnapshot', () => {
+  const initial = startedStrengthSession();
+  const originalSnapshot = clone(initial.planSnapshot);
+  const stepId = initial.planSnapshot.steps[0].id;
+
+  const expanded = applyWorkoutCommand(
+    initial,
+    command('add_set', 1, 'execution_target_add', START_AT + 1_000, { stepId })
+  ).session;
+  assert.deepEqual(
+    expanded.planSnapshot,
+    originalSnapshot,
+    'adjusting the current execution must not rewrite its signed source-plan snapshot'
+  );
+  assert.equal(
+    buildTimedWorkoutView(expanded, { nowMs: START_AT + 1_000 }).strength.targetSets,
+    3,
+    'the execution target still reflects the added set'
+  );
+
+  const reduced = applyWorkoutCommand(
+    expanded,
+    command('reduce_set', 2, 'execution_target_reduce', START_AT + 2_000, { stepId })
+  ).session;
+  assert.deepEqual(reduced.planSnapshot, originalSnapshot);
+  assert.equal(
+    buildTimedWorkoutView(reduced, { nowMs: START_AT + 2_000 }).strength.targetSets,
+    2
+  );
+});
+
+test('Attack: skip remains an explicit escape during running or expired strength rest without losing completed sets', () => {
+  const initial = startedStrengthSession();
+  const stepId = initial.planSnapshot.steps[0].id;
+  const resting = applyWorkoutCommand(
+    initial,
+    command('complete_set', 1, 'skip_rest_complete_set_1', START_AT + 1_000, {
+      stepId,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 10
+    })
+  ).session;
+  const completedSet = clone(resting.stepResults[0].setResults);
+
+  const skippedWhileRunning = applyWorkoutCommand(
+    resting,
+    command('skip_step', 2, 'skip_running_rest', START_AT + 2_000, { stepId })
+  ).session;
+  assert.equal(skippedWhileRunning.status, 'completed');
+  assert.equal(skippedWhileRunning.stepResults[0].status, 'skipped');
+  assert.deepEqual(skippedWhileRunning.stepResults[0].setResults, completedSet);
+
+  const expired = applyWorkoutCommand(
+    resting,
+    command('checkpoint', 2, 'skip_rest_expired_checkpoint', resting.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+  const expiredView = buildTimedWorkoutView(expired, { nowMs: expired.lastCheckpointAt });
+  assert.equal(
+    expiredView.controls.skip.disabled,
+    false,
+    'rest expiry must not trap the user into starting another set or ending the workout'
+  );
+  const skippedAfterExpiry = applyWorkoutCommand(
+    expired,
+    command('skip_step', 3, 'skip_expired_rest', expired.lastCheckpointAt + 1_000, { stepId })
+  ).session;
+  assert.equal(skippedAfterExpiry.status, 'completed');
+  assert.equal(skippedAfterExpiry.stepResults[0].status, 'skipped');
+  assert.deepEqual(
+    skippedAfterExpiry.stepResults[0].setResults,
+    completedSet,
+    'skipping the remaining exercise must retain already completed set facts'
+  );
+});
+
+test('Attack: previous is safely blocked while the current strength step owns partial set/rest state', () => {
+  let session = createWorkoutSession({
+    plan: manualThenStrengthPlan(),
+    sessionId: 'session_partial_strength_previous_attack',
+    originDeviceId: 'device_partial_strength_previous_attack',
+    commandKey: 'start_partial_strength_previous_attack',
+    nowMs: START_AT
+  });
+  const manualStepId = session.planSnapshot.steps[0].id;
+  session = applyWorkoutCommand(
+    session,
+    command('complete_step', 1, 'partial_previous_manual_complete', START_AT + 1_000, {
+      stepId: manualStepId
+    })
+  ).session;
+  const strengthStepId = session.planSnapshot.steps[1].id;
+  session = applyWorkoutCommand(
+    session,
+    command('complete_set', 2, 'partial_previous_set_1_complete', START_AT + 2_000, {
+      stepId: strengthStepId,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null
+    })
+  ).session;
+
+  const resting = clone(session);
+  const restingView = buildTimedWorkoutView(resting, { nowMs: START_AT + 2_000 });
+  assert.equal(restingView.controls.previous.disabled, true);
+  assert.throws(
+    () => applyWorkoutCommand(
+      resting,
+      command('previous_step', 3, 'partial_previous_during_rest', START_AT + 3_000)
+    ),
+    (error) => error && [
+      'SESSION_PREVIOUS_UNAVAILABLE',
+      'SESSION_PREVIOUS_CORRECTION_REQUIRED'
+    ].includes(error.code),
+    'previous must fail explicitly before a partial current strength result can become a future result'
+  );
+  assert.deepEqual(session, resting, 'rejected previous during rest performs zero mutation');
+
+  const expired = applyWorkoutCommand(
+    resting,
+    command('checkpoint', 3, 'partial_previous_rest_expire', resting.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+  const activeSet = applyWorkoutCommand(
+    expired,
+    command('start_set', 4, 'partial_previous_start_set_2', expired.lastCheckpointAt + 1_000, {
+      stepId: strengthStepId,
+      setNumber: 2
+    })
+  ).session;
+  const activeView = buildTimedWorkoutView(activeSet, { nowMs: activeSet.lastCheckpointAt });
+  assert.equal(activeView.controls.previous.disabled, true);
+  const beforeActivePrevious = clone(activeSet);
+  assert.throws(
+    () => applyWorkoutCommand(
+      activeSet,
+      command('previous_step', 5, 'partial_previous_during_active_set', activeSet.lastCheckpointAt + 1_000)
+    ),
+    (error) => error && [
+      'SESSION_PREVIOUS_UNAVAILABLE',
+      'SESSION_PREVIOUS_CORRECTION_REQUIRED'
+    ].includes(error.code)
+  );
+  assert.deepEqual(activeSet, beforeActivePrevious, 'rejected previous during an active set is atomic');
+});
+
+test('Attack: reopened strength correction can replace actuals while retaining the prior command audit', () => {
+  let session = createWorkoutSession({
+    plan: correctionPlan(),
+    sessionId: 'session_strength_replacement_attack',
+    originDeviceId: 'device_strength_replacement_attack',
+    commandKey: 'start_strength_replacement_attack',
+    nowMs: START_AT
+  });
+  const stepId = session.planSnapshot.steps[0].id;
+  session = applyWorkoutCommand(
+    session,
+    command('complete_set', 1, 'strength_original_actuals', START_AT + 1_000, {
+      stepId,
+      setNumber: 1,
+      reps: 11,
+      weightKg: 12.5
+    })
+  ).session;
+  const originalFingerprint = session.processedCommands.at(-1).fingerprint;
+  session = applyWorkoutCommand(
+    session,
+    command('previous_step', 2, 'strength_reopen_for_replacement', START_AT + 2_000)
+  ).session;
+
+  const correctionView = buildTimedWorkoutView(session, { nowMs: START_AT + 2_000 });
+  assert.equal(
+    correctionView.controls.completeSet.disabled,
+    false,
+    'previous-step correction must be actionable instead of a read-only dead end'
+  );
+  const replaced = applyWorkoutCommand(
+    session,
+    command('complete_set', 3, 'strength_replaced_actuals', START_AT + 3_000, {
+      stepId,
+      setNumber: 1,
+      reps: 9,
+      weightKg: 10
+    })
+  ).session;
+
+  assert.deepEqual(replaced.stepResults[0].setResults[0], {
+    setNumber: 1,
+    reps: 9,
+    weightKg: 10,
+    completedAt: START_AT + 3_000
+  });
+  assert.equal(
+    replaced.processedCommands.some(({ fingerprint }) => fingerprint === originalFingerprint),
+    true,
+    'the prior actual values remain recoverable from the immutable command audit'
+  );
+  assert.equal(replaced.processedCommands.at(-1).type, 'complete_set');
 });

@@ -46,7 +46,7 @@ function rangeLabel(range, unit) {
     : `${decimal(range.min)}–${decimal(range.max)} ${unit}`;
 }
 
-function formatTargets(step) {
+function formatTargets(step, targetSets = step.sets) {
   const targets = step.targets || {};
   const labels = [];
   const speed = rangeLabel(targets.speedKph, 'km/h');
@@ -58,10 +58,22 @@ function formatTargets(step) {
       ? `坡度 ${targets.inclinePercent.min}%`
       : `坡度 ${targets.inclinePercent.min}–${targets.inclinePercent.max}%`);
   }
-  if (step.sets !== null) {
-    labels.push(`${step.sets} 组 × ${step.reps} 次`);
+  if (targetSets !== null) {
+    labels.push(`${targetSets} 组 × ${step.reps} 次`);
   }
   return labels.length > 0 ? labels.join(' · ') : '按舒适强度完成';
+}
+
+function targetSetsFor(session, step) {
+  if (
+    step &&
+    step.kind === 'strength' &&
+    session.setTargetOverrides &&
+    Object.prototype.hasOwnProperty.call(session.setTargetOverrides, step.id)
+  ) {
+    return session.setTargetOverrides[step.id];
+  }
+  return step ? step.sets : null;
 }
 
 function control(label, disabled, tone = 'default') {
@@ -137,6 +149,7 @@ function buildTimedWorkoutView(session, {
     ? session.stepResults.find(({ stepId }) => stepId === step.id) || null
     : null;
   const completedSets = stepResult ? stepResult.setResults : [];
+  const targetSets = targetSetsFor(session, step);
   const currentSetResult = step && session.currentSet !== null
     ? completedSets.find(({ setNumber }) => setNumber === session.currentSet) || null
     : null;
@@ -150,7 +163,7 @@ function buildTimedWorkoutView(session, {
     : null;
   const strength = step && step.kind === 'strength' ? {
     currentSet: session.currentSet,
-    targetSets: step.sets,
+    targetSets,
     targetReps: step.reps,
     previousWeightKg: previousSetResult ? previousSetResult.weightKg : null,
     suggestedWeightKg,
@@ -158,6 +171,22 @@ function buildTimedWorkoutView(session, {
     actualWeightKg: currentSetResult ? currentSetResult.weightKg : suggestedWeightKg
   } : null;
   const canProgress = session.status === 'in_progress' && !terminal;
+  const strengthCorrection = Boolean(
+    step &&
+    step.kind === 'strength' &&
+    stepResult &&
+    stepResult.status === 'completed' &&
+    completedSets.length === targetSets &&
+    session.currentSet === targetSets &&
+    session.timer === null
+  );
+  const hasPartialStrengthResult = Boolean(
+    step &&
+    step.kind === 'strength' &&
+    stepResult &&
+    stepResult.status === 'in_progress' &&
+    completedSets.length > 0
+  );
   const canAlternativeProgress = canProgress && ![
     'expired-awaiting-confirmation',
     'rest-expired-awaiting-start-set',
@@ -189,7 +218,7 @@ function buildTimedWorkoutView(session, {
       ? `建议 ${session.planSnapshot.recommendedEndLocalTime} 前结束`
       : null,
     strength,
-    targetsLabel: step ? formatTargets(step) : null,
+    targetsLabel: step ? formatTargets(step, targetSets) : null,
     timerLabel: formatDuration(remainingSeconds),
     remainingSeconds,
     progressPercent,
@@ -209,7 +238,10 @@ function buildTimedWorkoutView(session, {
       resume: control('继续', state !== 'paused'),
       confirmClock: control('确认时间后继续', !requiresConfirmation, 'primary'),
       previous: control('上一步', !(
-        canAlternativeProgress && previousStep && previousStep.kind !== 'interval'
+        canAlternativeProgress &&
+        previousStep &&
+        previousStep.kind !== 'interval' &&
+        !hasPartialStrengthResult
       )),
       next: control('进入下一步', state !== 'expired-awaiting-confirmation', 'primary'),
       startSet: control(
@@ -224,7 +256,7 @@ function buildTimedWorkoutView(session, {
           step &&
           step.kind === 'strength' &&
           state === 'ready' &&
-          currentSetResult === null
+          (currentSetResult === null || strengthCorrection)
         ),
         'primary'
       ),
@@ -241,12 +273,12 @@ function buildTimedWorkoutView(session, {
         step.kind === 'strength' &&
         currentSetResult === null &&
         (!stepResult || stepResult.status === 'in_progress') &&
-        step.sets > completedSets.length + 1
+        targetSets > completedSets.length + 1
       )),
       complete: control('完成动作', !(
         canProgress && step && step.kind === 'manual' && state === 'ready'
       ), 'primary'),
-      skip: control('跳过', !canAlternativeProgress, 'quiet'),
+      skip: control('跳过', !(canAlternativeProgress || (canProgress && requiresStartSet)), 'quiet'),
       earlyComplete: control('提前完成', !(
         canAlternativeProgress && step && step.kind === 'timed' && session.timer !== null
       ), 'quiet'),
