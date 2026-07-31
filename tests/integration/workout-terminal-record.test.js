@@ -127,3 +127,124 @@ test('starting a new Session preserves the previous terminal baseline record', (
   assert.equal(snapshot.records[0].sourceSessionId, 'session_terminal_preserved_a');
   assert.equal(snapshot.records[0].feedback, null);
 });
+
+test('completed and aborted historical records reserve their Session IDs before replacement start', () => {
+  for (const status of ['completed', 'aborted']) {
+    const database = createLocalDatabase({
+      storage: new StorageDouble(),
+      now: () => START_AT + 180_000
+    });
+    const repository = createSessionRepository({ database });
+    const sessionId = `session_reserved_history_${status}`;
+    const started = startManualSession(repository, {
+      plan: manualPlan(`plan_reserved_history_${status}`, '2026-09-08'),
+      sessionId
+    });
+    repository.apply({
+      type: status === 'completed' ? 'complete_step' : 'abort',
+      expectedSessionRevision: started.sessionRevision,
+      commandKey: `terminal_reserved_history_${status}`,
+      nowMs: START_AT + 60_000,
+      payload: status === 'completed'
+        ? { stepId: started.planSnapshot.steps[0].id }
+        : { reason: 'user-ended-workout' }
+    }, { originDeviceId: 'device_terminal_record' });
+    const beforeReuse = database.load();
+
+    assert.throws(
+      () => repository.start({
+        plan: manualPlan(`plan_illegal_reuse_${status}`, '2026-09-09'),
+        sessionId,
+        originDeviceId: 'device_terminal_record',
+        commandKey: `new_intent_reusing_${status}`,
+        nowMs: START_AT + 120_000
+      }),
+      (error) => error &&
+        error.code === 'SESSION_ID_REUSED' &&
+        /historical|record|already/i.test(error.message)
+    );
+    assert.deepEqual(
+      database.load(),
+      beforeReuse,
+      `${status} Session ID reuse must be a zero-write rejection`
+    );
+
+    const nextId = `session_reserved_history_${status}_next`;
+    const next = repository.start({
+      plan: manualPlan(`plan_reserved_history_${status}_next`, '2026-09-10'),
+      sessionId: nextId,
+      originDeviceId: 'device_terminal_record',
+      commandKey: `start_${nextId}`,
+      nowMs: START_AT + 120_000
+    });
+    const afterNext = database.load();
+    assert.equal(next.id, nextId);
+    assert.equal(afterNext.activeSession.id, nextId);
+    assert.equal(afterNext.records.length, 1);
+    assert.deepEqual(afterNext.records, beforeReuse.records);
+  }
+});
+
+test('record identity collisions, duplicates and tampered candidates reserve a future Session ID', async (t) => {
+  const collisionFactories = {
+    'canonical record id': (candidateId) => [{
+      id: `record_${candidateId}`,
+      sourceSessionId: 'unrelated_source'
+    }],
+    'source Session id': (candidateId) => [{
+      id: 'forged_noncanonical_record',
+      sourceSessionId: candidateId
+    }],
+    'duplicate candidates': (candidateId) => [{
+      id: `record_${candidateId}`,
+      sourceSessionId: 'unrelated_source'
+    }, {
+      id: 'second_forged_record',
+      sourceSessionId: candidateId
+    }],
+    'tampered candidate': (candidateId) => [{
+      id: `record_${candidateId}`,
+      sourceSessionId: candidateId,
+      status: 'forged',
+      feedback: { rpe: 'not-canonical' }
+    }]
+  };
+
+  for (const [index, [label, createCollisions]] of Object.entries(collisionFactories).entries()) {
+    await t.test(label, () => {
+      const database = createLocalDatabase({
+        storage: new StorageDouble(),
+        now: () => START_AT + 180_000
+      });
+      const repository = createSessionRepository({ database });
+      const started = startManualSession(repository, {
+        plan: manualPlan(`plan_collision_history_${index}`, '2026-09-11'),
+        sessionId: `session_collision_history_${index}`
+      });
+      repository.apply({
+        type: 'complete_step',
+        expectedSessionRevision: started.sessionRevision,
+        commandKey: `terminal_collision_history_${index}`,
+        nowMs: START_AT + 60_000,
+        payload: { stepId: started.planSnapshot.steps[0].id }
+      }, { originDeviceId: 'device_terminal_record' });
+
+      const candidateId = `session_collision_candidate_${index}`;
+      database.commit((draft) => {
+        draft.records.push(...clone(createCollisions(candidateId)));
+      });
+      const before = database.load();
+      assert.throws(
+        () => repository.start({
+          plan: manualPlan(`plan_collision_candidate_${index}`, '2026-09-12'),
+          sessionId: candidateId,
+          originDeviceId: 'device_terminal_record',
+          commandKey: `start_collision_candidate_${index}`,
+          nowMs: START_AT + 120_000
+        }),
+        (error) => error && error.code === 'SESSION_ID_REUSED'
+      );
+      assert.deepEqual(database.load(), before, `${label} must reject with zero writes`);
+    });
+  }
+});
