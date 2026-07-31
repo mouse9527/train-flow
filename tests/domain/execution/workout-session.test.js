@@ -198,7 +198,7 @@ test('Session boundary rejects custom prototypes, descriptors, unknown and unsaf
         stepId: valid.planSnapshot.steps[0].id
       })
     ).session,
-    command('complete_step', 2, 'boundary_complete_step', NOW + 300_000, {
+    command('confirm_next', 2, 'boundary_complete_step', NOW + 300_000, {
       stepId: valid.planSnapshot.steps[0].id
     })
   ).session;
@@ -237,6 +237,273 @@ test('timer identity must match both current step ID and supported step kind', (
     () => assertWorkoutSession(invalid),
     /timer|kind|mode|strength/i
   );
+});
+
+test('timed execution commands adjust the current timer with revisioned plus or minus 30 second intents', () => {
+  const session = startedSession(singleTimedPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+  const started = applyWorkoutCommand(
+    session,
+    command('start_step', 1, 'timed_adjust_start', NOW, { stepId })
+  ).session;
+
+  const extended = applyWorkoutCommand(
+    started,
+    command('adjust_timer', 2, 'timed_adjust_plus', NOW + 10_000, { deltaSeconds: 30 })
+  ).session;
+  assert.equal(extended.timer.remainingSecondsAtCheckpoint, 320);
+  assert.equal(extended.timer.adjustmentSeconds, 30);
+  assert.equal(extended.sessionRevision, 3);
+
+  const shortened = applyWorkoutCommand(
+    extended,
+    command('adjust_timer', 3, 'timed_adjust_minus', NOW + 10_000, { deltaSeconds: -30 })
+  ).session;
+  assert.equal(shortened.timer.remainingSecondsAtCheckpoint, 290);
+  assert.equal(shortened.timer.adjustmentSeconds, 0);
+  assert.equal(shortened.sessionRevision, 4);
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      shortened,
+      command('adjust_timer', 4, 'timed_adjust_invalid', NOW + 10_000, { deltaSeconds: 15 })
+    ),
+    /30|delta/i
+  );
+});
+
+test('skip and early complete advance a running timed step without pretending the timer expired', () => {
+  const base = startedSession(timedPlan());
+  const firstStepId = base.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    base,
+    command('start_step', 1, 'timed_advance_start', NOW, { stepId: firstStepId })
+  ).session;
+
+  const skipped = applyWorkoutCommand(
+    running,
+    command('skip_step', 2, 'timed_advance_skip', NOW + 10_000, { stepId: firstStepId })
+  ).session;
+  assert.equal(skipped.currentStepIndex, 1);
+  assert.equal(skipped.timer, null);
+  assert.equal(skipped.stepResults[0].status, 'skipped');
+  assert.equal(skipped.stepResults[0].completedAt, NOW + 10_000);
+
+  const secondStepId = skipped.planSnapshot.steps[1].id;
+  const secondRunning = applyWorkoutCommand(
+    skipped,
+    command('start_step', 3, 'timed_advance_second_start', NOW + 10_000, { stepId: secondStepId })
+  ).session;
+  const completed = applyWorkoutCommand(
+    secondRunning,
+    command('early_complete_step', 4, 'timed_advance_early', NOW + 20_000, { stepId: secondStepId })
+  ).session;
+  assert.equal(completed.currentStepIndex, 2);
+  assert.equal(completed.timer, null);
+  assert.equal(completed.stepResults[1].status, 'completed');
+  assert.equal(completed.sessionRevision, 5);
+});
+
+test('expired timed step rejects conflicting progression and only confirm_next may advance', () => {
+  const base = startedSession(timedPlan());
+  const stepId = base.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    base,
+    command('start_step', 1, 'expired_guard_start', NOW, { stepId })
+  ).session;
+  const expired = applyWorkoutCommand(
+    running,
+    command('checkpoint', 2, 'expired_guard_checkpoint', NOW + 300_000, { reason: 'show' })
+  ).session;
+  assert.equal(expired.timer.status, 'expired');
+
+  for (const [type, code] of [
+    ['skip_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['early_complete_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['complete_step', 'SESSION_CONFIRM_NEXT_REQUIRED']
+  ]) {
+    assert.throws(
+      () => applyWorkoutCommand(
+        expired,
+        command(type, 3, `expired_guard_${type}`, NOW + 301_000, { stepId })
+      ),
+      (error) => error && error.code === code
+    );
+  }
+
+  const confirmed = applyWorkoutCommand(
+    expired,
+    command('confirm_next', 3, 'expired_guard_confirm', NOW + 301_000, { stepId })
+  ).session;
+  assert.equal(confirmed.currentStepIndex, 1);
+  assert.equal(confirmed.stepResults[0].status, 'completed');
+});
+
+test('expired interval step rejects ordinary completion and confirm_next owns the set boundary', () => {
+  const session = startedSession(intervalPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+  const running = applyWorkoutCommand(
+    session,
+    command('start_step', 1, 'interval_expired_start', NOW, { stepId })
+  ).session;
+  const expired = applyWorkoutCommand(
+    running,
+    command('checkpoint', 2, 'interval_expired_checkpoint', running.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+  const beforeRejected = structuredClone(expired);
+
+  assert.equal(expired.currentSet, 1);
+  assert.equal(expired.timer.mode, 'step');
+  assert.equal(expired.timer.status, 'expired');
+  assert.throws(
+    () => applyWorkoutCommand(
+      expired,
+      command('complete_step', 3, 'interval_expired_ordinary_complete', expired.lastCheckpointAt, {
+        stepId
+      })
+    ),
+    (error) => error && error.code === 'SESSION_CONFIRM_NEXT_REQUIRED'
+  );
+  assert.deepEqual(expired, beforeRejected);
+  assert.equal(expired.sessionRevision, 3);
+
+  const confirmed = applyWorkoutCommand(
+    expired,
+    command('confirm_next', 3, 'interval_expired_confirm', expired.lastCheckpointAt, { stepId })
+  ).session;
+  assert.equal(confirmed.sessionRevision, 4);
+  assert.equal(confirmed.currentSet, 2);
+  assert.equal(confirmed.timer.mode, 'rest');
+  assert.equal(confirmed.timer.status, 'running');
+  assert.equal(confirmed.stepResults[0].setResults.length, 1);
+});
+
+test('expired step rejects previous correction and preserves the current occurrence boundary', () => {
+  const base = startedSession(timedPlan());
+  const firstStepId = base.planSnapshot.steps[0].id;
+  const firstRunning = applyWorkoutCommand(
+    base,
+    command('start_step', 1, 'expired_previous_first_start', NOW, { stepId: firstStepId })
+  ).session;
+  const secondReady = applyWorkoutCommand(
+    firstRunning,
+    command('early_complete_step', 2, 'expired_previous_first_complete', NOW + 1_000, {
+      stepId: firstStepId
+    })
+  ).session;
+  const secondStepId = secondReady.planSnapshot.steps[1].id;
+  const secondRunning = applyWorkoutCommand(
+    secondReady,
+    command('start_step', 3, 'expired_previous_second_start', NOW + 1_000, {
+      stepId: secondStepId
+    })
+  ).session;
+  const expired = applyWorkoutCommand(
+    secondRunning,
+    command('checkpoint', 4, 'expired_previous_checkpoint', secondRunning.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+  const beforeRejected = structuredClone(expired);
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      expired,
+      command('previous_step', 5, 'expired_previous_rejected', expired.lastCheckpointAt)
+    ),
+    (error) => error && error.code === 'SESSION_CONFIRM_NEXT_REQUIRED'
+  );
+  assert.deepEqual(expired, beforeRejected);
+  assert.equal(expired.currentStepIndex, 1);
+  assert.equal(expired.timer.status, 'expired');
+});
+
+test('expired strength rest rejects generic progression while complete_set retains explicit set intent', () => {
+  const session = startedSession(threeSetStrengthPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+  const resting = applyWorkoutCommand(
+    session,
+    command('complete_set', 1, 'strength_rest_set_one', NOW + 1_000, {
+      stepId,
+      setNumber: 1,
+      reps: 12,
+      weightKg: 20
+    })
+  ).session;
+  const expired = applyWorkoutCommand(
+    resting,
+    command('checkpoint', 2, 'strength_rest_expired', resting.timer.expectedEndAt, {
+      reason: 'manual'
+    })
+  ).session;
+
+  for (const [type, code] of [
+    ['skip_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['early_complete_step', 'SESSION_EXPIRED_CONFIRMATION_REQUIRED'],
+    ['complete_step', 'SESSION_CONFIRM_NEXT_REQUIRED']
+  ]) {
+    assert.throws(
+      () => applyWorkoutCommand(
+        expired,
+        command(type, 3, `strength_rest_reject_${type}`, expired.lastCheckpointAt, { stepId })
+      ),
+      (error) => error && error.code === code
+    );
+  }
+
+  const secondSet = applyWorkoutCommand(
+    expired,
+    command('complete_set', 3, 'strength_rest_set_two', expired.lastCheckpointAt, {
+      stepId,
+      setNumber: 2,
+      reps: 10,
+      weightKg: 22.5
+    })
+  ).session;
+  assert.equal(secondSet.sessionRevision, 4);
+  assert.equal(secondSet.currentSet, 3);
+  assert.equal(secondSet.timer.mode, 'rest');
+  assert.equal(secondSet.timer.status, 'running');
+});
+
+test('early completion requires a started non-expired timed occurrence', () => {
+  const session = startedSession(timedPlan());
+  const stepId = session.planSnapshot.steps[0].id;
+
+  assert.throws(
+    () => applyWorkoutCommand(
+      session,
+      command('early_complete_step', 1, 'early_without_start', NOW + 1_000, { stepId })
+    ),
+    (error) => error && error.code === 'SESSION_TIMER_MISSING'
+  );
+  assert.equal(session.currentStepIndex, 0);
+  assert.equal(session.timer, null);
+});
+
+test('previous step command reopens the prior timed result while retaining a revision audit record', () => {
+  const base = startedSession(timedPlan());
+  const firstStepId = base.planSnapshot.steps[0].id;
+  const advanced = applyWorkoutCommand(
+    applyWorkoutCommand(
+      base,
+      command('start_step', 1, 'previous_start', NOW, { stepId: firstStepId })
+    ).session,
+    command('early_complete_step', 2, 'previous_complete', NOW + 10_000, { stepId: firstStepId })
+  ).session;
+
+  const reopened = applyWorkoutCommand(
+    advanced,
+    command('previous_step', 3, 'previous_reopen', NOW + 20_000)
+  ).session;
+  assert.equal(reopened.currentStepIndex, 0);
+  assert.equal(reopened.timer, null);
+  assert.equal(reopened.stepResults[0].status, 'in_progress');
+  assert.equal(reopened.stepResults[0].completedAt, null);
+  assert.equal(reopened.processedCommands.at(-1).type, 'previous_step');
+  assert.equal(reopened.sessionRevision, 4);
 });
 
 test('timer mode and duration must remain bound to the current PlanSnapshot step', () => {
@@ -281,7 +548,7 @@ test('timer mode and duration must remain bound to the current PlanSnapshot step
   ).session;
   const intervalRest = applyWorkoutCommand(
     intervalStep,
-    command('complete_step', 2, 'planned_interval_rest', NOW + 60_000, {
+    command('confirm_next', 2, 'planned_interval_rest', NOW + 60_000, {
       stepId: intervalStepId
     })
   ).session;
@@ -472,9 +739,22 @@ test('Session checkpoints preserve TimerEngine rollback boundaries and fail clos
   assert.equal(anomalous.elapsedActiveSeconds, anchored.elapsedActiveSeconds);
 
   const confirmationAt = anchored.lastCheckpointAt + 5_000;
+  assert.throws(
+    () => applyWorkoutCommand(
+      anomalous,
+      command('resume', 4, 'rollback_timer_plain_resume', confirmationAt, { reason: 'user' })
+    ),
+    (error) => error && error.code === 'SESSION_CLOCK_CONFIRMATION_REQUIRED'
+  );
   const confirmed = applyWorkoutCommand(
     anomalous,
-    command('resume', 4, 'rollback_timer_confirm', confirmationAt, { reason: 'clock-confirmed' })
+    command(
+      'confirm_clock_anomaly',
+      4,
+      'rollback_timer_confirm',
+      confirmationAt,
+      { reason: 'clock-confirmed' }
+    )
   ).session;
   assert.equal(confirmed.status, 'in_progress');
   assert.equal(confirmed.timer.status, 'running');
@@ -597,7 +877,7 @@ test('set-tracking steps cannot omit a required rest boundary after the first se
   ).session;
   const intervalAfterSet = applyWorkoutCommand(
     intervalRunning,
-    command('complete_step', 2, 'required_interval_rest', NOW + 60_000, {
+    command('confirm_next', 2, 'required_interval_rest', NOW + 60_000, {
       stepId: intervalStepId
     })
   ).session;
@@ -638,7 +918,7 @@ test('terminal Sessions keep completed and aborted positions/results in canonica
   ).session;
   const completed = applyWorkoutCommand(
     running,
-    command('complete_step', 2, 'terminal_shape_complete', NOW + 300_000, { stepId })
+    command('confirm_next', 2, 'terminal_shape_complete', NOW + 300_000, { stepId })
   ).session;
   assert.equal(assertWorkoutSession(completed), completed);
 
@@ -734,14 +1014,14 @@ test('checkpoint and step completion atomically advance revision, elapsed time a
   assert.throws(
     () => applyWorkoutCommand(
       checkpointed,
-      command('complete_step', 3, 'early_complete', NOW + 3_000, { stepId })
+      command('confirm_next', 3, 'early_complete', NOW + 3_000, { stepId })
     ),
     (error) => error && error.code === 'SESSION_TIMER_NOT_EXPIRED'
   );
 
   const completed = applyWorkoutCommand(
     checkpointed,
-    command('complete_step', 3, 'complete_step', NOW + 300_000, { stepId })
+    command('confirm_next', 3, 'confirm_next', NOW + 300_000, { stepId })
   ).session;
   assert.equal(completed.sessionRevision, 4);
   assert.equal(completed.currentStepIndex, 1);
@@ -789,7 +1069,7 @@ test('interval rest expiry starts every next set and completes the full interval
     nowMs = session.timer.expectedEndAt;
     session = applyWorkoutCommand(
       session,
-      command('complete_step', session.sessionRevision, `interval_complete_${setNumber}`, nowMs, {
+      command('confirm_next', session.sessionRevision, `interval_complete_${setNumber}`, nowMs, {
         stepId: step.id
       })
     ).session;
@@ -854,7 +1134,7 @@ test('terminal Sessions reject new transitions while exact command replay remain
     initial,
     command('start_step', 1, 'terminal_start', NOW, { stepId })
   ).session;
-  const finish = command('complete_step', 2, 'terminal_finish', NOW + 300_000, { stepId });
+  const finish = command('confirm_next', 2, 'terminal_finish', NOW + 300_000, { stepId });
   const terminal = applyWorkoutCommand(started, finish).session;
 
   assert.equal(terminal.status, 'completed');

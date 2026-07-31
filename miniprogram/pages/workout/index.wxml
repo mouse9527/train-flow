@@ -1,5 +1,75 @@
-<view class="tf-page">
-  <view class="tf-empty-state">
-    <text class="tf-caption">训练执行页即将上线</text>
+<view class="workout-page" wx:if="{{view}}">
+  <view class="recovery-card" wx:if="{{view.state === 'recovery-error'}}">
+    <text class="recovery-card__eyebrow">训练数据仍保留在本机</text>
+    <text class="recovery-card__title">暂时无法恢复训练</text>
+    <text class="recovery-card__message">{{view.recoveryError.message}}</text>
+    <text class="recovery-card__hint">请返回后重试，系统不会静默重置当前进度。</text>
   </view>
+
+  <block wx:else>
+    <view class="workout-hero">
+      <view class="workout-hero__topline">
+        <text class="workout-hero__position">{{view.positionLabel}}</text>
+        <text class="workout-hero__clock">现在 {{view.currentClockLabel}}</text>
+      </view>
+      <text class="workout-hero__title">{{view.step ? view.step.name : '训练已结束'}}</text>
+      <text class="workout-hero__description" wx:if="{{view.step && view.step.description}}">{{view.step.description}}</text>
+      <view class="workout-hero__meta">
+        <text>已训练 {{view.elapsedLabel}}</text>
+        <text wx:if="{{view.recommendedEndLabel}}">{{view.recommendedEndLabel}}</text>
+      </view>
+    </view>
+
+    <view class="target-card" wx:if="{{view.targetsLabel}}">
+      <text class="target-card__label">本动作目标</text>
+      <text class="target-card__value">{{view.targetsLabel}}</text>
+    </view>
+
+    <timer-display
+      label="{{view.timerLabel}}"
+      state="{{view.state}}"
+      progress="{{view.progressPercent}}"
+    />
+
+    <view class="expiry-card" wx:if="{{view.state === 'expired-awaiting-confirmation'}}">
+      <text class="expiry-card__eyebrow">计时已结束</text>
+      <text class="expiry-card__title">当前动作仍停留在这里</text>
+      <text class="expiry-card__copy">确认后才会进入下一个动作，不会自动跳过后续训练。</text>
+      <button class="control control--primary control--wide" bindtap="onNext" disabled="{{view.controls.next.disabled || busy}}">进入下一步</button>
+    </view>
+
+    <view class="clock-anomaly-card" wx:if="{{view.requiresConfirmation}}">
+      <text class="clock-anomaly-card__eyebrow">检测到设备时间变化</text>
+      <text class="clock-anomaly-card__title">计时已安全暂停</text>
+      <text class="clock-anomaly-card__copy">请确认当前时间可信后再继续，本页面不会自动恢复计时。</text>
+      <button class="control control--primary control--wide" bindtap="onConfirmClockAnomaly" disabled="{{view.controls.confirmClock.disabled || busy}}">确认时间后继续</button>
+    </view>
+
+    <view class="control-panel" wx:if="{{view.state !== 'completed' && view.state !== 'aborted'}}">
+      <view class="control-panel__primary">
+        <button class="control control--primary" bindtap="onStart" disabled="{{view.controls.start.disabled || busy}}">开始</button>
+        <button class="control" bindtap="onPause" disabled="{{view.controls.pause.disabled || busy}}">暂停</button>
+        <button class="control control--primary" bindtap="onResume" disabled="{{view.controls.resume.disabled || busy}}">继续</button>
+      </view>
+
+      <view class="adjust-row">
+        <button class="control control--compact" bindtap="onSubtract30" disabled="{{view.controls.subtract30.disabled || busy}}">-30 秒</button>
+        <text class="adjust-row__label">调整本次计时</text>
+        <button class="control control--compact" bindtap="onAdd30" disabled="{{view.controls.add30.disabled || busy}}">+30 秒</button>
+      </view>
+
+      <view class="control-grid">
+        <button class="control" bindtap="onPrevious" disabled="{{view.controls.previous.disabled || busy}}">上一步</button>
+        <button class="control" bindtap="onSkip" disabled="{{view.controls.skip.disabled || busy}}">跳过</button>
+        <button class="control" bindtap="onEarlyComplete" disabled="{{view.controls.earlyComplete.disabled || busy}}">提前完成</button>
+      </view>
+
+      <button class="control control--danger control--wide" bindtap="onEndWorkout" disabled="{{view.controls.end.disabled || busy}}">结束训练</button>
+    </view>
+
+    <view class="terminal-card" wx:if="{{view.state === 'completed' || view.state === 'aborted'}}">
+      <text class="terminal-card__title">{{view.state === 'completed' ? '训练完成' : '训练已结束'}}</text>
+      <text class="terminal-card__copy">本次进度已保存在本机。</text>
+    </view>
+  </block>
 </view>

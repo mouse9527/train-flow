@@ -20,6 +20,21 @@ function assertNonNegativeInteger(value, label) {
   }
 }
 
+function assertUniqueStringArray(value, label) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+  const invalidValue = value.find(
+    (entry) => typeof entry !== 'string' || entry.length === 0
+  );
+  if (invalidValue !== undefined) {
+    throw new Error(`${label} must contain non-empty strings`);
+  }
+  if (new Set(value).size !== value.length) {
+    throw new Error(`${label} must be unique`);
+  }
+}
+
 function createValidationError(message, code) {
   const error = new Error(message);
   error.code = code;
@@ -146,6 +161,25 @@ function assertAppDatabaseSnapshot(snapshot, { checksumRequired = true } = {}) {
   }
   if (snapshot.activeSession !== null) {
     assertWorkoutSession(snapshot.activeSession);
+  }
+  if (snapshot.notifications !== undefined) {
+    assertPlainObject(snapshot.notifications, 'notifications');
+    assertUniqueStringArray(
+      snapshot.notifications.expiredOccurrences,
+      'notifications.expiredOccurrences'
+    );
+    if (snapshot.notifications.pendingExpiredOccurrences !== undefined) {
+      assertUniqueStringArray(
+        snapshot.notifications.pendingExpiredOccurrences,
+        'notifications.pendingExpiredOccurrences'
+      );
+    }
+    if (snapshot.notifications.attemptedExpiredOccurrences !== undefined) {
+      assertUniqueStringArray(
+        snapshot.notifications.attemptedExpiredOccurrences,
+        'notifications.attemptedExpiredOccurrences'
+      );
+    }
   }
   assertPlainObject(snapshot.statisticsProjection, 'statisticsProjection');
   assertPlainObject(snapshot.sync, 'sync');

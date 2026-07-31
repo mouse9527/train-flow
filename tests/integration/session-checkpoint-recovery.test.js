@@ -164,6 +164,67 @@ test('commands checkpoint exactly once while replay, stale revision and key coll
   assert.equal(snapshotWriteCount(runtime.storage), afterSuccess);
 });
 
+test('expired interval ordinary completion performs zero writes and confirm_next persists one set boundary', () => {
+  const runtime = createRuntime();
+  const sourcePlan = runtime.plans.find((plan) => plan.steps.some(({ kind }) => kind === 'interval'));
+  const intervalStep = sourcePlan.steps.find(({ kind }) => kind === 'interval');
+  const plan = {
+    ...clone(sourcePlan),
+    id: 'plan_interval_confirmation_boundary',
+    trainingDate: '2026-08-14',
+    steps: [{ ...clone(intervalStep), order: 1 }]
+  };
+  runtime.database.commit((draft) => {
+    draft.plans.push(plan);
+  });
+  const session = runtime.service.startSession({
+    planId: plan.id,
+    commandKey: 'interval_confirmation_start',
+    nowMs: NOW
+  });
+  const running = runtime.service.execute({
+    type: 'start_step',
+    expectedSessionRevision: 1,
+    commandKey: 'interval_confirmation_timer',
+    nowMs: NOW,
+    payload: { stepId: session.planSnapshot.steps[0].id }
+  }).session;
+  const expired = runtime.service.checkpoint('manual', {
+    expectedSessionRevision: 2,
+    commandKey: 'interval_confirmation_expired',
+    nowMs: running.timer.expectedEndAt
+  }).session;
+  const beforeWrites = snapshotWriteCount(runtime.storage);
+
+  assert.throws(
+    () => runtime.service.execute({
+      type: 'complete_step',
+      expectedSessionRevision: 3,
+      commandKey: 'interval_confirmation_ordinary_complete',
+      nowMs: expired.lastCheckpointAt,
+      payload: { stepId: session.planSnapshot.steps[0].id }
+    }),
+    (error) => error && error.code === 'SESSION_CONFIRM_NEXT_REQUIRED'
+  );
+  assert.equal(snapshotWriteCount(runtime.storage), beforeWrites);
+  assert.equal(runtime.database.load().activeSession.sessionRevision, 3);
+  assert.equal(runtime.database.load().activeSession.currentSet, 1);
+  assert.equal(runtime.database.load().activeSession.timer.status, 'expired');
+
+  const confirmed = runtime.service.execute({
+    type: 'confirm_next',
+    expectedSessionRevision: 3,
+    commandKey: 'interval_confirmation_confirm',
+    nowMs: expired.lastCheckpointAt,
+    payload: { stepId: session.planSnapshot.steps[0].id }
+  }).session;
+  assert.equal(snapshotWriteCount(runtime.storage), beforeWrites + 1);
+  assert.equal(confirmed.sessionRevision, 4);
+  assert.equal(confirmed.currentSet, 2);
+  assert.equal(confirmed.timer.mode, 'rest');
+  assert.equal(confirmed.timer.status, 'running');
+});
+
 test('hide/unload and application rebuild restore the same checkpoint for the origin device', () => {
   const runtime = createRuntime();
   const initial = start(runtime);
@@ -331,7 +392,7 @@ test('startup recovery persists TimerEngine rollback tolerance and clock anomaly
     assert.equal(restored.session.timer.pauseReason, 'clock-anomaly');
     assert.equal(restored.session.timer.requiresConfirmation, true);
     const confirmed = rebuilt.service.execute({
-      type: 'resume',
+      type: 'confirm_clock_anomaly',
       expectedSessionRevision: 4,
       commandKey: 'rollback_integration_confirm',
       nowMs: restoreAt,
@@ -596,7 +657,7 @@ test('checksum-valid missing rest, forged duration and terminal shape fail recov
           payload: { stepId: session.planSnapshot.steps[0].id }
         });
         const terminal = runtime.service.execute({
-          type: 'complete_step',
+          type: 'confirm_next',
           expectedSessionRevision: 2,
           commandKey: 'terminal_shape_recovery_complete',
           nowMs: NOW + 300_000,
@@ -674,7 +735,7 @@ test('application replaces completed and aborted Sessions while terminal command
         payload: { stepId: started.planSnapshot.steps[0].id }
       });
       terminal = runtime.service.execute({
-        type: 'complete_step',
+        type: 'confirm_next',
         expectedSessionRevision: 2,
         commandKey: 'terminal_completed_step_finish',
         nowMs: NOW + 300_000,

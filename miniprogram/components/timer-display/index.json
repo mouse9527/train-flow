@@ -1,0 +1,6 @@
+{
+  "component": true,
+  "usingComponents": {
+    "progress-ring": "/components/progress-ring/index"
+  }
+}
