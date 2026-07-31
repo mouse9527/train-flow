@@ -25,6 +25,35 @@
       <text class="target-card__value">{{view.targetsLabel}}</text>
     </view>
 
+    <view class="strength-card" wx:if="{{view.strength}}">
+      <view class="strength-card__header">
+        <view>
+          <text class="strength-card__eyebrow">力量训练</text>
+          <text class="strength-card__set">第 {{view.strength.currentSet}} / {{view.strength.targetSets}} 组</text>
+        </view>
+        <text class="strength-card__target">目标 {{view.strength.targetReps}} 次</text>
+      </view>
+      <view class="strength-card__history">
+        <text>上组重量 {{view.strength.previousWeightKg === null ? '暂无' : view.strength.previousWeightKg + ' kg'}}</text>
+        <text>建议重量 {{view.strength.suggestedWeightKg === null ? '暂无' : view.strength.suggestedWeightKg + ' kg'}}</text>
+      </view>
+      <view class="strength-card__inputs">
+        <label class="strength-input">
+          <text>实际次数</text>
+          <input type="number" value="{{actualReps}}" bindinput="onActualRepsInput" disabled="{{view.controls.completeSet.disabled || busy}}" />
+        </label>
+        <label class="strength-input">
+          <text>实际重量（kg）</text>
+          <input type="digit" value="{{actualLoad}}" placeholder="未知可留空" bindinput="onActualWeightInput" disabled="{{view.controls.completeSet.disabled || busy}}" />
+        </label>
+      </view>
+      <button class="control control--primary control--wide" bindtap="onCompleteSet" disabled="{{view.controls.completeSet.disabled || busy}}">{{view.controls.completeSet.label}}</button>
+      <view class="strength-card__set-controls">
+        <button class="control control--compact" bindtap="onReduceSet" disabled="{{view.controls.reduceSet.disabled || busy}}">{{view.controls.reduceSet.label}}</button>
+        <button class="control control--compact" bindtap="onAddSet" disabled="{{view.controls.addSet.disabled || busy}}">{{view.controls.addSet.label}}</button>
+      </view>
+    </view>
+
     <timer-display
       label="{{view.timerLabel}}"
       state="{{view.state}}"
@@ -43,6 +72,13 @@
       <text class="expiry-card__title">下一组等待开始</text>
       <text class="expiry-card__copy">确认后才会进入当前组，不会自动记录完成结果。</text>
       <button class="control control--primary control--wide" bindtap="onStartSet" disabled="{{view.controls.startSet.disabled || busy}}">{{view.controls.startSet.label}}</button>
+    </view>
+
+    <view class="expiry-card" wx:if="{{view.state === 'rest-expired-awaiting-start-step'}}">
+      <text class="expiry-card__eyebrow">间歇休息结束</text>
+      <text class="expiry-card__title">下一组等待开始</text>
+      <text class="expiry-card__copy">点击开始后才进入下一组计时，不会提前记录完成。</text>
+      <button class="control control--primary control--wide" bindtap="onStart" disabled="{{view.controls.start.disabled || busy}}">开始下一组</button>
     </view>
 
     <view class="clock-anomaly-card" wx:if="{{view.requiresConfirmation}}">
@@ -70,6 +106,8 @@
         <button class="control" bindtap="onSkip" disabled="{{view.controls.skip.disabled || busy}}">跳过</button>
         <button class="control" bindtap="onEarlyComplete" disabled="{{view.controls.earlyComplete.disabled || busy}}">提前完成</button>
       </view>
+
+      <button class="control control--primary control--wide" wx:if="{{view.step && view.step.kind === 'manual'}}" bindtap="onCompleteManual" disabled="{{view.controls.complete.disabled || busy}}">{{view.controls.complete.label}}</button>
 
       <button class="control control--danger control--wide" bindtap="onEndWorkout" disabled="{{view.controls.end.disabled || busy}}">结束训练</button>
     </view>

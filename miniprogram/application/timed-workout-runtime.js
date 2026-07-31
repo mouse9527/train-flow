@@ -326,6 +326,28 @@ class TimedWorkoutRuntime {
     });
   }
 
+  completeSet({ reps, weightKg, loadKg }) {
+    const actualWeight = weightKg === undefined ? loadKg : weightKg;
+    return this.execute('complete_set', {
+      stepId: this.currentStep().id,
+      setNumber: this.session.currentSet,
+      reps,
+      weightKg: actualWeight
+    });
+  }
+
+  addSet() {
+    return this.execute('add_set', { stepId: this.currentStep().id });
+  }
+
+  reduceSet() {
+    return this.execute('reduce_set', { stepId: this.currentStep().id });
+  }
+
+  completeManual() {
+    return this.execute('complete_step', { stepId: this.currentStep().id });
+  }
+
   endWorkout() {
     return this.execute('abort', { reason: 'user-ended-workout' });
   }

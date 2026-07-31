@@ -86,6 +86,9 @@ function deriveState(session, step) {
     if (session.timer.mode === 'rest' && step && step.kind === 'strength') {
       return 'rest-expired-awaiting-start-set';
     }
+    if (session.timer.mode === 'rest' && step && step.kind === 'interval') {
+      return 'rest-expired-awaiting-start-step';
+    }
     return 'expired-awaiting-confirmation';
   }
   if (
@@ -126,13 +129,39 @@ function buildTimedWorkoutView(session, {
   const state = deriveState(session, step);
   const requiresConfirmation = state === 'clock-anomaly-awaiting-confirmation';
   const requiresStartSet = state === 'rest-expired-awaiting-start-set';
+  const requiresStartStep = state === 'rest-expired-awaiting-start-step';
   const previousStep = session.currentStepIndex > 0
     ? session.planSnapshot.steps[session.currentStepIndex - 1]
     : null;
+  const stepResult = step
+    ? session.stepResults.find(({ stepId }) => stepId === step.id) || null
+    : null;
+  const completedSets = stepResult ? stepResult.setResults : [];
+  const currentSetResult = step && session.currentSet !== null
+    ? completedSets.find(({ setNumber }) => setNumber === session.currentSet) || null
+    : null;
+  const previousSetResult = step && session.currentSet > 1
+    ? completedSets.find(({ setNumber }) => setNumber === session.currentSet - 1) || null
+    : null;
+  const suggestedWeightRange = step && step.targets ? step.targets.weightKg : null;
+  const suggestedWeightKg = suggestedWeightRange &&
+    typeof suggestedWeightRange.min === 'number'
+    ? suggestedWeightRange.min
+    : null;
+  const strength = step && step.kind === 'strength' ? {
+    currentSet: session.currentSet,
+    targetSets: step.sets,
+    targetReps: step.reps,
+    previousWeightKg: previousSetResult ? previousSetResult.weightKg : null,
+    suggestedWeightKg,
+    actualReps: currentSetResult ? currentSetResult.reps : step.reps,
+    actualWeightKg: currentSetResult ? currentSetResult.weightKg : suggestedWeightKg
+  } : null;
   const canProgress = session.status === 'in_progress' && !terminal;
   const canAlternativeProgress = canProgress && ![
     'expired-awaiting-confirmation',
-    'rest-expired-awaiting-start-set'
+    'rest-expired-awaiting-start-set',
+    'rest-expired-awaiting-start-step'
   ].includes(state);
   const canAdjust = Boolean(
     session.timer &&
@@ -159,6 +188,7 @@ function buildTimedWorkoutView(session, {
     recommendedEndLabel: session.planSnapshot.recommendedEndLocalTime
       ? `建议 ${session.planSnapshot.recommendedEndLocalTime} 前结束`
       : null,
+    strength,
     targetsLabel: step ? formatTargets(step) : null,
     timerLabel: formatDuration(remainingSeconds),
     remainingSeconds,
@@ -170,15 +200,16 @@ function buildTimedWorkoutView(session, {
     showNextConfirmation: state === 'expired-awaiting-confirmation',
     showStartSetConfirmation: requiresStartSet,
     controls: {
-      start: control('开始', !(state === 'ready' && step && ['timed', 'interval'].includes(step.kind))),
+      start: control('开始', !(
+        step &&
+        ['timed', 'interval'].includes(step.kind) &&
+        (state === 'ready' || requiresStartStep)
+      )),
       pause: control('暂停', state !== 'running'),
       resume: control('继续', state !== 'paused'),
       confirmClock: control('确认时间后继续', !requiresConfirmation, 'primary'),
       previous: control('上一步', !(
-        canAlternativeProgress &&
-        previousStep &&
-        previousStep.kind !== 'strength' &&
-        previousStep.kind !== 'interval'
+        canAlternativeProgress && previousStep && previousStep.kind !== 'interval'
       )),
       next: control('进入下一步', state !== 'expired-awaiting-confirmation', 'primary'),
       startSet: control(
@@ -186,6 +217,35 @@ function buildTimedWorkoutView(session, {
         !requiresStartSet,
         'primary'
       ),
+      completeSet: control(
+        `完成第 ${session.currentSet || 1} 组`,
+        !(
+          canProgress &&
+          step &&
+          step.kind === 'strength' &&
+          state === 'ready' &&
+          currentSetResult === null
+        ),
+        'primary'
+      ),
+      addSet: control('增加一组', !(
+        canProgress &&
+        step &&
+        step.kind === 'strength' &&
+        currentSetResult === null &&
+        (!stepResult || stepResult.status === 'in_progress')
+      )),
+      reduceSet: control('减少一组', !(
+        canProgress &&
+        step &&
+        step.kind === 'strength' &&
+        currentSetResult === null &&
+        (!stepResult || stepResult.status === 'in_progress') &&
+        step.sets > completedSets.length + 1
+      )),
+      complete: control('完成动作', !(
+        canProgress && step && step.kind === 'manual' && state === 'ready'
+      ), 'primary'),
       skip: control('跳过', !canAlternativeProgress, 'quiet'),
       earlyComplete: control('提前完成', !(
         canAlternativeProgress && step && step.kind === 'timed' && session.timer !== null

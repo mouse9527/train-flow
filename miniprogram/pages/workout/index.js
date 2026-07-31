@@ -60,7 +60,9 @@ function createWorkoutPageDefinition({
   return {
     data: {
       view: null,
-      busy: false
+      busy: false,
+      actualReps: '',
+      actualLoad: ''
     },
 
     onLoad(query = {}) {
@@ -110,7 +112,20 @@ function createWorkoutPageDefinition({
     },
 
     syncView(view) {
-      this.setData({ view, busy: false });
+      const inputKey = view && view.strength
+        ? `${view.sessionId}:${view.step.id}:${view.strength.currentSet}`
+        : null;
+      const nextData = { view, busy: false };
+      if (inputKey !== this.strengthInputKey) {
+        this.strengthInputKey = inputKey;
+        nextData.actualReps = view && view.strength
+          ? String(view.strength.actualReps)
+          : '';
+        nextData.actualLoad = view && view.strength && view.strength.actualWeightKg !== null
+          ? String(view.strength.actualWeightKg)
+          : '';
+      }
+      this.setData(nextData);
       if (this.isVisible) {
         this.scheduleDeadline(view);
       }
@@ -198,6 +213,17 @@ function createWorkoutPageDefinition({
     onPrevious() { this.invoke('previous', 'previous'); },
     onNext() { this.invoke('next', 'confirmNext'); },
     onStartSet() { this.invoke('startSet', 'startSet'); },
+    onActualRepsInput({ detail }) { this.setData({ actualReps: detail.value }); },
+    onActualWeightInput({ detail }) { this.setData({ actualLoad: detail.value }); },
+    onCompleteSet() {
+      this.invoke('completeSet', 'completeSet', {
+        reps: Number(this.data.actualReps),
+        loadKg: this.data.actualLoad === '' ? null : Number(this.data.actualLoad)
+      });
+    },
+    onAddSet() { this.invoke('addSet', 'addSet'); },
+    onReduceSet() { this.invoke('reduceSet', 'reduceSet'); },
+    onCompleteManual() { this.invoke('complete', 'completeManual'); },
     onSubtract30() { this.invoke('subtract30', 'adjustTimer', -30); },
     onAdd30() { this.invoke('add30', 'adjustTimer', 30); },
 

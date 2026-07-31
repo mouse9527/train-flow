@@ -53,6 +53,8 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   previous_step: Object.freeze([]),
   start_set: Object.freeze(['stepId', 'setNumber']),
   complete_set: Object.freeze(['stepId', 'setNumber', 'reps', 'weightKg']),
+  add_set: Object.freeze(['stepId']),
+  reduce_set: Object.freeze(['stepId']),
   abort: Object.freeze(['reason'])
 });
 const BUSINESS_PROGRESSION_COMMANDS = Object.freeze([
@@ -66,7 +68,9 @@ const BUSINESS_PROGRESSION_COMMANDS = Object.freeze([
   'skip_step_and_start_next',
   'previous_step',
   'start_set',
-  'complete_set'
+  'complete_set',
+  'add_set',
+  'reduce_set'
 ]);
 const AUTO_START_PROGRESSION_COMMANDS = Object.freeze({
   confirm_next_and_start_next: 'confirm_next',
@@ -198,6 +202,12 @@ function assertNullableMeasurement(value, label) {
     value < 0
   )) {
     throw new TypeError(`${label} must be null or a non-negative finite number`);
+  }
+  if (
+    value !== null &&
+    Math.abs(value * 10 - Math.round(value * 10)) > Number.EPSILON * 10
+  ) {
+    throw new TypeError(`${label} must use at most one decimal place`);
   }
 }
 
@@ -357,14 +367,24 @@ function assertWorkoutSession(session) {
     if (resultIndex < session.currentStepIndex && result.status === 'in_progress') {
       throw new TypeError('session prior stepResults must be terminal');
     }
+    const resultStep = session.planSnapshot.steps[resultIndex];
+    const isStrengthCorrectionResult =
+      !terminal &&
+      resultIndex === session.currentStepIndex &&
+      resultStep.kind === 'strength' &&
+      result.status === 'completed' &&
+      result.setResults.length === resultStep.sets &&
+      session.currentSet === resultStep.sets &&
+      session.timer === null &&
+      activeSetStartedAt === null;
     if (
       session.status !== 'completed' &&
       resultIndex === session.currentStepIndex &&
-      result.status !== 'in_progress'
+      result.status !== 'in_progress' &&
+      !isStrengthCorrectionResult
     ) {
       throw new TypeError('session current stepResult must remain in_progress');
     }
-    const resultStep = session.planSnapshot.steps[resultIndex];
     result.setResults.forEach(({ setNumber }, setIndex) => {
       if (setNumber !== setIndex + 1) {
         throw new TypeError('session setResults setNumber values must be contiguous from 1');
@@ -381,7 +401,8 @@ function assertWorkoutSession(session) {
       tracksSets &&
       !terminal &&
       resultIndex === session.currentStepIndex &&
-      result.setResults.length !== session.currentSet - 1
+      result.setResults.length !== session.currentSet - 1 &&
+      !isStrengthCorrectionResult
     ) {
       throw new TypeError('session currentSet must immediately follow contiguous setResults');
     }
@@ -490,7 +511,14 @@ function assertWorkoutSession(session) {
       session.currentSet > 1 &&
       currentStep.restSeconds > 0 &&
       session.timer === null &&
-      activeSetStartedAt === null
+      activeSetStartedAt === null &&
+      !session.stepResults.some(({ stepId, status, setResults }) => (
+        stepId === currentStep.id &&
+        currentStep.kind === 'strength' &&
+        status === 'completed' &&
+        setResults.length === currentStep.sets &&
+        session.currentSet === currentStep.sets
+      ))
     ) {
       throw new TypeError('session currentSet after 1 requires its planned rest or explicit set start');
     }
@@ -775,7 +803,7 @@ function applyTransition(session, command, timerEngine) {
     }
     const previousIndex = session.currentStepIndex - 1;
     const previousStep = session.planSnapshot.steps[previousIndex];
-    if (previousStep.kind === 'strength' || previousStep.kind === 'interval') {
+    if (previousStep.kind === 'interval') {
       throw createSessionError(
         'Set-tracking steps require a dedicated correction flow',
         'SESSION_PREVIOUS_UNSUPPORTED'
@@ -788,6 +816,10 @@ function applyTransition(session, command, timerEngine) {
     session.timer = null;
     session.activeSetStartedAt = null;
     session.currentStepIndex = previousIndex;
+    if (previousStep.kind === 'strength') {
+      session.currentSet = previousStep.sets;
+      return;
+    }
     session.currentSet = null;
     previousResult.status = 'in_progress';
     previousResult.completedAt = null;
@@ -818,6 +850,35 @@ function applyTransition(session, command, timerEngine) {
     }
     session.timer = null;
     session.activeSetStartedAt = transitionNowMs;
+    return;
+  }
+  if (command.type === 'add_set' || command.type === 'reduce_set') {
+    if (step.kind !== 'strength') {
+      throw createSessionError('Set count adjustment requires a strength step', 'SESSION_SET_UNSUPPORTED');
+    }
+    if (session.timer !== null) {
+      throw createSessionError('Set count cannot change during a rest boundary', 'SESSION_SET_ADJUSTMENT_INVALID');
+    }
+    const result = findStepResult(session, step.id);
+    if (result && result.status !== 'in_progress') {
+      throw createSessionError(
+        'Completed strength results require a dedicated correction command',
+        'SESSION_SET_ADJUSTMENT_INVALID'
+      );
+    }
+    const completedSetCount = result ? result.setResults.length : 0;
+    if (command.type === 'reduce_set') {
+      const minimumSetCount = Math.max(session.currentSet, completedSetCount + 1);
+      if (step.sets <= minimumSetCount) {
+        throw createSessionError(
+          'Cannot remove the current or an already completed set',
+          'SESSION_SET_ADJUSTMENT_INVALID'
+        );
+      }
+      step.sets -= 1;
+      return;
+    }
+    step.sets += 1;
     return;
   }
   if (command.type === 'start_step') {

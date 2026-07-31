@@ -1150,6 +1150,37 @@ test('set completion rejects double transitions and keeps rest timer identity wi
   );
 });
 
+test('strength set-count adjustments are revisioned and cannot remove the active or completed boundary', () => {
+  const initial = startedSession(threeSetStrengthPlan());
+  const stepId = initial.planSnapshot.steps[0].id;
+  const reduced = applyWorkoutCommand(
+    initial,
+    command('reduce_set', 1, 'reduce_future_set', NOW + 1_000, { stepId })
+  ).session;
+
+  assert.equal(initial.planSnapshot.steps[0].sets, 3, 'the input Session remains immutable');
+  assert.equal(reduced.planSnapshot.steps[0].sets, 2);
+  assert.equal(reduced.sessionRevision, 2);
+
+  const expanded = applyWorkoutCommand(
+    reduced,
+    command('add_set', 2, 'add_future_set', NOW + 2_000, { stepId })
+  ).session;
+  assert.equal(expanded.planSnapshot.steps[0].sets, 3);
+  assert.equal(expanded.processedCommands.at(-1).type, 'add_set');
+
+  const oneSet = startedSession(singleSetStrengthPlan());
+  assert.throws(
+    () => applyWorkoutCommand(
+      oneSet,
+      command('reduce_set', 1, 'cannot_remove_active_set', NOW + 1_000, {
+        stepId: oneSet.planSnapshot.steps[0].id
+      })
+    ),
+    (error) => error && error.code === 'SESSION_SET_ADJUSTMENT_INVALID'
+  );
+});
+
 test('terminal Sessions reject new transitions while exact command replay remains safe', () => {
   const initial = startedSession(singleTimedPlan());
   const stepId = initial.planSnapshot.steps[0].id;
