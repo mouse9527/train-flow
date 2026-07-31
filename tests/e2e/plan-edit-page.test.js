@@ -170,6 +170,67 @@ test('copy-date requires visible confirmation for an existing plan and double co
   assert.equal(database.load().localRevision, beforeRevision + 1);
 });
 
+test('copy flow keeps one intent for confirmation retries and rotates after cancel', (t) => {
+  const { page, database } = createPageHarness(t);
+  page.onLoad({ planId: 'plan_20260803_builtin' });
+  page.onCopyDateChange(event({ value: '2026-08-04' }));
+
+  page.onCopyPlan();
+  const firstIntent = page.data.copyFlowIntentId;
+  assert.equal(typeof firstIntent, 'string');
+  assert.ok(firstIntent.length > 0);
+  assert.equal(page.data.copyConfirmation.copyIntentId, firstIntent);
+
+  page.onCopyPlan();
+  assert.equal(page.data.copyFlowIntentId, firstIntent);
+  assert.equal(page.data.copyConfirmation.copyIntentId, firstIntent);
+
+  database.commit((draft) => {
+    const target = draft.plans.find(({ id }) => id === 'plan_20260804_builtin');
+    target.title = '并发窗口更新目标计划';
+    target.updatedAt += 1;
+    target.revision += 1;
+  });
+  page.onConfirmCopy();
+  assert.equal(page.data.copyState, 'error');
+  assert.equal(page.data.copyConfirmation.visible, true);
+  assert.equal(page.data.copyFlowIntentId, firstIntent);
+  page.onConfirmCopy();
+  assert.equal(page.data.copyFlowIntentId, firstIntent);
+
+  page.onCancelCopy();
+  assert.equal(page.data.copyFlowIntentId, null);
+  page.onCopyPlan();
+  assert.notEqual(page.data.copyFlowIntentId, firstIntent);
+});
+
+test('a newly initiated empty-date copy succeeds after the previous copied plan becomes a tombstone', (t) => {
+  const { page, database } = createPageHarness(t);
+  page.onLoad({ planId: 'plan_20260803_builtin' });
+  page.onCopyDateChange(event({ value: '2026-08-10' }));
+
+  page.onCopyPlan();
+  const first = database.load().plans.find(
+    ({ trainingDate, status }) => trainingDate === '2026-08-10' && status !== 'deleted'
+  );
+  assert.ok(first);
+  database.commit((draft) => {
+    const persisted = draft.plans.find(({ id }) => id === first.id);
+    persisted.status = 'deleted';
+    persisted.updatedAt += 1;
+    persisted.deletedAt = persisted.updatedAt;
+    persisted.revision += 1;
+  });
+
+  page.onCopyPlan();
+  const second = database.load().plans.find(
+    ({ trainingDate, status }) => trainingDate === '2026-08-10' && status !== 'deleted'
+  );
+  assert.ok(second);
+  assert.notEqual(second.id, first.id);
+  assert.equal(page.data.copyState, 'copied');
+});
+
 test('editor markup exposes reorder, delete, kind fields, alternatives, error and copy confirmation controls', () => {
   const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'miniprogram/app.json'), 'utf8'));
   const wxml = fs.readFileSync(path.join(ROOT, 'miniprogram/pages/plan/edit/index.wxml'), 'utf8');

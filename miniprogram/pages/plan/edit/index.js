@@ -85,6 +85,7 @@ Page({
     copyDate: '2026-08-10',
     copyState: 'idle',
     copyMessage: '',
+    copyFlowIntentId: null,
     copyConfirmation: {
       visible: false,
       copyIntentId: null,
@@ -237,16 +238,30 @@ Page({
   },
 
   onCopyDateChange(event) {
-    this.setData({ copyDate: event.detail.value, copyState: 'idle', copyMessage: '' });
+    this.setData({
+      copyDate: event.detail.value,
+      copyState: 'idle',
+      copyMessage: '',
+      copyFlowIntentId: null,
+      copyConfirmation: {
+        visible: false,
+        copyIntentId: null,
+        targetPlanId: null,
+        targetRevision: null,
+        message: ''
+      }
+    });
   },
 
   copyCommand(confirmReplace, confirmation = {}) {
     return application.copyPlanToDate({
+      editorSessionId: this.data.editorSessionId,
+      sourcePlanDraft: this.data.draft,
       sourcePlanId: this.data.draft.id,
       targetDate: this.data.copyDate,
       commandKey: `copy:${this.data.draft.id}:${this.data.copyDate}`,
       confirmReplace,
-      copyIntentId: confirmation.copyIntentId || null,
+      copyIntentId: confirmation.copyIntentId || this.data.copyFlowIntentId,
       expectedTargetPlanId: confirmation.targetPlanId || null,
       expectedTargetRevision: confirmation.targetRevision ?? null
     });
@@ -257,6 +272,15 @@ Page({
       this.setData({ copyState: 'error', copyMessage: '请先保存新计划，再复制到其他日期。' });
       return;
     }
+    if (this.data.copyConfirmation.visible) {
+      return;
+    }
+    const copyFlowIntentId = this.data.copyFlowIntentId || application.createCopyIntentId({
+      editorSessionId: this.data.editorSessionId,
+      draft: this.data.draft,
+      targetDate: this.data.copyDate
+    });
+    this.setData({ copyFlowIntentId });
     const result = this.copyCommand(false);
     if (result.code === 'PLAN_REPLACE_CONFIRMATION_REQUIRED') {
       this.setData({
@@ -279,21 +303,13 @@ Page({
       return;
     }
     const result = this.copyCommand(true, this.data.copyConfirmation);
-    this.setData({
-      copyConfirmation: {
-        visible: false,
-        copyIntentId: null,
-        targetPlanId: null,
-        targetRevision: null,
-        message: ''
-      }
-    });
     this.finishCopy(result);
   },
 
   onCancelCopy() {
     this.setData({
       copyState: 'idle',
+      copyFlowIntentId: null,
       copyConfirmation: {
         visible: false,
         copyIntentId: null,
@@ -308,7 +324,15 @@ Page({
     if (result.ok) {
       this.setData({
         copyState: 'copied',
-        copyMessage: result.replayed ? '该日期已完成同一次复制。' : `已复制到 ${result.plan.trainingDate}。`
+        copyMessage: result.replayed ? '该日期已完成同一次复制。' : `已复制到 ${result.plan.trainingDate}。`,
+        copyFlowIntentId: null,
+        copyConfirmation: {
+          visible: false,
+          copyIntentId: null,
+          targetPlanId: null,
+          targetRevision: null,
+          message: ''
+        }
       });
       return;
     }

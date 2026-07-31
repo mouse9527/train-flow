@@ -126,7 +126,8 @@ test('WeekPlanView preserves previous/next week boundaries and returns a useful 
   assert.equal(empty.nextWeekStart, '2026-08-17');
   assert.equal(empty.isEmpty, true);
   assert.equal(empty.emptyMessage, '这一周还没有训练计划');
-  assert.equal(empty.emptyGuidance, '可使用上方按钮切换到有训练安排的周');
+  assert.equal(empty.emptyGuidance, '可在下方选择日期并新增训练日');
+  assert.equal(empty.emptyDates.length, 7);
   assert.deepEqual(empty.days, []);
   assert.equal(empty.selectedDay, null);
 });

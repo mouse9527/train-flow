@@ -74,5 +74,15 @@ Page({
     wx.navigateTo({
       url: `/pages/plan/edit/index?planId=${encodeURIComponent(selectedDay.id)}`
     });
+  },
+
+  onCreatePlan(event) {
+    const trainingDate = event.currentTarget.dataset.date;
+    if (!trainingDate) {
+      return;
+    }
+    wx.navigateTo({
+      url: `/pages/plan/edit/index?trainingDate=${encodeURIComponent(trainingDate)}`
+    });
   }
 });

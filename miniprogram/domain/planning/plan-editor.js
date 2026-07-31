@@ -23,6 +23,30 @@ function createPlanDraft(plan) {
   return clone(plan);
 }
 
+function estimateModeledSeconds(steps) {
+  if (!Array.isArray(steps)) {
+    throw new Error('modeled duration requires WorkoutSteps');
+  }
+  return steps.reduce((total, step) => {
+    if (step.kind === 'timed') {
+      return total + step.durationSeconds;
+    }
+    if (step.kind === 'interval') {
+      return total + (step.sets * step.durationSeconds) + ((step.sets - 1) * step.restSeconds);
+    }
+    if (step.kind === 'strength') {
+      return total + (step.sets * step.reps * 5) + ((step.sets - 1) * step.restSeconds);
+    }
+    if (step.kind === 'manual') {
+      return total + (step.sets * step.reps * 5);
+    }
+    if (step.kind === 'rest_day') {
+      return total;
+    }
+    throw new Error(`Unsupported WorkoutStep kind ${step.kind}`);
+  }, 0);
+}
+
 function normalizeOrders(draft) {
   draft.steps.forEach((step, index) => {
     step.order = (index + 1) * 10;
@@ -153,6 +177,7 @@ function validatePlanDraft(draft) {
 module.exports = {
   addDraftStep,
   createPlanDraft,
+  estimateModeledSeconds,
   moveDraftStep,
   removeDraftStep,
   updateDraftStep,

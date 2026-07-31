@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   addDraftStep,
   createPlanDraft,
+  estimateModeledSeconds,
   moveDraftStep,
   removeDraftStep,
   updateDraftStep,
@@ -134,6 +135,16 @@ test('new step defaults expose only fields valid for its kind', () => {
     assert.deepEqual(step.alternatives, []);
     assert.equal(step.optional, false);
   }
+});
+
+test('modeled duration uses the documented formula for every WorkoutStep kind', () => {
+  assert.equal(estimateModeledSeconds([
+    { kind: 'timed', durationSeconds: 120 },
+    { kind: 'interval', sets: 3, durationSeconds: 40, restSeconds: 15 },
+    { kind: 'strength', sets: 4, reps: 8, restSeconds: 60 },
+    { kind: 'manual', sets: 2, reps: 12 },
+    { kind: 'rest_day' }
+  ]), 120 + (3 * 40) + (2 * 15) + (4 * 8 * 5) + (3 * 60) + (2 * 12 * 5));
 });
 
 function createRuntime({ idFactory = null } = {}) {
@@ -331,6 +342,59 @@ test('an empty date gets a valid custom draft and persists with expected revisio
   assert.equal(saved.ok, true);
   assert.equal(saved.plan.revision, 1);
   assert.equal(runtime.repository.findByDate('2026-08-10').id, editor.draft.id);
+});
+
+test('saving recalculates estimated duration from kind-specific modeled seconds without discarding the persisted baseline', () => {
+  const runtime = createRuntime();
+  const existing = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+  existing.draft.steps[0].durationSeconds += 600;
+  existing.draft.estimatedDurationSeconds = -1;
+
+  const updated = runtime.application.savePlanDraft({
+    editorSessionId: existing.editorSessionId,
+    draft: existing.draft,
+    expectedRevision: existing.expectedRevision
+  });
+
+  assert.equal(updated.ok, true);
+  assert.equal(updated.plan.estimatedDurationSeconds, 2880);
+
+  const created = runtime.application.openPlanEditor({ trainingDate: '2026-08-10' });
+  created.draft.steps[0].durationSeconds = 420;
+  created.draft.estimatedDurationSeconds = -9999;
+  const savedNew = runtime.application.savePlanDraft({
+    editorSessionId: created.editorSessionId,
+    draft: created.draft,
+    expectedRevision: created.expectedRevision
+  });
+
+  assert.equal(savedNew.ok, true);
+  assert.equal(savedNew.plan.estimatedDurationSeconds, 420);
+});
+
+test('copy uses the detached editor draft including unsaved nested edits and recalculated duration', () => {
+  const runtime = createRuntime();
+  const editor = runtime.application.openPlanEditor({ planId: 'plan_20260803_builtin' });
+  editor.draft.title = '尚未保存的复制来源';
+  editor.draft.steps[0].durationSeconds += 120;
+  editor.draft.steps[0].targets.speedKph.min = 3.7;
+  editor.draft.estimatedDurationSeconds = 7;
+
+  const copied = runtime.application.copyPlanToDate({
+    editorSessionId: editor.editorSessionId,
+    sourcePlanDraft: editor.draft,
+    sourcePlanId: editor.draft.id,
+    targetDate: '2026-08-10',
+    commandKey: 'copy-unsaved-draft',
+    copyIntentId: 'copy_intent_unsaved_draft'
+  });
+
+  assert.equal(copied.ok, true);
+  assert.equal(copied.plan.title, '尚未保存的复制来源');
+  assert.equal(copied.plan.steps[0].durationSeconds, 420);
+  assert.equal(copied.plan.steps[0].targets.speedKph.min, 3.7);
+  assert.equal(copied.plan.estimatedDurationSeconds, 2400);
+  assert.equal(runtime.repository.findById(editor.draft.id).title, '熟悉器械与基础力量');
 });
 
 test('copy-to-empty-date is a deep copy and repeated confirmation is idempotent', () => {

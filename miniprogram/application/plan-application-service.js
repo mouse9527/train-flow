@@ -11,6 +11,7 @@ const {
 const {
   addDraftStep,
   createPlanDraft,
+  estimateModeledSeconds,
   removeDraftStep,
   validatePlanDraft
 } = require('../domain/planning/plan-editor');
@@ -125,6 +126,9 @@ class PlanApplicationService {
     const editorSessionId = `editor_session_${++this.editorSessionSequence}`;
     this.editorSessions.set(editorSessionId, {
       planId: detachedDraft.id,
+      isNew,
+      originalEstimatedDurationSeconds: isNew ? 0 : persisted.estimatedDurationSeconds,
+      originalModeledSeconds: isNew ? 0 : estimateModeledSeconds(persisted.steps),
       reservedStepIds: new Set(detachedDraft.steps.map(({ id }) => id)),
       allowedStepIds: new Set(detachedDraft.steps.map(({ id }) => id)),
       removedStepIds: new Set(),
@@ -151,6 +155,17 @@ class PlanApplicationService {
 
   closePlanEditor(editorSessionId) {
     return this.editorSessions.delete(editorSessionId);
+  }
+
+  createCopyIntentId({ editorSessionId, draft, targetDate } = {}) {
+    this.requireEditorSession(editorSessionId, draft);
+    return `copy_intent_${computeChecksum({
+      editorSessionId,
+      sourcePlanId: draft.id,
+      sourceRevision: draft.revision,
+      targetDate,
+      sequence: ++this.copyIntentSequence
+    }).slice(0, 24)}`;
   }
 
   addPlanDraftStep({ editorSessionId, draft, kind, name }) {
@@ -217,12 +232,25 @@ class PlanApplicationService {
     return { ok: true, session };
   }
 
+  recalculateDraftDuration(draft, session) {
+    const recalculated = createPlanDraft(draft);
+    const modeledSeconds = estimateModeledSeconds(recalculated.steps);
+    recalculated.estimatedDurationSeconds = session.isNew
+      ? modeledSeconds
+      : Math.max(
+        0,
+        session.originalEstimatedDurationSeconds + modeledSeconds - session.originalModeledSeconds
+      );
+    return recalculated;
+  }
+
   savePlanDraft({ editorSessionId, draft, expectedRevision } = {}) {
     const identities = this.validateEditorStepIdentities(editorSessionId, draft);
     if (!identities.ok) {
       return identities;
     }
-    const validation = validatePlanDraft(draft);
+    const recalculated = this.recalculateDraftDuration(draft, identities.session);
+    const validation = validatePlanDraft(recalculated);
     if (!validation.valid) {
       return {
         ok: false,
@@ -231,7 +259,10 @@ class PlanApplicationService {
       };
     }
     try {
-      const plan = this.repository.save(createPlanDraft(draft), expectedRevision);
+      const plan = this.repository.save(recalculated, expectedRevision);
+      identities.session.isNew = false;
+      identities.session.originalEstimatedDurationSeconds = plan.estimatedDurationSeconds;
+      identities.session.originalModeledSeconds = estimateModeledSeconds(plan.steps);
       identities.session.stepKinds = new Map(plan.steps.map(({ id, kind }) => [id, kind]));
       return {
         ok: true,
@@ -258,6 +289,8 @@ class PlanApplicationService {
   }
 
   copyPlanToDate({
+    editorSessionId = null,
+    sourcePlanDraft = null,
     sourcePlanId,
     targetDate,
     commandKey,
@@ -269,9 +302,32 @@ class PlanApplicationService {
     if (typeof commandKey !== 'string' || commandKey.trim().length === 0) {
       throw new Error('copy commandKey must be a non-empty string');
     }
-    const source = this.repository.findById(sourcePlanId);
-    if (source === null) {
+    const persistedSource = this.repository.findById(sourcePlanId);
+    if (persistedSource === null) {
       throw new Error(`WorkoutPlan ${sourcePlanId} is unavailable`);
+    }
+    let source = persistedSource;
+    if (sourcePlanDraft !== null) {
+      const identities = this.validateEditorStepIdentities(editorSessionId, sourcePlanDraft);
+      if (!identities.ok) {
+        return identities;
+      }
+      if (sourcePlanDraft.id !== sourcePlanId) {
+        return {
+          ok: false,
+          code: 'PLAN_EDITOR_SESSION_INVALID',
+          fieldErrors: { 'plan.id': '复制来源与当前编辑计划不一致' }
+        };
+      }
+      source = this.recalculateDraftDuration(sourcePlanDraft, identities.session);
+      const validation = validatePlanDraft(source);
+      if (!validation.valid) {
+        return {
+          ok: false,
+          code: 'PLAN_VALIDATION_FAILED',
+          fieldErrors: validation.fieldErrors
+        };
+      }
     }
     if (targetDate === source.trainingDate) {
       return {
@@ -291,6 +347,7 @@ class PlanApplicationService {
         fieldErrors: { 'plan.revision': '替换确认已失效，请重新加载目标计划' }
       };
     }
+    const target = this.repository.findByDate(targetDate);
     const stableIntentId = copyIntentId || commandKey;
     const fingerprint = computeChecksum({
       command: 'copy_plan_to_date',
@@ -310,9 +367,8 @@ class PlanApplicationService {
     if (replayed !== null && replayed.trainingDate === targetDate) {
       return { ok: true, plan: replayed, replayed: true, replaced: false };
     }
-    const target = this.repository.findByDate(targetDate);
     if (target !== null && !confirmReplace) {
-      const issuedIntentId = `copy_intent_${computeChecksum({
+      const issuedIntentId = copyIntentId || `copy_intent_${computeChecksum({
         sourcePlanId,
         sourceRevision: source.revision,
         targetDate,

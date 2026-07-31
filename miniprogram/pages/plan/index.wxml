@@ -23,7 +23,19 @@
     <text class="tf-caption">{{week.emptyGuidance}}</text>
   </view>
 
-  <view class="week-list" wx:else>
+  <view class="empty-date-list" wx:if="{{week.emptyDates.length}}">
+    <view class="empty-date-heading">新增训练日</view>
+    <button
+      class="empty-date-action"
+      wx:for="{{week.emptyDates}}"
+      wx:key="trainingDate"
+      wx:for-item="emptyDate"
+      data-date="{{emptyDate.trainingDate}}"
+      bindtap="onCreatePlan"
+    >{{emptyDate.weekday}} · {{emptyDate.dateLabel}}</button>
+  </view>
+
+  <view class="week-list" wx:if="{{!week.isEmpty}}">
     <view
       class="day-row {{day.selected ? 'day-row-selected' : ''}}"
       wx:for="{{week.days}}"

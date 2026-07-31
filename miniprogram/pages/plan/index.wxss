@@ -104,6 +104,34 @@
   font-weight: 600;
 }
 
+.empty-date-list {
+  margin-bottom: 24rpx;
+  padding: 22rpx;
+  border: 1rpx solid #dce8f5;
+  border-radius: 20rpx;
+  background: #f7fbff;
+}
+
+.empty-date-heading {
+  margin-bottom: 12rpx;
+  color: #25313c;
+  font-size: 26rpx;
+  font-weight: 700;
+}
+
+.empty-date-action {
+  margin: 10rpx 0 0;
+  border-radius: 12rpx;
+  background: #ffffff;
+  color: #2468a6;
+  font-size: 24rpx;
+  line-height: 68rpx;
+}
+
+.empty-date-action::after {
+  border-color: #c9dff3;
+}
+
 .week-list {
   overflow: hidden;
   margin-bottom: 24rpx;
