@@ -44,13 +44,19 @@ class TimedWorkoutRuntime {
     now,
     idFactory,
     commandKeyFactory,
-    notifyExpired
+    notifyExpired,
+    deviceAdapterFactory
   }) {
     this.database = database;
     this.now = now;
     this.idFactory = idFactory;
     this.commandKeyFactory = commandKeyFactory;
     this.notifyExpired = notifyExpired;
+    this.deviceAdapterFactory = deviceAdapterFactory;
+    this.deviceAdapter = null;
+    this.settings = null;
+    this.deviceNotice = null;
+    this.notifiedTerminalOccurrences = new Set();
     this.notifiedOccurrences = new Set();
     this.service = null;
     this.session = null;
@@ -83,6 +89,44 @@ class TimedWorkoutRuntime {
       idFactory: this.idFactory,
       now: this.now
     });
+    this.settings = snapshot.settings;
+    if (typeof this.deviceAdapterFactory === 'function') {
+      this.deviceAdapter = this.deviceAdapterFactory({ ...this.settings });
+    }
+  }
+
+  observeDeviceEffect(effectName, result) {
+    if (result && result.supported === false) {
+      this.deviceNotice = effectName === 'keep-screen'
+        ? '屏幕常亮暂不可用，训练仍可继续。'
+        : '设备提醒部分不可用，已保留页面视觉提示。';
+    }
+  }
+
+  runDeviceEffect(effectName, callback) {
+    try {
+      const result = callback();
+      if (result && typeof result.then === 'function') {
+        Promise.resolve(result).then(
+          (value) => this.observeDeviceEffect(effectName, value),
+          () => this.observeDeviceEffect(effectName, { supported: false })
+        );
+      } else {
+        this.observeDeviceEffect(effectName, result);
+      }
+    } catch (error) {
+      this.observeDeviceEffect(effectName, { supported: false });
+    }
+  }
+
+  setKeepScreen(enabled) {
+    if (!this.deviceAdapter || typeof this.deviceAdapter.setKeepScreen !== 'function') {
+      return;
+    }
+    if (enabled && (!this.settings || this.settings.keepScreenOn !== true)) {
+      return;
+    }
+    this.runDeviceEffect('keep-screen', () => this.deviceAdapter.setKeepScreen(enabled));
   }
 
   load({ planId } = {}) {
@@ -110,6 +154,11 @@ class TimedWorkoutRuntime {
       } else {
         throw new Error('没有可恢复的训练，请从今日训练重新开始');
       }
+      if (this.session.status === 'completed' || this.session.status === 'aborted') {
+        this.setKeepScreen(false);
+      } else {
+        this.setKeepScreen(true);
+      }
       return this.render();
     } catch (error) {
       this.lastError = error;
@@ -123,7 +172,36 @@ class TimedWorkoutRuntime {
     }
     const view = buildTimedWorkoutView(this.session, { nowMs: this.now() });
     this.notifyIfExpired();
-    return view;
+    this.notifyIfTerminal();
+    return this.deviceNotice ? { ...view, deviceNotice: this.deviceNotice } : view;
+  }
+
+  notifyIfTerminal() {
+    if (
+      !this.session ||
+      !['completed', 'aborted'].includes(this.session.status) ||
+      !this.deviceAdapter ||
+      typeof this.deviceAdapter.notify !== 'function'
+    ) {
+      return;
+    }
+    const occurrenceId = JSON.stringify([
+      'workout-session-terminal',
+      this.session.id,
+      this.session.status,
+      this.session.endedAt
+    ]);
+    if (this.notifiedTerminalOccurrences.has(occurrenceId)) {
+      return;
+    }
+    this.notifiedTerminalOccurrences.add(occurrenceId);
+    const completed = this.session.status === 'completed';
+    this.runDeviceEffect('notification', () => this.deviceAdapter.notify({
+      occurrenceId,
+      kind: completed ? 'session-completed' : 'session-aborted',
+      visualMessage: completed ? '训练完成' : '训练已结束',
+      voiceText: completed ? '训练完成，请填写身体反馈' : '训练已结束，请填写身体反馈'
+    }));
   }
 
   notifyIfExpired() {
@@ -192,7 +270,18 @@ class TimedWorkoutRuntime {
 
       let deliveryResult;
       try {
-        deliveryResult = this.notifyExpired(occurrenceId);
+        if (typeof this.notifyExpired === 'function') {
+          deliveryResult = this.notifyExpired(occurrenceId);
+        } else if (this.deviceAdapter && typeof this.deviceAdapter.notify === 'function') {
+          deliveryResult = this.deviceAdapter.notify({
+            occurrenceId,
+            kind: this.session.timer.mode === 'rest' ? 'rest-expired' : 'timer-expired',
+            visualMessage: this.session.timer.mode === 'rest'
+              ? '休息结束，请确认下一组'
+              : '计时结束，请确认下一步',
+            voiceText: this.session.timer.mode === 'rest' ? '休息结束' : '计时结束'
+          });
+        }
       } catch (error) {
         this.requeueFailedNotification(occurrenceId);
         return;
@@ -274,6 +363,9 @@ class TimedWorkoutRuntime {
       payload
     });
     this.session = applied.session;
+    if (this.session.status === 'completed' || this.session.status === 'aborted') {
+      this.setKeepScreen(false);
+    }
     return this.render();
   }
 
@@ -380,15 +472,23 @@ class TimedWorkoutRuntime {
   }
 
   onHide() {
-    return this.checkpoint('checkpointOnHide', 'hide');
+    const view = this.checkpoint('checkpointOnHide', 'hide');
+    this.setKeepScreen(false);
+    return view;
   }
 
   onShow() {
-    return this.checkpoint('restoreOnShow', 'show');
+    const view = this.checkpoint('restoreOnShow', 'show');
+    if (this.session && !['completed', 'aborted'].includes(this.session.status)) {
+      this.setKeepScreen(true);
+    }
+    return view;
   }
 
   onUnload() {
-    return this.checkpoint('checkpointOnUnload', 'unload');
+    const view = this.checkpoint('checkpointOnUnload', 'unload');
+    this.setKeepScreen(false);
+    return view;
   }
 
   materializeDeadline() {
@@ -410,14 +510,16 @@ function createTimedWorkoutRuntime({
   now = Date.now,
   idFactory = () => defaultId('session', now()),
   commandKeyFactory = (type) => defaultId(type, now()),
-  notifyExpired = () => {}
+  notifyExpired,
+  deviceAdapterFactory
 } = {}) {
   return new TimedWorkoutRuntime({
     database,
     now,
     idFactory,
     commandKeyFactory,
-    notifyExpired
+    notifyExpired,
+    deviceAdapterFactory
   });
 }
 

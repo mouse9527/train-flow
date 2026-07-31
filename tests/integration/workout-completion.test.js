@@ -32,6 +32,8 @@ const START_AT = 1785717300000;
 function manualPlan() {
   const plan = createDefaultPlans({ now: () => START_AT })[2];
   plan.id = 'plan_completion_manual';
+  plan.trainingDate = '2026-08-10';
+  plan.templateSource = null;
   plan.steps = [{ ...plan.steps.find(({ kind }) => kind === 'manual'), order: 1 }];
   return plan;
 }
@@ -239,7 +241,8 @@ function createRuntimeHarness({ keepScreenOn = true } = {}) {
 
 test('runtime honors keep-screen settings and releases on hide, terminal completion and unload', async () => {
   const harness = createRuntimeHarness();
-  harness.runtime.load({ planId: harness.plan.id });
+  const loaded = harness.runtime.load({ planId: harness.plan.id });
+  assert.notEqual(loaded.state, 'recovery-error', loaded.recoveryError && loaded.recoveryError.message);
   await Promise.resolve();
   assert.deepEqual(harness.deviceCalls[0], ['screen', true]);
 
@@ -267,7 +270,12 @@ test('runtime honors keep-screen settings and releases on hide, terminal complet
 
 test('summary runtime atomically saves one private completion fact without writing feedback to console', () => {
   const harness = createRuntimeHarness();
-  harness.runtime.load({ planId: harness.plan.id });
+  const loadedWorkout = harness.runtime.load({ planId: harness.plan.id });
+  assert.notEqual(
+    loadedWorkout.state,
+    'recovery-error',
+    loadedWorkout.recoveryError && loadedWorkout.recoveryError.message
+  );
   harness.setNow(START_AT + 95_000);
   harness.runtime.endWorkout();
   const summaryRuntime = createWorkoutSummaryRuntime({ database: harness.database });
