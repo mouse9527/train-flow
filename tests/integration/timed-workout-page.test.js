@@ -144,6 +144,134 @@ test('expired occurrence notification stays deduplicated after runtime and page 
   assert.equal(new Set(harness.notifications).size, 1);
 });
 
+test('skip, early complete and confirm next each persist one atomic revision with next timer started', () => {
+  const scenarios = [
+    {
+      name: 'skip',
+      commandType: 'skip_step_and_start_next',
+      prepare(harness) {
+        harness.runtime.load({ planId: harness.plans[0].id });
+        harness.runtime.start();
+      },
+      act(harness) {
+        return harness.runtime.skip();
+      }
+    },
+    {
+      name: 'early complete',
+      commandType: 'early_complete_step_and_start_next',
+      prepare(harness) {
+        harness.runtime.load({ planId: harness.plans[0].id });
+        harness.runtime.start();
+      },
+      act(harness) {
+        return harness.runtime.earlyComplete();
+      }
+    },
+    {
+      name: 'confirm next',
+      commandType: 'confirm_next_and_start_next',
+      prepare(harness) {
+        harness.runtime.load({ planId: harness.plans[0].id });
+        harness.runtime.start();
+        harness.setNow(START_AT + 6 * 60_000);
+        harness.runtime.onShow();
+      },
+      act(harness) {
+        return harness.runtime.confirmNext();
+      }
+    }
+  ];
+
+  for (const scenario of scenarios) {
+    const harness = createHarness();
+    scenario.prepare(harness);
+    const before = harness.database.load();
+    const view = scenario.act(harness);
+    const after = harness.database.load();
+
+    assert.equal(view.currentStepIndex, 1, scenario.name);
+    assert.equal(view.state, 'running', scenario.name);
+    assert.equal(view.timerLabel, '12:00', scenario.name);
+    assert.equal(after.localRevision, before.localRevision + 1, scenario.name);
+    assert.equal(
+      after.activeSession.sessionRevision,
+      before.activeSession.sessionRevision + 1,
+      scenario.name
+    );
+    assert.equal(after.activeSession.processedCommands.at(-1).type, scenario.commandType);
+  }
+});
+
+test('atomic next-step command leaves no half progression after back-half storage failure and retry', () => {
+  const storage = new StorageDouble();
+  let clock = START_AT;
+  const innerDatabase = createLocalDatabase({ storage, now: () => clock });
+  const plans = createDefaultPlans({ now: () => START_AT });
+  innerDatabase.commit((draft) => {
+    draft.install = { deviceId: 'device_atomic_failure', createdAt: START_AT };
+    draft.plans.push(...clone(plans));
+  });
+
+  let failAtomicDraft = false;
+  const database = {
+    load() {
+      return innerDatabase.load();
+    },
+    commit(mutator, expectedRevision) {
+      const preview = clone(innerDatabase.load());
+      mutator(preview);
+      if (
+        failAtomicDraft &&
+        preview.activeSession &&
+        preview.activeSession.currentStepIndex === 1 &&
+        preview.activeSession.timer &&
+        preview.activeSession.timer.status === 'running'
+      ) {
+        throw new Error('injected back-half auto-start storage failure');
+      }
+      return innerDatabase.commit(mutator, expectedRevision);
+    }
+  };
+  let commandSequence = 0;
+  const runtime = createTimedWorkoutRuntime({
+    database,
+    now: () => clock,
+    idFactory: () => 'session_atomic_failure',
+    commandKeyFactory: (type) => `atomic_${type}_${++commandSequence}`,
+    notifyExpired() {}
+  });
+  runtime.load({ planId: plans[0].id });
+  runtime.start();
+  clock = START_AT + 5_000;
+  const before = innerDatabase.load();
+  failAtomicDraft = true;
+
+  assert.throws(
+    () => runtime.skip(),
+    /injected back-half auto-start storage failure/
+  );
+  const afterFailure = innerDatabase.load();
+  assert.equal(afterFailure.localRevision, before.localRevision);
+  assert.equal(afterFailure.activeSession.currentStepIndex, 0);
+  assert.equal(afterFailure.activeSession.timer.status, 'running');
+
+  failAtomicDraft = false;
+  const retried = runtime.skip();
+  const afterRetry = innerDatabase.load();
+  assert.equal(retried.currentStepIndex, 1);
+  assert.equal(retried.state, 'running');
+  assert.equal(afterRetry.localRevision, before.localRevision + 1);
+  assert.equal(
+    afterRetry.activeSession.sessionRevision,
+    before.activeSession.sessionRevision + 1
+  );
+  assert.equal(
+    afterRetry.activeSession.processedCommands.at(-1).type,
+    'skip_step_and_start_next'
+  );
+});
+
 test('skip, previous, early complete and end workout preserve command revisions and valid states', () => {
   const harness = createHarness();
   harness.runtime.load({ planId: harness.plans[0].id });
@@ -174,12 +302,10 @@ test('skip, previous, early complete and end workout preserve command revisions 
     [
       'start_session',
       'start_step',
-      'skip_step',
-      'start_step',
+      'skip_step_and_start_next',
       'previous_step',
       'start_step',
-      'early_complete_step',
-      'start_step',
+      'early_complete_step_and_start_next',
       'abort'
     ]
   );

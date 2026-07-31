@@ -172,29 +172,18 @@ class TimedWorkoutRuntime {
     return this.execute('previous_step');
   }
 
-  autoStartNext(view) {
-    if (view.state !== 'ready' || !this.currentStep()) {
-      return view;
-    }
-    if (!['timed', 'interval'].includes(this.currentStep().kind)) {
-      return view;
-    }
-    return this.start();
-  }
-
   skip() {
-    const view = this.execute('skip_step', { stepId: this.currentStep().id });
-    return this.autoStartNext(view);
+    return this.execute('skip_step_and_start_next', { stepId: this.currentStep().id });
   }
 
   earlyComplete() {
-    const view = this.execute('early_complete_step', { stepId: this.currentStep().id });
-    return this.autoStartNext(view);
+    return this.execute('early_complete_step_and_start_next', {
+      stepId: this.currentStep().id
+    });
   }
 
   confirmNext() {
-    const view = this.execute('confirm_next', { stepId: this.currentStep().id });
-    return this.autoStartNext(view);
+    return this.execute('confirm_next_and_start_next', { stepId: this.currentStep().id });
   }
 
   endWorkout() {

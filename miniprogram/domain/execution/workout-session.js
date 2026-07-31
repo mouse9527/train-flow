@@ -43,8 +43,11 @@ const COMMAND_PAYLOAD_FIELDS = Object.freeze({
   adjust_timer: Object.freeze(['deltaSeconds']),
   complete_step: Object.freeze(['stepId']),
   confirm_next: Object.freeze(['stepId']),
+  confirm_next_and_start_next: Object.freeze(['stepId']),
   early_complete_step: Object.freeze(['stepId']),
+  early_complete_step_and_start_next: Object.freeze(['stepId']),
   skip_step: Object.freeze(['stepId']),
+  skip_step_and_start_next: Object.freeze(['stepId']),
   previous_step: Object.freeze([]),
   complete_set: Object.freeze(['stepId', 'setNumber', 'reps', 'weightKg']),
   abort: Object.freeze(['reason'])
@@ -53,11 +56,19 @@ const BUSINESS_PROGRESSION_COMMANDS = Object.freeze([
   'start_step',
   'complete_step',
   'confirm_next',
+  'confirm_next_and_start_next',
   'early_complete_step',
+  'early_complete_step_and_start_next',
   'skip_step',
+  'skip_step_and_start_next',
   'previous_step',
   'complete_set'
 ]);
+const AUTO_START_PROGRESSION_COMMANDS = Object.freeze({
+  confirm_next_and_start_next: 'confirm_next',
+  early_complete_step_and_start_next: 'early_complete_step',
+  skip_step_and_start_next: 'skip_step'
+});
 const STEP_RESULT_FIELDS = Object.freeze(['stepId', 'status', 'completedAt', 'setResults']);
 const SET_RESULT_FIELDS = Object.freeze(['setNumber', 'reps', 'weightKg', 'completedAt']);
 
@@ -591,11 +602,32 @@ function advanceAfterStep(session, stepId, nowMs, status = 'completed') {
   session.currentSet = nextStep.kind === 'strength' || nextStep.kind === 'interval' ? 1 : null;
 }
 
+function startCurrentTimedStep(session, nowMs, timerEngine) {
+  if (session.status !== 'in_progress') {
+    return;
+  }
+  const step = currentStepFor(session);
+  if (!step || (step.kind !== 'timed' && step.kind !== 'interval')) {
+    return;
+  }
+  session.timer = timerEngine.start({
+    mode: 'step',
+    durationSeconds: step.durationSeconds,
+    stepId: step.id,
+    setNumber: null
+  }, nowMs);
+}
+
 function applyTransition(session, command, timerEngine) {
   assertBusinessProgressionStatus(session, command);
   materializeCheckpoint(session, command.nowMs, timerEngine);
   assertBusinessProgressionStatus(session, command);
   const step = currentStepFor(session);
+  const progressionType = AUTO_START_PROGRESSION_COMMANDS[command.type] || command.type;
+  const autoStartNext = Object.prototype.hasOwnProperty.call(
+    AUTO_START_PROGRESSION_COMMANDS,
+    command.type
+  );
   const confirmsClockAnomaly =
     command.type === 'resume' &&
     session.timer !== null &&
@@ -703,21 +735,21 @@ function applyTransition(session, command, timerEngine) {
     session.timer !== null &&
     session.timer.mode === 'step' &&
     session.timer.status === 'expired' &&
-    (command.type === 'skip_step' || command.type === 'early_complete_step')
+    (progressionType === 'skip_step' || progressionType === 'early_complete_step')
   ) {
     throw createSessionError(
       'Expired step requires explicit next confirmation',
       'SESSION_EXPIRED_CONFIRMATION_REQUIRED'
     );
   }
-  if (command.type === 'complete_step' && step.kind === 'timed') {
+  if (progressionType === 'complete_step' && step.kind === 'timed') {
     throw createSessionError(
       'Timed step completion requires confirm_next',
       'SESSION_CONFIRM_NEXT_REQUIRED'
     );
   }
-  if (command.type === 'complete_step' || command.type === 'confirm_next') {
-    if (command.type === 'confirm_next' && step.kind === 'manual') {
+  if (progressionType === 'complete_step' || progressionType === 'confirm_next') {
+    if (progressionType === 'confirm_next' && step.kind === 'manual') {
       throw createSessionError(
         'Manual step does not have an expired timer to confirm',
         'SESSION_CONFIRM_NEXT_INVALID'
@@ -757,9 +789,12 @@ function applyTransition(session, command, timerEngine) {
       });
     }
     advanceAfterStep(session, step.id, transitionNowMs);
+    if (autoStartNext) {
+      startCurrentTimedStep(session, transitionNowMs, timerEngine);
+    }
     return;
   }
-  if (command.type === 'early_complete_step') {
+  if (progressionType === 'early_complete_step') {
     if (step.kind !== 'timed') {
       throw createSessionError(
         'Early completion is only available for timed steps',
@@ -773,10 +808,16 @@ function applyTransition(session, command, timerEngine) {
       );
     }
     advanceAfterStep(session, step.id, transitionNowMs);
+    if (autoStartNext) {
+      startCurrentTimedStep(session, transitionNowMs, timerEngine);
+    }
     return;
   }
-  if (command.type === 'skip_step') {
+  if (progressionType === 'skip_step') {
     advanceAfterStep(session, step.id, transitionNowMs, 'skipped');
+    if (autoStartNext) {
+      startCurrentTimedStep(session, transitionNowMs, timerEngine);
+    }
     return;
   }
   if (command.type === 'complete_set') {
