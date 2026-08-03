@@ -1,3 +1,7 @@
+<view class="tf-page record-load-shell" wx:if="{{validationError && !view}}">
+  <view class="validation-error record-load-error">{{validationError}}</view>
+</view>
+
 <view class="tf-page record-page" wx:if="{{view}}">
   <view class="record-hero">
     <view>

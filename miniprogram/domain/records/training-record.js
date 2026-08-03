@@ -217,6 +217,22 @@ function assertRecord(record) {
       throw new TypeError('record.actualCorrections must use the canonical stored schema');
     }
     assertCorrectionReceipts(record.processedCorrectionCommands);
+    const lastReceipt = record.processedCorrectionCommands[
+      record.processedCorrectionCommands.length - 1
+    ];
+    if (lastReceipt.resultRevision !== record.revision) {
+      throw new TypeError('record correction receipt revision must match record.revision');
+    }
+    if (
+      record.revision === 1 &&
+      (
+        record.actualCorrections.length !== 0 ||
+        record.processedCorrectionCommands.length !== 1 ||
+        lastReceipt.resultRevision !== 1
+      )
+    ) {
+      throw new TypeError('revision 1 correction state must be a receipt-only lazy materialization');
+    }
   }
   return record;
 }
@@ -265,6 +281,7 @@ function assertCorrectionReceipts(receipts) {
     throw new TypeError('record.processedCorrectionCommands must be an array');
   }
   const keys = new Set();
+  let previousResultRevision = 0;
   receipts.forEach((receipt, index) => {
     const label = `record.processedCorrectionCommands[${index}]`;
     assertClosedObject(receipt, CORRECTION_RECEIPT_FIELDS, label);
@@ -272,11 +289,19 @@ function assertCorrectionReceipts(receipts) {
     if (!/^[a-f0-9]{64}$/.test(receipt.fingerprint)) {
       throw new TypeError(`${label}.fingerprint must be a SHA-256 digest`);
     }
-    assertSafeInteger(receipt.resultRevision, `${label}.resultRevision`, 2);
+    assertSafeInteger(
+      receipt.resultRevision,
+      `${label}.resultRevision`,
+      index === 0 ? 1 : 2
+    );
+    if (receipt.resultRevision <= previousResultRevision) {
+      throw new TypeError('record correction receipt revisions must increase');
+    }
     if (keys.has(receipt.key)) {
       throw new TypeError('record correction command keys must be unique');
     }
     keys.add(receipt.key);
+    previousResultRevision = receipt.resultRevision;
   });
 }
 

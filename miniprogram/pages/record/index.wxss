@@ -2,6 +2,12 @@
   padding-bottom: 80rpx;
 }
 
+.record-load-shell {
+  min-height: 100vh;
+  padding-top: 48rpx;
+  box-sizing: border-box;
+}
+
 .record-hero,
 .detail-header,
 .edit-heading,

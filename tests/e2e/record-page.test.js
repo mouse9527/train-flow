@@ -275,4 +275,26 @@ test('record WXML binds filters, list/detail actual states, edit inputs and dele
   assert.match(wxss, /record-card-selected/);
   assert.match(wxss, /delete-confirmation/);
   assert.match(wxss, /edit-panel/);
+  const loadErrorIndex = wxml.indexOf('record-load-error');
+  assert.notEqual(loadErrorIndex, -1, 'WXML must render a dedicated first-load error');
+  assert.ok(
+    loadErrorIndex < wxml.indexOf('wx:if="{{view}}"'),
+    'first-load errors must render outside the view-gated page root'
+  );
+});
+
+test('record page preserves a visible first-load error when repository view creation fails', () => {
+  const page = mount(createRecordPageDefinition({
+    applicationFactory: () => ({
+      getView() {
+        throw new Error('记录存储校验失败');
+      }
+    }),
+    getWx: () => wxDouble('release')
+  }));
+
+  page.onLoad({});
+
+  assert.equal(page.data.view, null);
+  assert.equal(page.data.validationError, '记录存储校验失败');
 });

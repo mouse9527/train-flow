@@ -410,7 +410,7 @@ function prepareCurrentRecord(current, source) {
   };
 }
 
-function materializeCorrection(command, source) {
+function materializationCorrection(command, source) {
   const baseline = createBaselineTrainingRecord(source);
   if (baseline.id !== command.recordId || command.expectedRevision !== 0) {
     throw new Error('TrainingRecord materialization identity or revision is stale');
@@ -422,10 +422,50 @@ function materializeCorrection(command, source) {
     ...aggregateCommand(command),
     expectedRevision: baseline.revision
   });
-  const materialized = cloneJson(baseline);
-  materialized.feedback = cloneJson(validated.feedback);
-  materialized.updatedAt = command.nowMs;
-  return materialized;
+  const fingerprint = computeChecksum({
+    expectedRevision: command.expectedRevision,
+    commandKey: command.commandKey,
+    nowMs: command.nowMs,
+    actualCorrections: validated.actualCorrections,
+    feedback: validated.feedback
+  });
+  return {
+    fingerprint,
+    record: {
+      ...cloneJson(baseline),
+      actualCorrections: cloneJson(validated.actualCorrections),
+      feedback: cloneJson(validated.feedback),
+      processedCorrectionCommands: [{
+        key: command.commandKey,
+        fingerprint,
+        resultRevision: baseline.revision
+      }],
+      updatedAt: command.nowMs
+    }
+  };
+}
+
+function materializeCorrection(command, source) {
+  return materializationCorrection(command, source).record;
+}
+
+function replayMaterializationCorrection(record, command, source) {
+  const terminalSource = terminalSourceFromRecord(record);
+  if (source && !recordMatchesTerminalSource(record, source)) {
+    throw new Error('TrainingRecord source does not match the replayed materialization');
+  }
+  const { fingerprint } = materializationCorrection(command, terminalSource);
+  const receipts = hasOwn(record, 'processedCorrectionCommands')
+    ? record.processedCorrectionCommands
+    : [];
+  const receipt = receipts.find(({ key }) => key === command.commandKey);
+  if (!receipt) {
+    throw new Error('TrainingRecord materialization correction revision is stale');
+  }
+  if (receipt.fingerprint !== fingerprint) {
+    throw new Error('TrainingRecord correction command key conflicts with prior intent');
+  }
+  return cloneJson(record);
 }
 
 function statisticsInvalidation(command, record) {
@@ -457,6 +497,9 @@ class TrainingRecordRepository {
     }
     if (current && isDeletedTrainingRecord(current)) {
       throw new Error('TrainingRecord is deleted and cannot be corrected');
+    }
+    if (current && command.expectedRevision === 0) {
+      return replayMaterializationCorrection(current, command, source);
     }
     const preview = current
       ? applyTrainingRecordCorrection(

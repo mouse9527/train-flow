@@ -167,20 +167,24 @@ function validCommandReceipts(receipts, recordRevision) {
     return false;
   }
   const keys = new Set();
-  for (const receipt of receipts) {
+  let previousResultRevision = 0;
+  for (let index = 0; index < receipts.length; index += 1) {
+    const receipt = receipts[index];
     if (
       !hasExactFields(receipt, COMMAND_RECEIPT_FIELDS) ||
       typeof receipt.key !== 'string' ||
       receipt.key.length === 0 ||
       !/^[a-f0-9]{64}$/.test(receipt.fingerprint) ||
       !Number.isSafeInteger(receipt.resultRevision) ||
-      receipt.resultRevision < 2 ||
+      receipt.resultRevision < (index === 0 ? 1 : 2) ||
       receipt.resultRevision > recordRevision ||
+      receipt.resultRevision <= previousResultRevision ||
       keys.has(receipt.key)
     ) {
       return false;
     }
     keys.add(receipt.key);
+    previousResultRevision = receipt.resultRevision;
   }
   return receipts[receipts.length - 1].resultRevision === recordRevision;
 }
@@ -196,6 +200,16 @@ function validCorrectionOverlay(record) {
     !hasReceipts ||
     !Array.isArray(record.actualCorrections) ||
     !validCommandReceipts(record.processedCorrectionCommands, record.revision)
+  ) {
+    return false;
+  }
+  if (
+    record.revision === 1 &&
+    (
+      record.actualCorrections.length !== 0 ||
+      record.processedCorrectionCommands.length !== 1 ||
+      record.processedCorrectionCommands[0].resultRevision !== 1
+    )
   ) {
     return false;
   }

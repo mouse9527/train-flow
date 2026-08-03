@@ -17,6 +17,9 @@ const {
   createTrainingRecordRepository
 } = require('../../miniprogram/domain/records/training-record-repository');
 const {
+  createRecordPageDefinition
+} = require('../../miniprogram/pages/record/index');
+const {
   createDefaultPlans
 } = require('../../miniprogram/domain/planning/default-plan-factory');
 const {
@@ -39,6 +42,16 @@ function manualPlan() {
       id: 'step_record_lifecycle_manual',
       order: 10
     }]
+  };
+}
+
+function mount(definition) {
+  return {
+    ...definition,
+    data: clone(definition.data),
+    setData(patch) {
+      this.data = { ...this.data, ...clone(patch) };
+    }
   };
 }
 
@@ -114,4 +127,79 @@ test('real record lifecycle materializes from terminal Session, edits through ap
   assert.equal(durable.length, 1);
   assert.equal(isDeletedTrainingRecord(durable[0]), true);
   assert.equal(database.load().sync.outbox.at(-1).kind, 'training-record.deleted');
+});
+
+test('real record page drives the production application and repository through edit and confirmed delete', () => {
+  const database = createLocalDatabase({
+    storage: new StorageDouble(),
+    now: () => START_AT + 300_000
+  });
+  const sessions = createSessionRepository({ database });
+  const repository = createTrainingRecordRepository({ database });
+  const application = createRecordApplicationService({ repository });
+  const started = sessions.start({
+    plan: manualPlan(),
+    sessionId: 'session_record_page_lifecycle',
+    originDeviceId: 'device_record_page_lifecycle',
+    commandKey: 'start_record_page_lifecycle',
+    nowMs: START_AT
+  });
+  sessions.apply({
+    type: 'complete_step',
+    expectedSessionRevision: started.sessionRevision,
+    commandKey: 'complete_record_page_lifecycle',
+    nowMs: START_AT + 60_000,
+    payload: { stepId: started.planSnapshot.steps[0].id }
+  }, { originDeviceId: 'device_record_page_lifecycle' });
+  const toasts = [];
+  const times = [START_AT + 120_000, START_AT + 180_000];
+  const page = mount(createRecordPageDefinition({
+    applicationFactory: () => application,
+    getWx: () => ({
+      getAccountInfoSync() {
+        return { miniProgram: { envVersion: 'release' } };
+      },
+      showToast(options) {
+        toasts.push(clone(options));
+      }
+    }),
+    now: () => times.shift(),
+    commandKeyFactory: (kind) => `page_real_${kind}`
+  }));
+
+  page.onLoad({});
+  assert.equal(page.data.view.records.length, 1);
+  assert.equal(page.data.view.selectedRecord.steps[0].actualLabel, '未记录');
+
+  page.onStartEdit();
+  page.onStepValueInput({
+    currentTarget: { dataset: { stepIndex: 0, field: 'actualReps' } },
+    detail: { value: '20' }
+  });
+  page.onFeedbackInput({
+    currentTarget: { dataset: { field: 'rpe' } },
+    detail: { value: '7' }
+  });
+  page.onFeedbackInput({
+    currentTarget: { dataset: { field: 'note' } },
+    detail: { value: '匿名页面集成记录' }
+  });
+  page.onSaveEdit();
+
+  assert.equal(page.data.view.selectedRecord.steps[0].actualLabel, '20 次');
+  assert.equal(page.data.view.selectedRecord.feedback.rpe, 7);
+  assert.equal(page.data.view.selectedRecord.feedback.note, '匿名页面集成记录');
+  assert.equal(database.load().sync.outbox.at(-1).kind, 'training-record.corrected');
+
+  page.onRequestDelete();
+  assert.equal(page.data.deleteConfirmation.recordId, page.data.view.selectedRecord.id);
+  page.onConfirmDelete();
+
+  assert.deepEqual(page.data.view.records, []);
+  assert.equal(page.data.view.selectedRecord, null);
+  assert.equal(database.load().sync.outbox.at(-1).kind, 'training-record.deleted');
+  assert.deepEqual(toasts, [
+    { title: '训练记录已更新', icon: 'none' },
+    { title: '训练记录已删除', icon: 'none' }
+  ]);
 });

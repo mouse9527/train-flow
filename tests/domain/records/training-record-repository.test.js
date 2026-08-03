@@ -2,7 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
-  createBaselineTrainingRecord
+  createBaselineTrainingRecord,
+  terminalSourceFromRecord
 } = require('../../../miniprogram/domain/execution/training-record');
 const {
   applyWorkoutCommand,
@@ -429,4 +430,63 @@ test('Attack Round 5: repository late replay of correction A returns current B s
   lateReplay.actualCorrections[0].actualReps = 999;
   assert.equal(database.load().records[0].feedback.note, 'repository current B state');
   assert.equal(database.load().records[0].actualCorrections[0].actualReps, 21);
+});
+
+test('Independent review regression: lazy materialization correction keeps an exact receipt for immediate and late replay', () => {
+  const { database, canonical } = createHarness({ records: [] });
+  const repository = createRepository(database);
+  const source = terminalSourceFromRecord(canonical);
+  const commandA = correctionCommand(canonical, {
+    expectedRevision: 0,
+    commandKey: 'lazy_materialization_a',
+    actualCorrections: [],
+    feedback: {
+      rpe: 7,
+      weightBeforeKg: null,
+      pain: {
+        knee: false,
+        lowerBack: false,
+        ankleOrToe: false,
+        dizziness: false
+      },
+      note: 'materialized feedback'
+    }
+  });
+
+  const first = unwrapRecord(repository.correct(commandA, { source }));
+  const afterFirst = database.load();
+  const replay = unwrapRecord(repository.correct(commandA, { source }));
+
+  assert.deepEqual(replay, first);
+  assert.notEqual(replay, first);
+  assert.equal(JSON.stringify(database.load()), JSON.stringify(afterFirst));
+  assert.equal(afterFirst.sync.outbox.length, 1);
+  assert.equal(first.processedCorrectionCommands.length, 1);
+  assert.equal(first.processedCorrectionCommands[0].key, commandA.commandKey);
+  assert.equal(first.processedCorrectionCommands[0].resultRevision, first.revision);
+
+  const commandB = correctionCommand(first, {
+    expectedRevision: first.revision,
+    commandKey: 'lazy_materialization_b',
+    nowMs: commandA.nowMs + 1_000,
+    feedback: {
+      ...commandA.feedback,
+      rpe: 8,
+      note: 'newer correction'
+    }
+  });
+  const afterB = unwrapRecord(repository.correct(commandB));
+  const snapshotAfterB = database.load();
+  const lateReplay = unwrapRecord(repository.correct(commandA, { source }));
+
+  assert.deepEqual(lateReplay, afterB);
+  assert.notEqual(lateReplay, afterB);
+  assert.equal(JSON.stringify(database.load()), JSON.stringify(snapshotAfterB));
+  assert.equal(snapshotAfterB.sync.outbox.length, 2);
+
+  assert.throws(
+    () => repository.correct({ ...commandA, nowMs: commandA.nowMs + 1 }, { source }),
+    /conflict|intent/i
+  );
+  assert.equal(JSON.stringify(database.load()), JSON.stringify(snapshotAfterB));
 });
