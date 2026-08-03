@@ -84,7 +84,13 @@ function createSettingsApplicationService({
     const digest = computeChecksum(JSON.parse(jsonText));
     const expiresAt = now() + confirmationTtlMs;
     const confirmationId = `export_${exportSequence}_${computeChecksum({ digest, expiresAt }).slice(0, 20)}`;
-    exportConfirmations.set(confirmationId, { digest, expiresAt, consumed: false, jsonText });
+    exportConfirmations.set(confirmationId, {
+      digest,
+      expiresAt,
+      consumed: false,
+      inFlight: false,
+      jsonText
+    });
     return confirmationId;
   }
 
@@ -166,17 +172,27 @@ function createSettingsApplicationService({
       const explicitText = optionalConfirmationId !== undefined;
       const confirmationId = explicitText ? optionalConfirmationId : jsonTextOrConfirmationId;
       const confirmation = requireExportConfirmation(confirmationId);
+      if (confirmation.inFlight) {
+        throw new Error('Export confirmation copy is already in progress');
+      }
       const jsonText = explicitText
         ? jsonTextOrConfirmationId
         : confirmation.jsonText;
       if (typeof jsonText !== 'string' || computeChecksum(JSON.parse(jsonText)) !== confirmation.digest) {
         throw new Error('Export confirmation digest mismatch');
       }
-      return writeClipboard(jsonText).then((result) => {
-        confirmation.consumed = true;
-        discardExportConfirmation(confirmationId, confirmation);
-        return result;
-      });
+      confirmation.inFlight = true;
+      return writeClipboard(jsonText).then(
+        (result) => {
+          confirmation.consumed = true;
+          discardExportConfirmation(confirmationId, confirmation);
+          return result;
+        },
+        (error) => {
+          confirmation.inFlight = false;
+          throw error;
+        }
+      );
     },
 
     previewImport(jsonText) {
