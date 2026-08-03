@@ -26,7 +26,26 @@ const TERMINAL_RECORD_REQUIRED_FIELDS = Object.freeze([
 ]);
 const TERMINAL_RECORD_FIELDS = new Set([
   ...TERMINAL_RECORD_REQUIRED_FIELDS,
-  'sourceSessionFingerprint'
+  'sourceSessionFingerprint',
+  'actualCorrections',
+  'processedCorrectionCommands'
+]);
+const TOMBSTONE_FIELDS = Object.freeze([
+  'id',
+  'sourceSessionId',
+  'sourceSessionFingerprint',
+  'status',
+  'trainingDate',
+  'createdAt',
+  'updatedAt',
+  'revision',
+  'deletedAt',
+  'processedDeletionCommands'
+]);
+const COMMAND_RECEIPT_FIELDS = Object.freeze([
+  'key',
+  'fingerprint',
+  'resultRevision'
 ]);
 
 function clone(value) {
@@ -137,7 +156,112 @@ function recordMetadataMatches(record, sourceSessionId) {
     record.revision >= 1;
 }
 
+function hasExactFields(value, fields) {
+  return isPlainObject(value) &&
+    Object.keys(value).length === fields.length &&
+    fields.every((field) => Object.prototype.hasOwnProperty.call(value, field));
+}
+
+function validCommandReceipts(receipts, recordRevision) {
+  if (!Array.isArray(receipts) || receipts.length === 0) {
+    return false;
+  }
+  const keys = new Set();
+  for (const receipt of receipts) {
+    if (
+      !hasExactFields(receipt, COMMAND_RECEIPT_FIELDS) ||
+      typeof receipt.key !== 'string' ||
+      receipt.key.length === 0 ||
+      !/^[a-f0-9]{64}$/.test(receipt.fingerprint) ||
+      !Number.isSafeInteger(receipt.resultRevision) ||
+      receipt.resultRevision < 2 ||
+      receipt.resultRevision > recordRevision ||
+      keys.has(receipt.key)
+    ) {
+      return false;
+    }
+    keys.add(receipt.key);
+  }
+  return receipts[receipts.length - 1].resultRevision === recordRevision;
+}
+
+function validCorrectionOverlay(record) {
+  const hasCorrections = Object.prototype.hasOwnProperty.call(record, 'actualCorrections');
+  const hasReceipts = Object.prototype.hasOwnProperty.call(record, 'processedCorrectionCommands');
+  if (!hasCorrections && !hasReceipts) {
+    return true;
+  }
+  if (
+    !hasCorrections ||
+    !hasReceipts ||
+    !Array.isArray(record.actualCorrections) ||
+    !validCommandReceipts(record.processedCorrectionCommands, record.revision)
+  ) {
+    return false;
+  }
+  const planSteps = new Map(record.planSnapshot.steps.map((step) => [step.id, step]));
+  const sourceResults = new Map(record.stepResults.map((result) => [result.stepId, result]));
+  const stepIds = new Set();
+  for (const correction of record.actualCorrections) {
+    if (!isPlainObject(correction) || typeof correction.stepId !== 'string') {
+      return false;
+    }
+    const step = planSteps.get(correction.stepId);
+    const sourceResult = sourceResults.get(correction.stepId);
+    if (!step || !sourceResult || sourceResult.status !== 'completed' || stepIds.has(step.id)) {
+      return false;
+    }
+    stepIds.add(step.id);
+    const fields = Object.keys(correction).sort();
+    if (
+      step.kind === 'manual'
+        ? canonicalize(fields) !== canonicalize(['actualReps', 'stepId'])
+        : step.kind === 'timed' || step.kind === 'interval'
+          ? canonicalize(fields) !== canonicalize(['actualDurationSeconds', 'stepId'])
+          : step.kind === 'strength'
+            ? canonicalize(fields) !== canonicalize(['setCorrections', 'stepId'])
+            : true
+    ) {
+      return false;
+    }
+    if (step.kind === 'strength' && !Array.isArray(correction.setCorrections)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function tombstoneMatchesTerminalSource(record, source) {
+  if (
+    !hasExactFields(record, TOMBSTONE_FIELDS) ||
+    record.id !== `record_${source.id}` ||
+    record.sourceSessionId !== source.id ||
+    record.sourceSessionFingerprint !== terminalFactFingerprint(source) ||
+    record.status !== source.status ||
+    record.trainingDate !== source.trainingDate ||
+    !Number.isSafeInteger(record.createdAt) ||
+    record.createdAt < 0 ||
+    !Number.isSafeInteger(record.updatedAt) ||
+    record.updatedAt < record.createdAt ||
+    !Number.isSafeInteger(record.deletedAt) ||
+    record.deletedAt !== record.updatedAt ||
+    !Number.isSafeInteger(record.revision) ||
+    record.revision < 2 ||
+    !validCommandReceipts(record.processedDeletionCommands, record.revision)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function recordMatchesTerminalSource(record, source) {
+  if (
+    isPlainObject(record) &&
+    (Object.prototype.hasOwnProperty.call(record, 'deletedAt') ||
+      Object.prototype.hasOwnProperty.call(record, 'processedDeletionCommands'))
+  ) {
+    return tombstoneMatchesTerminalSource(record, source);
+  }
   if (
     !isPlainObject(record) ||
     Object.keys(record).some((field) => !TERMINAL_RECORD_FIELDS.has(field)) ||
@@ -145,6 +269,7 @@ function recordMatchesTerminalSource(record, source) {
       (field) => !Object.prototype.hasOwnProperty.call(record, field)
     ) ||
     !(record.feedback === null || isPlainObject(record.feedback)) ||
+    !validCorrectionOverlay(record) ||
     !recordMetadataMatches(record, source.id)
   ) {
     return false;
