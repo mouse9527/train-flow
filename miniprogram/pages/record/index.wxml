@@ -15,6 +15,14 @@
     </view>
   </view>
 
+  <navigator class="stats-link" url="/pages/stats/index" hover-class="stats-link--pressed">
+    <view>
+      <text class="stats-link__title">查看统计与最近趋势</text>
+      <text class="stats-link__copy">完成率、活动时长、力量参数与最近 7 次记录</text>
+    </view>
+    <text class="stats-link__arrow">›</text>
+  </navigator>
+
   <view class="filter-panel">
     <picker mode="date" value="{{view.filters.trainingDate}}" bindchange="onDateFilterChange">
       <view class="filter-control">
