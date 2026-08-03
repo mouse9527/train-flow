@@ -403,6 +403,69 @@ class LocalDatabase {
     };
   }
 
+  readCommittedPurgeState(intent) {
+    if (!intent || intent.operation !== 'purge') {
+      throw new Error('Purge recovery requires a durable purge intent');
+    }
+    const pointer = this.storage.getStorageSync(ACTIVE_KEY);
+    if (pointer !== intent.targetSlot) {
+      throw new Error('Purge transaction has not reached the empty-truth pointer');
+    }
+    const candidate = this.readSlot(intent.targetSlot);
+    if (
+      !candidate ||
+      !candidate.snapshot ||
+      candidate.snapshot.checksum !== intent.candidateChecksum ||
+      candidate.snapshot.localRevision !== intent.baselineRevision + 1
+    ) {
+      throw new Error('Purge empty candidate identity is unavailable or unsafe');
+    }
+    const baseline = this.readIntentBaseline(intent);
+    const expected = createAppDatabase({
+      now: () => candidate.snapshot.committedAt,
+      install: baseline.snapshot.install,
+      schemaVersion: this.currentSchemaVersion
+    });
+    expected.localRevision = intent.baselineRevision + 1;
+    const actual = cloneAppDatabase(candidate.snapshot);
+    delete actual.checksum;
+    if (canonicalize(actual) !== canonicalize(expected)) {
+      throw new Error('Purge candidate is not the canonical empty local snapshot');
+    }
+    return {
+      state: {
+        activeSlot: intent.targetSlot,
+        pointer,
+        snapshot: candidate.snapshot,
+        readFailures: []
+      },
+      marker: {
+        schema: 'trainflow.purge-cleanup/v1',
+        phase: 'cleanup-pending',
+        emptySlot: intent.targetSlot,
+        emptyRevision: candidate.snapshot.localRevision,
+        emptyChecksum: candidate.snapshot.checksum,
+        oldSlot: intent.baselineSlot
+      }
+    };
+  }
+
+  persistCleanupMarker(marker) {
+    this.storage.setStorageSync(CLEANUP_PENDING_KEY, marker);
+    const readBack = decodeStored(this.storage.getStorageSync(CLEANUP_PENDING_KEY));
+    validateCleanupMarker(readBack);
+    if (canonicalize(readBack) !== canonicalize(marker)) {
+      throw new Error('Purge cleanup marker read-back mismatch');
+    }
+    return marker;
+  }
+
+  recoverCommittedPurge(intent) {
+    const recovery = this.readCommittedPurgeState(intent);
+    this.persistCleanupMarker(recovery.marker);
+    return this.completePendingCleanup(recovery.marker);
+  }
+
   restoreStoredValue(key, value) {
     if (value === undefined) {
       if (typeof this.storage.removeStorageSync !== 'function') {
@@ -504,16 +567,16 @@ class LocalDatabase {
   }
 
   load() {
-    const cleanup = this.readCleanupMarker();
-    if (cleanup) {
-      return cloneAppDatabase(this.completePendingCleanup(cleanup).state.snapshot);
-    }
     const intent = this.readImportIntent();
     if (intent) {
       if (intent.operation === 'purge') {
-        throw new Error('Purge transaction marker is incomplete; cleanup identity is required');
+        return cloneAppDatabase(this.recoverCommittedPurge(intent).state.snapshot);
       }
       this.rollbackImportIntent(intent);
+    }
+    const cleanup = this.readCleanupMarker();
+    if (cleanup) {
+      return cloneAppDatabase(this.completePendingCleanup(cleanup).state.snapshot);
     }
     const state = this.readStateBase();
     if (
@@ -530,18 +593,17 @@ class LocalDatabase {
   }
 
   loadReadOnly() {
-    const cleanup = this.readCleanupMarker();
     const intent = this.readImportIntent();
     let state;
-    if (cleanup) {
-      state = this.readCleanupSnapshot(cleanup);
-    } else if (intent) {
+    if (intent) {
       if (intent.operation === 'purge') {
-        throw new Error('Purge transaction marker is incomplete and unsafe');
+        state = this.readCommittedPurgeState(intent).state;
+      } else {
+        state = this.readIntentBaseline(intent);
       }
-      state = this.readIntentBaseline(intent);
     } else {
-      state = this.readStateBase();
+      const cleanup = this.readCleanupMarker();
+      state = cleanup ? this.readCleanupSnapshot(cleanup) : this.readStateBase();
     }
     const snapshot = state.snapshot.schemaVersion < this.currentSchemaVersion
       ? this.migrateDraft(state.snapshot)
@@ -805,16 +867,21 @@ class LocalDatabase {
           emptyChecksum: candidate.checksum,
           oldSlot: state.activeSlot
         };
-        this.storage.setStorageSync(CLEANUP_PENDING_KEY, cleanup);
-        if (canonicalize(decodeStored(this.storage.getStorageSync(CLEANUP_PENDING_KEY))) !== canonicalize(cleanup)) {
-          throw new Error('Purge cleanup marker read-back mismatch');
-        }
+        this.persistCleanupMarker(cleanup);
       }
       this.storage.removeStorageSync(IMPORT_INTENT_KEY);
       return { snapshot: cloneAppDatabase(candidate), oldSlot: state.activeSlot };
     } catch (error) {
-      if (operation === 'purge' && this.storage.getStorageSync(CLEANUP_PENDING_KEY) !== undefined) {
-        throw error;
+      if (operation === 'purge') {
+        let pointerIsEmptyTruth = pointerWritten;
+        if (!pointerIsEmptyTruth) {
+          try {
+            pointerIsEmptyTruth = this.storage.getStorageSync(ACTIVE_KEY) === targetSlot;
+          } catch (_readError) {
+            throw error;
+          }
+        }
+        if (pointerIsEmptyTruth) throw error;
       }
       try {
         this.rollbackImportIntent(intent, targetPreimage);
