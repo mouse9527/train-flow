@@ -10,6 +10,9 @@ const {
 const {
   createBaselineTrainingRecord
 } = require('../../miniprogram/domain/execution/training-record');
+const {
+  applyTrainingRecordCorrection
+} = require('../../miniprogram/domain/records/training-record');
 const { canonicalize, computeChecksum } = require('../../miniprogram/utils/checksum');
 
 const FIXED_NOW = 1785719340000;
@@ -1138,4 +1141,226 @@ test('[B] Attack: cleanup marker 或 empty identity 损坏必须 fail closed，�
     assert.throws(() => database.load(), /cleanup|empty|checksum|unsafe/i);
     assert.equal(storage.peek(ACTIVE) === oldSlot, false);
   });
+});
+
+function multiStepManualPlan(id, trainingDate, title = `Multi-step ${id}`) {
+  const source = manualPlan(id, trainingDate, title);
+  const template = source.steps[0];
+  return {
+    ...source,
+    steps: [
+      { ...clone(template), id: `step_${id}_zeta`, order: 10, name: 'First business step' },
+      { ...clone(template), id: `step_${id}_alpha`, order: 20, name: 'Second business step' }
+    ]
+  };
+}
+
+function completedRecordForPlan(plan, sessionId) {
+  let session = createWorkoutSession({
+    plan,
+    sessionId,
+    originDeviceId: `device_${sessionId}`,
+    commandKey: `start_${sessionId}`,
+    nowMs: FIXED_NOW - 120_000
+  });
+  for (const [index, step] of session.planSnapshot.steps.entries()) {
+    session = applyWorkoutCommand(session, {
+      type: 'complete_step',
+      expectedSessionRevision: session.sessionRevision,
+      commandKey: `complete_${sessionId}_${index}`,
+      nowMs: FIXED_NOW - 60_000 + index * 1_000,
+      payload: { stepId: step.id }
+    }).session;
+  }
+  return createBaselineTrainingRecord(session);
+}
+
+function correctedRecord(record, { note, weightBeforeKg = 54321.1, pain = true } = {}) {
+  return applyTrainingRecordCorrection(record, {
+    expectedRevision: record.revision,
+    commandKey: `correct_${record.sourceSessionId}_${record.revision}`,
+    nowMs: record.updatedAt + 10_000,
+    actualCorrections: [],
+    feedback: {
+      rpe: 8,
+      weightBeforeKg,
+      pain: {
+        knee: pain,
+        lowerBack: false,
+        ankleOrToe: false,
+        dizziness: false
+      },
+      note
+    }
+  });
+}
+
+function tombstoneFrom(record, commandKey = `delete_${record.sourceSessionId}`) {
+  const deletedAt = record.updatedAt + 20_000;
+  return {
+    id: record.id,
+    sourceSessionId: record.sourceSessionId,
+    sourceSessionFingerprint: record.sourceSessionFingerprint,
+    status: record.status,
+    trainingDate: record.trainingDate,
+    createdAt: record.createdAt,
+    updatedAt: deletedAt,
+    revision: record.revision + 1,
+    deletedAt,
+    processedDeletionCommands: [{
+      key: commandKey,
+      fingerprint: computeChecksum({ commandKey, recordId: record.id, deletedAt }),
+      resultRevision: record.revision + 1
+    }]
+  };
+}
+
+test('[F1] Attack: real preview 必须准确给出双集合四桶变化、版本/baseline/counts、隐私安全 warning 且零写', () => {
+  const privateNote = 'PRIVATE_PREVIEW_NOTE_4f3a';
+  const privatePainToken = 'PRIVATE_PREVIEW_PAIN_KNEE_739b';
+  const unchangedPlan = manualPlan('plan_preview_unchanged', '2026-08-10');
+  const currentChangedPlan = manualPlan('plan_preview_changed', '2026-08-11', 'Current changed plan');
+  const incomingChangedPlan = manualPlan('plan_preview_changed', '2026-08-11', 'Incoming changed plan');
+  const removedPlan = manualPlan('plan_preview_removed', '2026-08-12');
+  const addedPlan = manualPlan('plan_preview_added', '2026-08-13');
+
+  const unchangedRecord = completedRecordForPlan(
+    manualPlan('plan_record_preview_unchanged', '2026-08-14'),
+    'session_preview_unchanged'
+  );
+  const currentChangedRecord = correctedRecord(
+    completedRecordForPlan(
+      manualPlan('plan_record_preview_changed', '2026-08-15', 'Current record source'),
+      'session_preview_changed'
+    ),
+    { note: 'current note', weightBeforeKg: 70.1, pain: false }
+  );
+  const incomingChangedRecord = correctedRecord(
+    completedRecordForPlan(
+      manualPlan('plan_record_preview_changed', '2026-08-15', 'Incoming record source'),
+      'session_preview_changed'
+    ),
+    { note: `${privateNote} ${privatePainToken}`, weightBeforeKg: 54321.1, pain: true }
+  );
+  const removedRecord = completedRecordForPlan(
+    manualPlan('plan_record_preview_removed', '2026-08-16'),
+    'session_preview_removed'
+  );
+  const addedRecord = correctedRecord(
+    completedRecordForPlan(
+      manualPlan('plan_record_preview_added', '2026-08-17'),
+      'session_preview_added'
+    ),
+    { note: 'PRIVATE_ADDED_RECORD_NOTE_0d91', weightBeforeKg: 12345.6, pain: true }
+  );
+
+  const source = createDatabase();
+  source.database.commit((draft) => {
+    draft.plans = [addedPlan, incomingChangedPlan, clone(unchangedPlan)];
+    draft.records = [addedRecord, incomingChangedRecord, clone(unchangedRecord)];
+  });
+  const exported = source.database.exportPortableBackup();
+  const incoming = parsePackage(exported.jsonText);
+
+  const target = createDatabase();
+  target.database.commit((draft) => {
+    draft.plans = [removedPlan, currentChangedPlan, clone(unchangedPlan)];
+    draft.records = [removedRecord, currentChangedRecord, clone(unchangedRecord)];
+  });
+  const baseline = target.database.load().localRevision;
+  target.storage.clearOperations();
+
+  const preview = target.database.previewPortableImport(exported.jsonText);
+  const serialized = JSON.stringify(preview);
+
+  assert.equal(preview.packageVersion, 1);
+  assert.equal(preview.appSchemaVersion, 1);
+  assert.equal(preview.checksumPrefix, incoming.checksum.slice(0, 8));
+  assert.equal(preview.baselineLocalRevision, baseline);
+  assert.deepEqual(preview.counts, { plans: 3, records: 3 });
+  assert.deepEqual(preview.changes, {
+    plans: { added: 1, changed: 1, unchanged: 1, removed: 1 },
+    records: { added: 1, changed: 1, unchanged: 1, removed: 1 }
+  });
+  assert.ok(preview.warnings.some((warning) => /替换.*本机|本机.*替换/.test(warning)));
+  assert.ok(preview.warnings.some((warning) => /同步.*关闭|不会删除云端|云端.*不.*删除/.test(warning)));
+  for (const secret of [privateNote, privatePainToken, '54321.1', 'PRIVATE_ADDED_RECORD_NOTE_0d91', '12345.6']) {
+    assert.equal(serialized.includes(secret), false, `preview leaked ${secret}`);
+  }
+  assertNoWrites(target.storage);
+});
+
+test('[F1] Attack: export→preview→apply→export 必须保留合法 tombstone 与 nested business order，仅排序实体集合', () => {
+  const orderedPlan = multiStepManualPlan('plan_roundtrip_order', '2026-08-18');
+  const activeRecord = correctedRecord(
+    completedRecordForPlan(orderedPlan, 'session_roundtrip_order'),
+    { note: 'ROUNDTRIP_PRIVATE_NOTE_275e', weightBeforeKg: 82.5, pain: true }
+  );
+  const deletedRecord = tombstoneFrom(
+    completedRecordForPlan(
+      manualPlan('plan_roundtrip_deleted', '2026-08-19'),
+      'session_roundtrip_deleted'
+    )
+  );
+  const otherPlan = manualPlan('plan_roundtrip_alpha', '2026-08-20');
+  const source = createDatabase();
+  source.database.commit((draft) => {
+    draft.plans = [orderedPlan, otherPlan];
+    draft.records = [activeRecord, deletedRecord];
+  });
+
+  const firstExport = source.database.exportPortableBackup();
+  const firstData = parsePackage(firstExport.jsonText).data;
+  const target = createTargetDatabase();
+  const preview = target.database.previewPortableImport(firstExport.jsonText);
+  const applied = target.database.applyPortableImport(firstExport.jsonText, preview.confirmationId);
+  const secondData = parsePackage(target.database.exportPortableBackup().jsonText).data;
+
+  assert.equal(applied.applied, true);
+  assert.equal(canonicalize(secondData), canonicalize(firstData));
+  assert.deepEqual(firstData.plans.map(({ id }) => id), [
+    'plan_roundtrip_alpha',
+    'plan_roundtrip_order'
+  ]);
+  assert.deepEqual(firstData.records.map(({ id }) => id), [
+    'record_session_roundtrip_deleted',
+    'record_session_roundtrip_order'
+  ]);
+  const roundTripPlan = secondData.plans.find(({ id }) => id === orderedPlan.id);
+  const roundTripRecord = secondData.records.find(({ id }) => id === activeRecord.id);
+  assert.deepEqual(roundTripPlan.steps.map(({ id }) => id), [
+    'step_plan_roundtrip_order_zeta',
+    'step_plan_roundtrip_order_alpha'
+  ]);
+  assert.deepEqual(roundTripRecord.planSnapshot.steps.map(({ id }) => id), [
+    'step_plan_roundtrip_order_zeta',
+    'step_plan_roundtrip_order_alpha'
+  ]);
+  assert.deepEqual(roundTripRecord.stepResults.map(({ stepId }) => stepId), [
+    'step_plan_roundtrip_order_zeta',
+    'step_plan_roundtrip_order_alpha'
+  ]);
+  assert.equal(secondData.records.find(({ id }) => id === deletedRecord.id).deletedAt, deletedRecord.deletedAt);
+});
+
+test('[F1] Attack: portable plan 时间戳必须是非负 safe integer，非法值以精确 domain code 零写拒绝', async (t) => {
+  const source = exportFixture().jsonText;
+  const cases = [
+    ['negative createdAt', (plan) => { plan.createdAt = -1; }],
+    ['fractional updatedAt', (plan) => { plan.updatedAt = plan.createdAt + 0.5; }],
+    ['negative deletedAt', (plan) => { plan.deletedAt = -1; }],
+    ['unsafe createdAt', (plan) => { plan.createdAt = Number.MAX_SAFE_INTEGER + 1; }],
+    ['updatedAt before createdAt', (plan) => { plan.updatedAt = plan.createdAt - 1; }]
+  ];
+
+  for (const [name, mutate] of cases) {
+    await t.test(name, () => {
+      const candidate = rewritePackage(source, (value) => mutate(value.data.plans[0]));
+      const { database, storage } = createDatabase();
+      storage.clearOperations();
+      const error = captureError(() => database.previewPortableImport(candidate));
+      assert.equal(error.code, 'IMPORT_DOMAIN_INVALID');
+      assertNoWrites(storage);
+    });
+  }
 });
