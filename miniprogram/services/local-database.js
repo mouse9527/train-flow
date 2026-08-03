@@ -1,4 +1,11 @@
 const { cloneAppDatabase, createAppDatabase } = require('../domain/sync/app-database');
+const {
+  buildImportedFields,
+  createPortableBackup,
+  diffCollection,
+  importFieldsEqual,
+  parsePortableBackup
+} = require('../domain/identity-settings/portable-backup');
 const { canonicalize, computeChecksum } = require('../utils/checksum');
 const { assertAppDatabaseSnapshot, assertInstallMetadata } = require('../utils/validation');
 
@@ -108,7 +115,12 @@ class LocalDatabase {
     storage = createDefaultStorage(),
     now = Date.now,
     currentSchemaVersion = 1,
-    migrations = {}
+    migrations = {},
+    portableMigrations = {},
+    packageMigrations = portableMigrations,
+    portableAppMigrations = {},
+    appMigrations = portableAppMigrations,
+    confirmationTtlMs = 5 * 60 * 1000
   } = {}) {
     if (!storage || typeof storage.getStorageSync !== 'function' || typeof storage.setStorageSync !== 'function') {
       throw new Error('LocalDatabase requires synchronous getStorageSync/setStorageSync storage');
@@ -120,6 +132,11 @@ class LocalDatabase {
     this.now = now;
     this.currentSchemaVersion = currentSchemaVersion;
     this.migrations = migrations;
+    this.packageMigrations = packageMigrations;
+    this.portableAppMigrations = appMigrations;
+    this.confirmationTtlMs = confirmationTtlMs;
+    this.confirmations = new Map();
+    this.confirmationSequence = 0;
   }
 
   readSlot(slot) {
@@ -263,6 +280,128 @@ class LocalDatabase {
       return this.migrate(state);
     }
     return cloneAppDatabase(state.snapshot);
+  }
+
+  loadReadOnly() {
+    const state = this.readState();
+    const snapshot = state.snapshot.schemaVersion < this.currentSchemaVersion
+      ? this.migrateDraft(state.snapshot)
+      : state.snapshot;
+    return cloneAppDatabase(snapshot);
+  }
+
+  registerConfirmation(action, details) {
+    this.confirmationSequence += 1;
+    const confirmationId = `${action}_${this.confirmationSequence}_${computeChecksum({
+      action,
+      sequence: this.confirmationSequence,
+      expiresAt: this.now() + this.confirmationTtlMs,
+      ...details
+    }).slice(0, 20)}`;
+    const confirmation = {
+      action,
+      expiresAt: this.now() + this.confirmationTtlMs,
+      consumed: false,
+      ...details
+    };
+    this.confirmations.set(confirmationId, confirmation);
+    return { confirmationId, confirmation };
+  }
+
+  requireConfirmation(confirmationId, action) {
+    if (typeof confirmationId !== 'string' || confirmationId.length === 0) {
+      throw new Error(`${action} confirmation is required`);
+    }
+    const confirmation = this.confirmations.get(confirmationId);
+    if (!confirmation || confirmation.action !== action) {
+      throw new Error(`${action} confirmation is missing or invalid`);
+    }
+    if (confirmation.consumed) {
+      throw new Error(`${action} confirmation was already consumed and is single-use`);
+    }
+    if (this.now() > confirmation.expiresAt) {
+      throw new Error(`${action} confirmation expired`);
+    }
+    return confirmation;
+  }
+
+  exportPortableBackup() {
+    return createPortableBackup(this.loadReadOnly(), {
+      now: this.now,
+      appSchemaVersion: this.currentSchemaVersion
+    });
+  }
+
+  parsePortableBackup(jsonText) {
+    return parsePortableBackup(jsonText, {
+      currentAppSchemaVersion: this.currentSchemaVersion,
+      packageMigrations: this.packageMigrations,
+      appMigrations: this.portableAppMigrations
+    });
+  }
+
+  previewPortableImport(jsonText) {
+    const snapshot = this.loadReadOnly();
+    if (snapshot.activeSession !== null) {
+      const error = new Error('Active training session must finish before import');
+      error.code = 'IMPORT_ACTIVE_SESSION';
+      throw error;
+    }
+    const parsed = this.parsePortableBackup(jsonText);
+    const { confirmationId, confirmation } = this.registerConfirmation('import', {
+      packageDigest: parsed.packageDigest,
+      candidateDigest: parsed.candidateDigest,
+      baselineLocalRevision: snapshot.localRevision
+    });
+    return {
+      confirmationId,
+      packageVersion: parsed.envelope.packageVersion,
+      appSchemaVersion: parsed.envelope.appSchemaVersion,
+      checksumPrefix: parsed.envelope.checksum.slice(0, 8),
+      expiresAt: confirmation.expiresAt,
+      baselineLocalRevision: snapshot.localRevision,
+      counts: {
+        plans: parsed.data.plans.length,
+        records: parsed.data.records.length
+      },
+      changes: {
+        plans: diffCollection(snapshot.plans, parsed.data.plans),
+        records: diffCollection(snapshot.records, parsed.data.records)
+      },
+      warnings: [
+        '恢复会替换本机计划、记录与偏好。',
+        '导入只影响本机；不会删除云端数据，同步将保持关闭。'
+      ]
+    };
+  }
+
+  applyPortableImport(jsonText, confirmationId) {
+    const parsed = this.parsePortableBackup(jsonText);
+    const confirmation = this.requireConfirmation(confirmationId, 'import');
+    if (
+      confirmation.packageDigest !== parsed.packageDigest ||
+      confirmation.candidateDigest !== parsed.candidateDigest
+    ) {
+      throw new Error('Import confirmation digest mismatch');
+    }
+    const snapshot = this.loadReadOnly();
+    if (snapshot.activeSession !== null) {
+      const error = new Error('Active training session must finish before import');
+      error.code = 'IMPORT_ACTIVE_SESSION';
+      throw error;
+    }
+    if (snapshot.localRevision !== confirmation.baselineLocalRevision) {
+      throw new Error('Import confirmation baseline revision changed');
+    }
+    const fields = buildImportedFields(snapshot, parsed);
+    confirmation.consumed = true;
+    if (importFieldsEqual(snapshot, fields)) {
+      return { applied: false, reason: 'already_current' };
+    }
+    const committed = this.commit((draft) => {
+      Object.assign(draft, cloneAppDatabase(fields));
+    }, snapshot.localRevision);
+    return { applied: true, snapshot: committed };
   }
 
   migrate(state) {
