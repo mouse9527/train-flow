@@ -11,6 +11,21 @@ function maybePromise(value) {
   return value && typeof value.then === 'function' ? value : Promise.resolve(value);
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function loadServiceContract(options) {
   const serviceModule = require('../../miniprogram/application/settings-application-service');
   const factory =
@@ -567,6 +582,112 @@ test('[F4] Attack: pending sync 的最终本机清除 modal 必须四字按钮�
       assert.match(modalOptions.content, /不会删除云端/);
     });
     assert.deepEqual(calls, [{ type: 'confirm-clear', confirmationId: 'pending-clear-id' }]);
+  } finally {
+    if (previousWx === undefined) delete global.wx;
+    else global.wx = previousWx;
+  }
+});
+
+test('[F6-page-race] Attack: preview Promise 在 onUnload 后 resolve 不得恢复 private ID、data/notice 或 payload', async (t) => {
+  const previousWx = global.wx;
+  global.wx = { showToast() {} };
+  try {
+    await t.test('deferred export preview', async (st) => {
+      const deferred = createDeferred();
+      const privateJson = '{"privateTrainingPayload":"DEFERRED_EXPORT_AFTER_UNLOAD_61bd"}';
+      const confirmationId = 'deferred-export-id-61bd';
+      let heldExportJson = null;
+      let clearCalls = 0;
+      const fakeService = {
+        getSettings() { return { revision: 1 }; },
+        updateSettings(value) { return value; },
+        createExportPreview() {
+          return deferred.promise.then((preview) => {
+            heldExportJson = preview.jsonText;
+            return preview;
+          });
+        },
+        copyExportToClipboard() { throw new Error('not used'); },
+        previewImport() { throw new Error('not used'); },
+        confirmImport() { throw new Error('not used'); },
+        prepareLocalClear() { throw new Error('not used'); },
+        confirmLocalClear() { throw new Error('not used'); },
+        clearSensitiveData() {
+          clearCalls += 1;
+          heldExportJson = null;
+        }
+      };
+      const page = loadSettingsPage(fakeService);
+      await maybePromise(page.onLoad({ section: 'data' }));
+      const pending = maybePromise(page.onGenerateBackup());
+      page.onUnload();
+      const dataAfterUnload = JSON.parse(JSON.stringify(page.data));
+
+      deferred.resolve({
+        confirmationId,
+        jsonText: privateJson,
+        summary: { plans: 1, records: 1 },
+        privacyWarning: '包含私人训练数据'
+      });
+      await pending;
+      await flushMicrotasks();
+
+      await st.test('releases service-held payload', () => {
+        assert.equal(heldExportJson, null, 'stale fulfillment must release service-held export JSON again');
+        assert.ok(clearCalls >= 2, 'unload and stale fulfillment must both enforce sensitive cleanup');
+      });
+      await st.test('does not write renderable state or notice', () => {
+        assert.deepEqual(page.data, dataAfterUnload, 'stale export fulfillment wrote renderable data or notice');
+      });
+      await st.test('does not restore private payload or confirmation id', () => {
+        const serialized = JSON.stringify(page);
+        assert.equal(serialized.includes(privateJson), false);
+        assert.equal(serialized.includes(confirmationId), false);
+      });
+    });
+
+    await t.test('deferred import preview', async (st) => {
+      const deferred = createDeferred();
+      const privateJson = '{"privateTrainingPayload":"DEFERRED_IMPORT_AFTER_UNLOAD_973a"}';
+      const confirmationId = 'deferred-import-id-973a';
+      const fakeService = {
+        getSettings() { return { revision: 1 }; },
+        updateSettings(value) { return value; },
+        createExportPreview() { throw new Error('not used'); },
+        copyExportToClipboard() { throw new Error('not used'); },
+        previewImport(jsonText) {
+          assert.equal(jsonText, privateJson);
+          return deferred.promise;
+        },
+        confirmImport() { throw new Error('not used'); },
+        prepareLocalClear() { throw new Error('not used'); },
+        confirmLocalClear() { throw new Error('not used'); },
+        clearSensitiveData() {}
+      };
+      const page = loadSettingsPage(fakeService);
+      await maybePromise(page.onLoad({ section: 'data' }));
+      page.onImportInput({ detail: { value: privateJson } });
+      const pending = maybePromise(page.onPreviewImport());
+      page.onUnload();
+      const dataAfterUnload = JSON.parse(JSON.stringify(page.data));
+
+      deferred.resolve({
+        confirmationId,
+        counts: { plans: 1, records: 1 },
+        warnings: ['导入只影响本机']
+      });
+      await pending;
+      await flushMicrotasks();
+
+      await st.test('does not write renderable state or notice', () => {
+        assert.deepEqual(page.data, dataAfterUnload, 'stale import fulfillment wrote renderable data or notice');
+      });
+      await st.test('does not restore private payload or confirmation id', () => {
+        const serialized = JSON.stringify(page);
+        assert.equal(serialized.includes(privateJson), false);
+        assert.equal(serialized.includes(confirmationId), false);
+      });
+    });
   } finally {
     if (previousWx === undefined) delete global.wx;
     else global.wx = previousWx;
