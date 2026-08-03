@@ -190,6 +190,48 @@ test('[C] Attack: application service 不得向返回值/日志泄露完整 JSON
   }
 });
 
+test('[F4] Attack: one-argument copy 必须复制 preview 同一份私有 JSON，禁止重新 export 后 digest 漂移', async () => {
+  const firstJson = '{"privateTrainingPayload":"FIRST_EXPORT_7de2","exportedAt":1785719340000}';
+  const regeneratedJson = '{"privateTrainingPayload":"REGENERATED_EXPORT_4c6f","exportedAt":1785719340001}';
+  let exportCalls = 0;
+  const database = {
+    exportPortableBackup() {
+      exportCalls += 1;
+      const jsonText = exportCalls === 1 ? firstJson : regeneratedJson;
+      return {
+        jsonText,
+        summary: {
+          plans: 0,
+          records: 0,
+          bytes: Buffer.byteLength(jsonText),
+          checksumPrefix: exportCalls === 1 ? 'first7de' : 'regen4c6'
+        }
+      };
+    }
+  };
+  const clipboardWrites = [];
+  const wxApi = {
+    setClipboardData({ data, success }) {
+      clipboardWrites.push(data);
+      if (success) success();
+    }
+  };
+  const repository = { load() { return {}; }, save(value) { return value; } };
+  const service = loadServiceContract({ database, repository, wx: wxApi, clipboard: wxApi });
+
+  const preview = await maybePromise(service.createExportPreview());
+  await maybePromise(service.copyExportToClipboard(preview.confirmationId));
+
+  assert.equal(exportCalls, 1, 'copy must reuse the private preview payload instead of regenerating');
+  assert.deepEqual(clipboardWrites, [firstJson]);
+  await assert.rejects(
+    Promise.resolve().then(() => service.copyExportToClipboard(preview.confirmationId)),
+    /consumed|confirmation|expired|missing/i
+  );
+  assert.equal(exportCalls, 1, 'consumed confirmation must not regenerate or retain a reusable payload');
+  assert.deepEqual(clipboardWrites, [firstJson]);
+});
+
 test('[C] Attack: service import/clear 只传递私有 payload，不把内容塞进 preview，并保持本机/云端边界', async () => {
   const { service, calls } = createServiceHarness();
 
@@ -250,8 +292,8 @@ test('[C] Attack: page 的完整导入 JSON 只能短驻 controller 私有字段
         privacyWarning: '包含私人训练数据'
       };
     },
-    copyExportToClipboard(confirmationId) {
-      calls.push({ type: 'copy', confirmationId });
+    copyExportToClipboard(...args) {
+      calls.push({ type: 'copy', confirmationId: args[0], argumentCount: args.length });
       return { copied: true };
     },
     previewImport(jsonText) {
@@ -290,6 +332,8 @@ test('[C] Attack: page 的完整导入 JSON 只能短驻 controller 私有字段
   await maybePromise(page.onGenerateBackup());
   assert.equal(JSON.stringify(page.data).includes(PRIVATE_EXPORT_JSON), false);
   await maybePromise(page.onCopyBackup());
+  assert.deepEqual(calls.at(-1), { type: 'copy', confirmationId: 'copy-id', argumentCount: 1 });
+  assert.equal(JSON.stringify(page).includes(PRIVATE_EXPORT_JSON), false, 'successful copy must clear private export reference');
   page.onImportInput({ detail: { value: PRIVATE_IMPORT_JSON } });
   assert.equal(JSON.stringify(page.data).includes(PRIVATE_IMPORT_JSON), false, 'raw JSON entered renderable data');
   await maybePromise(page.onPreviewImport());
@@ -300,10 +344,63 @@ test('[C] Attack: page 的完整导入 JSON 只能短驻 controller 私有字段
     jsonText: PRIVATE_IMPORT_JSON,
     confirmationId: 'import-id'
   });
+  assert.equal(JSON.stringify(page).includes(PRIVATE_IMPORT_JSON), false, 'successful import must clear private input reference');
   await maybePromise(page.onPrepareLocalClear());
   await maybePromise(page.onConfirmLocalClear());
   assert.deepEqual(calls.at(-1), { type: 'confirm-clear', confirmationId: 'clear-id' });
 
   page.onUnload();
   assert.equal(JSON.stringify(page).includes(PRIVATE_IMPORT_JSON), false, 'unload must clear private import text');
+});
+
+test('[F4] Attack: pending sync 的最终本机清除 modal 必须四字按钮并明确未同步变更会丢失', async (t) => {
+  const calls = [];
+  let modalOptions = null;
+  const fakeService = {
+    getSettings() { return { revision: 1 }; },
+    updateSettings(value) { return value; },
+    createExportPreview() { throw new Error('not used'); },
+    copyExportToClipboard() { throw new Error('not used'); },
+    previewImport() { throw new Error('not used'); },
+    confirmImport() { throw new Error('not used'); },
+    prepareLocalClear() {
+      return {
+        confirmationId: 'pending-clear-id',
+        counts: { plans: 2, records: 3 },
+        hasPendingSync: true,
+        warnings: ['未同步变更会从本机移除；不会删除云端数据']
+      };
+    },
+    confirmLocalClear(confirmationId) {
+      calls.push({ type: 'confirm-clear', confirmationId });
+      return { purged: true };
+    }
+  };
+  const previousWx = global.wx;
+  global.wx = {
+    showModal(options) {
+      modalOptions = options;
+      options.success({ confirm: true, cancel: false });
+    },
+    showToast() {}
+  };
+  try {
+    const page = loadSettingsPage(fakeService);
+    await maybePromise(page.onLoad({ section: 'data' }));
+    await maybePromise(page.onPrepareLocalClear());
+    await maybePromise(page.onConfirmLocalClear());
+
+    assert.ok(modalOptions, 'final destructive action must use a real modal contract');
+    await t.test('confirmText respects the four-character API limit', () => {
+      assert.ok(Array.from(modalOptions.confirmText || '').length <= 4, 'wx.showModal confirmText supports at most four characters');
+    });
+    await t.test('final body repeats pending-sync loss and cloud boundary', () => {
+      assert.match(modalOptions.content, /未同步[\s\S]*(?:丢失|移除|删除)/);
+      assert.match(modalOptions.content, /不会删除云端/);
+    });
+    assert.deepEqual(calls, [{ type: 'confirm-clear', confirmationId: 'pending-clear-id' }]);
+  } finally {
+    if (previousWx === undefined) delete global.wx;
+    else global.wx = previousWx;
+  }
 });
