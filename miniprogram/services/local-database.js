@@ -131,6 +131,12 @@ function assertWritableState(state) {
   throw new Error(`LocalDatabase commit is unsafe while a slot is unreadable: ${details}`);
 }
 
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
 function assertExactMarkerFields(marker, fields, label) {
   if (!marker || typeof marker !== 'object' || Array.isArray(marker)) {
     throw new Error(`${label} marker identity is incomplete or unsafe`);
@@ -562,18 +568,31 @@ class LocalDatabase {
   }
 
   requireConfirmation(confirmationId, action) {
+    const codePrefix = action.toUpperCase();
     if (typeof confirmationId !== 'string' || confirmationId.length === 0) {
-      throw new Error(`${action} confirmation is required`);
+      throw codedError(`${codePrefix}_CONFIRMATION_MISSING`, `${action} confirmation is required`);
     }
     const confirmation = this.confirmations.get(confirmationId);
-    if (!confirmation || confirmation.action !== action) {
-      throw new Error(`${action} confirmation is missing or invalid`);
+    if (!confirmation) {
+      throw codedError(
+        `${codePrefix}_CONFIRMATION_MISSING`,
+        `${action} confirmation is missing or invalid`
+      );
+    }
+    if (confirmation.action !== action) {
+      throw codedError(
+        `${codePrefix}_CONFIRMATION_ACTION_MISMATCH`,
+        `${action} confirmation belongs to a different action`
+      );
     }
     if (confirmation.consumed) {
-      throw new Error(`${action} confirmation was already consumed and is single-use`);
+      throw codedError(
+        `${codePrefix}_CONFIRMATION_CONSUMED`,
+        `${action} confirmation was already consumed and is single-use`
+      );
     }
     if (this.now() > confirmation.expiresAt) {
-      throw new Error(`${action} confirmation expired`);
+      throw codedError(`${codePrefix}_CONFIRMATION_EXPIRED`, `${action} confirmation expired`);
     }
     return confirmation;
   }
@@ -697,7 +716,7 @@ class LocalDatabase {
       (snapshot.checksum || null) !== confirmation.baselineChecksum ||
       computeChecksum({ counts, hasPendingSync }) !== confirmation.candidateDigest
     ) {
-      throw new Error('Local purge confirmation baseline changed');
+      throw codedError('PURGE_BASELINE_CHANGED', 'Local purge confirmation baseline changed');
     }
     confirmation.consumed = true;
     const empty = createAppDatabase({
