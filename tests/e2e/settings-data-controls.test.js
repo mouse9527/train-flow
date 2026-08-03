@@ -797,3 +797,75 @@ test('[F6-page-race] Attack: preview Promise 在 onUnload 后 resolve 不得恢�
     else global.wx = previousWx;
   }
 });
+
+test('[F6-modal-race] Attack: clear modal 打开后 unload，迟到 confirm/cancel/fail 均不得删除或回写页面', async (t) => {
+  const cases = [
+    ['confirm', (options) => options.success({ confirm: true, cancel: false })],
+    ['cancel', (options) => options.success({ confirm: false, cancel: true })],
+    ['fail', (options) => options.fail({ errMsg: 'showModal:fail page unloaded' })]
+  ];
+
+  for (const [name, trigger] of cases) {
+    await t.test(name, async (st) => {
+      const clearId = `late-clear-${name}-7d3a`;
+      const calls = [];
+      let localDeleted = false;
+      let modalOptions = null;
+      const fakeService = {
+        getSettings() { return { revision: 1 }; },
+        updateSettings(value) { return value; },
+        createExportPreview() { throw new Error('not used'); },
+        copyExportToClipboard() { throw new Error('not used'); },
+        previewImport() { throw new Error('not used'); },
+        confirmImport() { throw new Error('not used'); },
+        prepareLocalClear() {
+          return {
+            confirmationId: clearId,
+            counts: { plans: 1, records: 1 },
+            hasPendingSync: false,
+            warnings: ['不会删除云端数据']
+          };
+        },
+        confirmLocalClear(confirmationId) {
+          calls.push({ type: 'confirm-clear', confirmationId });
+          localDeleted = true;
+          return { purged: true };
+        },
+        clearSensitiveData() {}
+      };
+      const previousWx = global.wx;
+      global.wx = {
+        showModal(options) { modalOptions = options; },
+        showToast() {}
+      };
+      try {
+        const page = loadSettingsPage(fakeService);
+        await maybePromise(page.onLoad({ section: 'data' }));
+        await maybePromise(page.onPrepareLocalClear());
+        const modalRequest = maybePromise(page.onConfirmLocalClear());
+        await flushMicrotasks();
+        assert.ok(modalOptions, 'clear confirmation modal must be open before unload');
+
+        page.onUnload();
+        const dataAfterUnload = JSON.parse(JSON.stringify(page.data));
+        trigger(modalOptions);
+        await Promise.allSettled([modalRequest]);
+        await flushMicrotasks();
+
+        await st.test('does not delete or forward stale confirmation', () => {
+          assert.equal(localDeleted, false, 'late modal callback deleted local data after unload');
+          assert.deepEqual(calls, [], 'late modal callback forwarded the stale clear confirmation');
+        });
+        await st.test('does not write page data, notice, or error', () => {
+          assert.deepEqual(page.data, dataAfterUnload, 'late modal callback wrote page data/notice/error');
+        });
+        await st.test('does not restore clear confirmation id', () => {
+          assert.equal(JSON.stringify(page).includes(clearId), false, 'late clear confirmation remained reachable');
+        });
+      } finally {
+        if (previousWx === undefined) delete global.wx;
+        else global.wx = previousWx;
+      }
+    });
+  }
+});
