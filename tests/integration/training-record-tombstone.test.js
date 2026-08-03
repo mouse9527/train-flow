@@ -8,8 +8,7 @@ const {
   createSessionRepository
 } = require('../../miniprogram/domain/execution/session-repository');
 const {
-  findTrainingRecords,
-  terminalFactFingerprint
+  findTrainingRecords
 } = require('../../miniprogram/domain/execution/training-record');
 const {
   isDeletedTrainingRecord
@@ -271,7 +270,7 @@ test('Reviewer regression: deleting a valid legacy record derives its missing so
   const harness = createHarness();
   completeSession(harness, { sessionId: 'session_legacy_delete_fingerprint' });
   const canonical = recordFor(harness.database, 'session_legacy_delete_fingerprint');
-  const expectedFingerprint = terminalFactFingerprint(canonical);
+  const expectedFingerprint = canonical.sourceSessionFingerprint;
 
   harness.database.commit((draft) => {
     delete draft.records[0].sourceSessionFingerprint;
