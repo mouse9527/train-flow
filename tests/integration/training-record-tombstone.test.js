@@ -31,6 +31,11 @@ const SUMMARY_AT = START_AT + 240_000;
 const NEXT_SESSION_AT = START_AT + 300_000;
 const DEVICE_ID = 'device_record_tombstone_attack';
 const PRIVATE_NOTE = 'PRIVATE_TOMBSTONE_NOTE_91bf';
+const ACTIVE_SLOT_KEY = 'train_flow:v1:db:active';
+const SLOT_KEYS = Object.freeze({
+  a: 'train_flow:v1:db:a',
+  b: 'train_flow:v1:db:b'
+});
 
 function manualPlan(id, trainingDate, title) {
   const source = createDefaultPlans({ now: () => START_AT })[2];
@@ -49,11 +54,13 @@ function manualPlan(id, trainingDate, title) {
 }
 
 function createHarness() {
+  const storage = new StorageDouble();
   const database = createLocalDatabase({
-    storage: new StorageDouble(),
+    storage,
     now: () => SUMMARY_AT
   });
   return {
+    storage,
     database,
     sessions: createSessionRepository({ database }),
     records: createTrainingRecordRepository({ database })
@@ -298,6 +305,77 @@ test('Attack Round 3: exact delete replay is a zero-write deep copy while confli
   const beforeCorrection = snapshotBytes(harness.database);
   assert.throws(() => harness.records.correct(correctionAfterDelete));
   assert.equal(snapshotBytes(harness.database), beforeCorrection);
+});
+
+test('Test adequacy: delete passes its loaded localRevision into commit so a racing baseline cannot be overwritten', () => {
+  const harness = createHarness();
+  completeSession(harness);
+  const sourceRecord = recordFor(harness.database);
+  const staleBaseline = harness.database.load();
+  let armed = false;
+  let raced = false;
+  const observedCommits = [];
+  const racingDatabase = {
+    load() {
+      const snapshot = harness.database.load();
+      if (armed && !raced) {
+        raced = true;
+        harness.database.commit((draft) => {
+          draft.statisticsProjection.concurrentDeleteMarker = 'preserve-racing-write';
+        });
+      }
+      return snapshot;
+    },
+    commit(mutator, expectedRevision) {
+      observedCommits.push({ argumentCount: arguments.length, expectedRevision });
+      return harness.database.commit(mutator, expectedRevision);
+    }
+  };
+  const racingRecords = createTrainingRecordRepository({ database: racingDatabase });
+  const input = deleteCommand(sourceRecord, { commandKey: 'racing_record_delete' });
+  const inputBefore = clone(input);
+  armed = true;
+
+  assert.throws(() => deleteRecord(racingRecords, input), /revision|conflict|concurrent/i);
+
+  const after = harness.database.load();
+  assert.equal(raced, true, 'test facade must inject the concurrent write after repository load');
+  assert.deepEqual(observedCommits, [{
+    argumentCount: 2,
+    expectedRevision: staleBaseline.localRevision
+  }]);
+  assert.equal(after.localRevision, staleBaseline.localRevision + 1, 'only the racing commit may persist');
+  assert.equal(after.statisticsProjection.concurrentDeleteMarker, 'preserve-racing-write');
+  assert.deepEqual(after.records, staleBaseline.records);
+  assert.deepEqual(after.sync.outbox, staleBaseline.sync.outbox);
+  assert.deepEqual(input, inputBefore);
+});
+
+test('Test adequacy: injected storage failure leaves delete record, outbox and statistics byte-equivalent', () => {
+  const harness = createHarness();
+  completeSession(harness);
+  const sourceRecord = recordFor(harness.database);
+  const before = harness.database.load();
+  const input = deleteCommand(sourceRecord, { commandKey: 'storage_failure_record_delete' });
+  const inputBefore = clone(input);
+  const activeSlot = harness.storage.peek(ACTIVE_SLOT_KEY);
+  const targetSlot = activeSlot === 'a' ? 'b' : 'a';
+  harness.storage.failNextWrite(
+    SLOT_KEYS[targetSlot],
+    new Error('forced delete storage failure')
+  );
+
+  assert.throws(
+    () => deleteRecord(harness.records, input),
+    /forced delete storage failure/i
+  );
+
+  const after = harness.database.load();
+  assert.equal(snapshotBytes(harness.database), JSON.stringify(before));
+  assert.deepEqual(after.records, before.records);
+  assert.deepEqual(after.sync.outbox, before.sync.outbox);
+  assert.deepEqual(after.statisticsProjection, before.statisticsProjection);
+  assert.deepEqual(input, inputBefore);
 });
 
 test('Attack Round 3: terminal materialization preserves a tombstone and never resurrects its baseline when a new Session starts', () => {
