@@ -1,6 +1,5 @@
 const {
   buildWorkoutCompletionSummary,
-  createWorkoutCompletionFact,
   createWorkoutFeedbackDraft,
   normalizeWorkoutFeedback
 } = require('./workout-application-service');
@@ -11,6 +10,12 @@ const {
   terminalFactFingerprint,
   terminalSourceFromRecord
 } = require('../domain/execution/training-record');
+const {
+  isDeletedTrainingRecord
+} = require('../domain/records/training-record');
+const {
+  createTrainingRecordRepository
+} = require('../domain/records/training-record-repository');
 const { createLocalDatabase } = require('../services/local-database');
 const { canonicalize } = require('../utils/checksum');
 
@@ -67,6 +72,7 @@ function findBoundRecord(records, source, options) {
   }
   if (
     candidates.length !== 1 ||
+    isDeletedTrainingRecord(candidates[0]) ||
     !recordMatchesTerminalFact(candidates[0], source, options)
   ) {
     throw new Error('训练记录与当前总结不匹配，请重新打开后再试');
@@ -106,6 +112,9 @@ function resolveSummarySource(snapshot, sessionId) {
     throw new Error('指定训练存在冲突的总结记录');
   }
   const record = candidates[0];
+  if (isDeletedTrainingRecord(record)) {
+    throw new Error('指定训练的总结记录已删除');
+  }
   let source;
   try {
     source = terminalSourceFromRecord(record);
@@ -119,8 +128,13 @@ function resolveSummarySource(snapshot, sessionId) {
 }
 
 class WorkoutSummaryRuntime {
-  constructor({ database = createLocalDatabase(), now = Date.now } = {}) {
+  constructor({
+    database = createLocalDatabase(),
+    recordRepository = null,
+    now = Date.now
+  } = {}) {
     this.database = database;
+    this.recordRepository = recordRepository || createTrainingRecordRepository({ database });
     this.now = now;
     this.boundSessionId = null;
     this.sessionFingerprint = null;
@@ -157,43 +171,36 @@ class WorkoutSummaryRuntime {
     if (terminalFactFingerprint(source) !== this.sessionFingerprint) {
       throw new Error('训练总结已过期，请重新打开后再保存反馈');
     }
-    const fact = createWorkoutCompletionFact(source, feedback);
-    const sessionFingerprint = terminalFactFingerprint(source);
     const savedAt = Math.max(this.now(), existing ? existing.updatedAt : 0);
-    const record = {
-      ...fact,
-      sourceSessionFingerprint: sessionFingerprint,
-      id: existing ? existing.id : `record_${source.id}`,
-      createdAt: existing ? existing.createdAt : savedAt,
-      updatedAt: savedAt,
-      revision: existing ? existing.revision + 1 : 1
+    const storedFeedback = {
+      rpe: feedback.rpe,
+      weightBeforeKg: feedback.weightBeforeKg,
+      pain: feedback.pain,
+      note: feedback.note
     };
-    if (!recordMatchesTerminalFact(record, source, { requireFingerprint: true })) {
-      throw new Error('训练记录生成失败，请重新打开后再保存反馈');
+    let record;
+    try {
+      record = this.recordRepository.correct({
+        recordId: existing ? existing.id : `record_${source.id}`,
+        expectedRevision: existing ? existing.revision : 0,
+        commandKey: JSON.stringify([
+          'workout-summary-feedback',
+          source.id,
+          existing ? existing.revision : 0,
+          savedAt
+        ]),
+        nowMs: savedAt,
+        actualCorrections: existing && existing.actualCorrections
+          ? clone(existing.actualCorrections)
+          : [],
+        feedback: storedFeedback
+      }, { source });
+    } catch (_error) {
+      throw new Error('训练记录已变化，请重新打开后再保存反馈');
     }
-    const committed = this.database.commit((draft) => {
-      if (existing === null) {
-        if (findTrainingRecords(draft.records, source.id).length !== 0) {
-          throw new Error('训练记录已变化，请重新打开后再保存反馈');
-        }
-        draft.records.push(clone(record));
-      } else {
-        const candidates = findTrainingRecords(draft.records, source.id);
-        if (
-          candidates.length !== 1 ||
-          canonicalize(candidates[0]) !== canonicalize(existing)
-        ) {
-          throw new Error('训练记录已变化，请重新打开后再保存反馈');
-        }
-        const index = draft.records.indexOf(candidates[0]);
-        draft.records[index] = clone(record);
-      }
-    }, snapshot.localRevision);
     return {
       saved: true,
-      fact: clone(committed.records.find(
-        (candidate) => candidate && candidate.id === record.id
-      ))
+      fact: clone(record)
     };
   }
 }
