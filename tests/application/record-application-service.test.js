@@ -225,6 +225,41 @@ test('record application builds a closed correction command only from completed 
   assert.equal(draft.steps[1].status, 'skipped', 'skipped actual inputs are not promoted into correction payloads');
 });
 
+test('Reviewer regression: correcting actuals preserves an untouched missing feedback as null', () => {
+  const record = effectiveRecord({ feedback: null });
+  const repository = repositoryDouble([record]);
+  const application = createRecordApplicationService({ repository });
+  const draft = application.createEditDraft(record);
+  draft.steps[0].actualReps = '15';
+
+  application.correctRecord({
+    recordId: record.id,
+    expectedRevision: record.revision,
+    commandKey: 'record-app-correct-without-feedback',
+    nowMs: 1785719450000,
+    draft
+  });
+
+  assert.equal(repository.calls.correct[0].feedback, null);
+  assert.deepEqual(repository.calls.correct[0].actualCorrections, [{
+    stepId: 'step_manual',
+    actualReps: 15
+  }]);
+
+  const feedbackRepository = repositoryDouble([record]);
+  const feedbackApplication = createRecordApplicationService({ repository: feedbackRepository });
+  const feedbackDraft = feedbackApplication.createEditDraft(record);
+  feedbackDraft.feedback.rpe = '8';
+  feedbackApplication.correctRecord({
+    recordId: record.id,
+    expectedRevision: record.revision,
+    commandKey: 'record-app-add-feedback',
+    nowMs: 1785719455000,
+    draft: feedbackDraft
+  });
+  assert.equal(feedbackRepository.calls.correct[0].feedback.rpe, 8);
+});
+
 test('record application maps strength set corrections and delegates stale-safe deletion without leaking record payloads', () => {
   const strength = effectiveRecord({
     id: 'record_application_strength',

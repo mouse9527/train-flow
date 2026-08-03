@@ -126,6 +126,7 @@ function mapDetail(record) {
     status: record.status,
     statusLabel: recordStatusLabel(record.status),
     durationLabel: formatDuration(record.elapsedActiveSeconds),
+    feedbackMissing: record.feedback === null,
     feedback: feedbackView(record.feedback),
     steps: record.planSnapshot.steps
       .slice()
@@ -162,6 +163,18 @@ function parseNullableNumber(value) {
     return null;
   }
   return Number(value);
+}
+
+function feedbackDraftIsEmpty(feedback) {
+  if (!feedback) {
+    return true;
+  }
+  return (
+    parseNullableNumber(feedback.rpe) === null &&
+    parseNullableNumber(feedback.weightBeforeKg) === null &&
+    Object.values(canonicalPain(feedback.pain)).every((value) => value === false) &&
+    feedback.note === ''
+  );
 }
 
 function correctionForStep(step) {
@@ -232,7 +245,8 @@ class RecordApplicationService {
     const detail = record.steps ? record : mapDetail(record);
     return {
       steps: clone(detail.steps),
-      feedback: clone(detail.feedback)
+      feedback: clone(detail.feedback),
+      feedbackMissing: detail.feedbackMissing === true
     };
   }
 
@@ -240,18 +254,21 @@ class RecordApplicationService {
     const actualCorrections = draft.steps
       .map(correctionForStep)
       .filter(Boolean);
+    const feedback = draft.feedbackMissing === true && feedbackDraftIsEmpty(draft.feedback)
+      ? null
+      : {
+        rpe: parseNullableNumber(draft.feedback.rpe),
+        weightBeforeKg: parseNullableNumber(draft.feedback.weightBeforeKg),
+        pain: canonicalPain(draft.feedback.pain),
+        note: draft.feedback.note
+      };
     const corrected = this.repository.correct({
       recordId,
       expectedRevision,
       commandKey,
       nowMs,
       actualCorrections,
-      feedback: {
-        rpe: parseNullableNumber(draft.feedback.rpe),
-        weightBeforeKg: parseNullableNumber(draft.feedback.weightBeforeKg),
-        pain: canonicalPain(draft.feedback.pain),
-        note: draft.feedback.note
-      }
+      feedback
     });
     return clone(corrected && corrected.record ? corrected.record : corrected);
   }
