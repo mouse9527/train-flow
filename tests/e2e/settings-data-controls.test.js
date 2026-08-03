@@ -337,6 +337,110 @@ test('[F5-registry] Attack: expired export confirmation 首次访问即删除，
   assert.deepEqual(clipboardWrites, [], 'expired private JSON must not revive after a clock rollback');
 });
 
+test('[F6-copy-race] Attack: 同一 export confirmation 必须 single-flight，首笔未 settle 时第二笔立即拒绝', async () => {
+  const privateJson = '{"privateTrainingPayload":"CONCURRENT_COPY_PRIVATE_d125"}';
+  const clipboardCalls = [];
+  const pendingClipboard = [];
+  const clipboard = {
+    setClipboardData(options) {
+      clipboardCalls.push(options.data);
+      pendingClipboard.push(options);
+    }
+  };
+  const service = loadServiceContract({
+    database: {
+      exportPortableBackup() {
+        return {
+          jsonText: privateJson,
+          summary: { plans: 1, records: 0, bytes: Buffer.byteLength(privateJson), checksumPrefix: 'concurd1' }
+        };
+      }
+    },
+    repository: { load() { return {}; }, save(value) { return value; } },
+    wx: clipboard,
+    clipboard
+  });
+  const preview = await maybePromise(service.createExportPreview());
+
+  let secondBeforeFirstSettlement = 'pending';
+  const first = Promise.resolve()
+    .then(() => service.copyExportToClipboard(preview.confirmationId))
+    .then(
+      (value) => ({ status: 'fulfilled', value }),
+      (error) => ({ status: 'rejected', error })
+    );
+  await flushMicrotasks();
+  const second = Promise.resolve()
+    .then(() => service.copyExportToClipboard(preview.confirmationId))
+    .then(
+      (value) => {
+        secondBeforeFirstSettlement = 'fulfilled';
+        return { status: 'fulfilled', value };
+      },
+      (error) => {
+        secondBeforeFirstSettlement = 'rejected';
+        return { status: 'rejected', error };
+      }
+    );
+  await flushMicrotasks();
+  const callsBeforeFirstSettlement = clipboardCalls.length;
+
+  for (const pending of pendingClipboard.splice(0)) pending.success({});
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.equal(callsBeforeFirstSettlement, 1, 'single confirmation started more than one clipboard write');
+  assert.equal(secondBeforeFirstSettlement, 'rejected', 'second copy must reject before the first clipboard settles');
+  assert.equal(firstResult.status, 'fulfilled');
+  assert.equal(secondResult.status, 'rejected');
+  assert.deepEqual(clipboardCalls, [privateJson]);
+});
+
+test('[F6-copy-race] Attack: clipboard 失败释放 single-flight 锁允许一次 retry，成功后 confirmation 删除', async () => {
+  const privateJson = '{"privateTrainingPayload":"COPY_RETRY_PRIVATE_9a4e"}';
+  const clipboardCalls = [];
+  const pendingClipboard = [];
+  const clipboard = {
+    setClipboardData(options) {
+      clipboardCalls.push(options.data);
+      pendingClipboard.push(options);
+    }
+  };
+  const service = loadServiceContract({
+    database: {
+      exportPortableBackup() {
+        return {
+          jsonText: privateJson,
+          summary: { plans: 1, records: 0, bytes: Buffer.byteLength(privateJson), checksumPrefix: 'retry9a4' }
+        };
+      }
+    },
+    repository: { load() { return {}; }, save(value) { return value; } },
+    wx: clipboard,
+    clipboard
+  });
+  const preview = await maybePromise(service.createExportPreview());
+
+  const first = Promise.resolve()
+    .then(() => service.copyExportToClipboard(preview.confirmationId));
+  await flushMicrotasks();
+  assert.equal(pendingClipboard.length, 1);
+  pendingClipboard.shift().fail({ errMsg: 'setClipboardData:fail denied' });
+  await assert.rejects(first, /clipboard|denied|fail/i);
+
+  const retry = Promise.resolve()
+    .then(() => service.copyExportToClipboard(preview.confirmationId));
+  await flushMicrotasks();
+  assert.equal(pendingClipboard.length, 1, 'failed first attempt must release the single-flight lock');
+  pendingClipboard.shift().success({});
+  await retry;
+
+  await assert.rejects(
+    Promise.resolve().then(() => service.copyExportToClipboard(preview.confirmationId)),
+    /consumed|confirmation|expired|missing/i
+  );
+  assert.deepEqual(clipboardCalls, [privateJson, privateJson]);
+});
+
 test('[C] Attack: service import/clear 只传递私有 payload，不把内容塞进 preview，并保持本机/云端边界', async () => {
   const { service, calls } = createServiceHarness();
 
