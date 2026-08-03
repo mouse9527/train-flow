@@ -180,6 +180,14 @@ function validatePlans(plans) {
     } catch (_error) {
       fail('IMPORT_DOMAIN_INVALID', 'Import contains an invalid plan');
     }
+    assertNonNegativeSafeInteger(plan.createdAt, 'data.plans[].createdAt');
+    assertNonNegativeSafeInteger(plan.updatedAt, 'data.plans[].updatedAt');
+    if (plan.updatedAt < plan.createdAt) {
+      fail('IMPORT_DOMAIN_INVALID', 'data.plans[].updatedAt must not precede createdAt');
+    }
+    if (plan.deletedAt !== null) {
+      assertNonNegativeSafeInteger(plan.deletedAt, 'data.plans[].deletedAt');
+    }
     ids.add(plan.id);
     if (plan.status !== 'deleted') {
       if (activeDates.has(plan.trainingDate)) {
