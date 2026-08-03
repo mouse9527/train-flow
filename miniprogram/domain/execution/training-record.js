@@ -1,4 +1,5 @@
 const { canonicalize, computeChecksum } = require('../../utils/checksum');
+const { assertWorkoutPlan } = require('../planning/plan-validation');
 
 const TERMINAL_RECORD_FACT_FIELDS = Object.freeze([
   'schemaVersion',
@@ -47,6 +48,18 @@ const COMMAND_RECEIPT_FIELDS = Object.freeze([
   'fingerprint',
   'resultRevision'
 ]);
+const TERMINAL_STEP_RESULT_FIELDS = Object.freeze([
+  'stepId',
+  'status',
+  'completedAt',
+  'setResults'
+]);
+const TERMINAL_SET_RESULT_FIELDS = Object.freeze([
+  'setNumber',
+  'reps',
+  'weightKg',
+  'completedAt'
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -68,11 +81,68 @@ function assertTerminalSource(source) {
   if (typeof source.id !== 'string' || source.id.length === 0) {
     throw new TypeError('TrainingRecord source id must be a non-empty string');
   }
-  if (!source.planSnapshot || !Array.isArray(source.planSnapshot.steps)) {
-    throw new TypeError('TrainingRecord source requires a PlanSnapshot');
+  assertWorkoutPlan(source.planSnapshot);
+  if (source.planSnapshot.status !== 'scheduled') {
+    throw new TypeError('TrainingRecord source PlanSnapshot must be scheduled');
   }
   if (!Array.isArray(source.stepResults)) {
     throw new TypeError('TrainingRecord source requires stepResults');
+  }
+  if (
+    source.planSnapshot.trainingDate !== source.trainingDate ||
+    !isSafeIntegerAtLeast(source.startedAt, 0) ||
+    !isSafeIntegerAtLeast(source.endedAt, source.startedAt) ||
+    !isSafeIntegerAtLeast(source.elapsedActiveSeconds, 0)
+  ) {
+    throw new TypeError('TrainingRecord source terminal timing is invalid');
+  }
+
+  const planStepIndexes = new Map(
+    source.planSnapshot.steps.map((step, index) => [step.id, index])
+  );
+  const resultStepIds = new Set();
+  source.stepResults.forEach((result, index) => {
+    const label = `TrainingRecord source.stepResults[${index}]`;
+    if (
+      !hasExactFields(result, TERMINAL_STEP_RESULT_FIELDS) ||
+      typeof result.stepId !== 'string' ||
+      result.stepId.length === 0 ||
+      !['completed', 'skipped'].includes(result.status) ||
+      !isSafeIntegerAtLeast(result.completedAt, source.startedAt) ||
+      result.completedAt > source.endedAt ||
+      !Array.isArray(result.setResults) ||
+      resultStepIds.has(result.stepId) ||
+      planStepIndexes.get(result.stepId) !== index
+    ) {
+      throw new TypeError(`${label} is invalid`);
+    }
+    resultStepIds.add(result.stepId);
+    const step = source.planSnapshot.steps[index];
+    if (
+      ['manual', 'timed'].includes(step.kind) &&
+      result.setResults.length !== 0
+    ) {
+      throw new TypeError(`${label}.setResults must be empty for ${step.kind}`);
+    }
+    result.setResults.forEach((setResult, setIndex) => {
+      const setLabel = `${label}.setResults[${setIndex}]`;
+      if (
+        !hasExactFields(setResult, TERMINAL_SET_RESULT_FIELDS) ||
+        setResult.setNumber !== setIndex + 1 ||
+        !validNullablePositiveInteger(setResult.reps) ||
+        !validNullableMeasurement(setResult.weightKg) ||
+        !isSafeIntegerAtLeast(setResult.completedAt, source.startedAt) ||
+        setResult.completedAt > result.completedAt
+      ) {
+        throw new TypeError(`${setLabel} is invalid`);
+      }
+    });
+  });
+  if (
+    source.stepResults.length > source.planSnapshot.steps.length ||
+    (source.status === 'completed' && source.stepResults.length !== source.planSnapshot.steps.length)
+  ) {
+    throw new TypeError('TrainingRecord source stepResults do not match terminal status');
   }
 }
 
@@ -134,7 +204,7 @@ function createBaselineTrainingRecord(session) {
 }
 
 function terminalSourceFromRecord(record) {
-  return {
+  const source = {
     id: record.sourceSessionId,
     planSnapshot: clone(record.planSnapshot),
     trainingDate: record.trainingDate,
@@ -144,6 +214,8 @@ function terminalSourceFromRecord(record) {
     elapsedActiveSeconds: record.elapsedActiveSeconds,
     stepResults: clone(record.stepResults)
   };
+  assertTerminalSource(source);
+  return source;
 }
 
 function recordMetadataMatches(record, sourceSessionId) {

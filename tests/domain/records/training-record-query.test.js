@@ -8,7 +8,8 @@ const {
 } = require('../../../miniprogram/domain/execution/workout-session');
 const {
   createBaselineTrainingRecord,
-  findTrainingRecords
+  findTrainingRecords,
+  terminalFactFingerprint
 } = require('../../../miniprogram/domain/execution/training-record');
 const {
   isDeletedTrainingRecord
@@ -452,4 +453,30 @@ test('Attack Round 4: every query validates the whole record set and rejects mal
   for (const recordId of ['', 'session_query_clean', null, {}, -1]) {
     assert.throws(() => findById(recordId));
   }
+});
+
+test('Reviewer regression: query rejects malformed nested terminal facts before building an effective strength result', () => {
+  const corrupt = completedRecord({
+    sessionId: 'session_query_nested_corrupt',
+    planId: 'plan_query_nested_corrupt',
+    trainingDate: '2026-08-14',
+    kind: 'strength',
+    endedAt: NOW + 1_100_000
+  });
+  const { database, repository } = createHarness([corrupt]);
+  database.commit((draft) => {
+    draft.records[0].stepResults[0].setResults = null;
+    draft.records[0].sourceSessionFingerprint = terminalFactFingerprint(draft.records[0]);
+  });
+  const before = snapshotBytes(database);
+
+  assert.throws(
+    () => repository.list(),
+    /source facts are invalid|setResults must be an array/i
+  );
+  assert.throws(
+    () => repository.findById(corrupt.id),
+    /source facts are invalid|setResults must be an array/i
+  );
+  assert.equal(snapshotBytes(database), before);
 });
