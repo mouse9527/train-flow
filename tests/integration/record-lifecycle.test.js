@@ -146,6 +146,53 @@ test('real record lifecycle materializes from terminal Session, edits through ap
   assert.equal(database.load().sync.outbox.at(-1).kind, 'training-record.deleted');
 });
 
+test('real record lifecycle preserves null feedback during an actual-only correction', () => {
+  const database = createLocalDatabase({
+    storage: new StorageDouble(),
+    now: () => START_AT + 300_000
+  });
+  const sessions = createSessionRepository({ database });
+  const application = createRecordApplicationService({
+    repository: createTrainingRecordRepository({ database })
+  });
+  const started = sessions.start({
+    plan: manualPlan(),
+    sessionId: 'session_record_without_feedback',
+    originDeviceId: 'device_record_without_feedback',
+    commandKey: 'start_record_without_feedback',
+    nowMs: START_AT
+  });
+  sessions.apply({
+    type: 'complete_step',
+    expectedSessionRevision: started.sessionRevision,
+    commandKey: 'complete_record_without_feedback',
+    nowMs: START_AT + 60_000,
+    payload: { stepId: started.planSnapshot.steps[0].id }
+  }, { originDeviceId: 'device_record_without_feedback' });
+
+  const initial = application.getView();
+  assert.equal(initial.selectedRecord.feedbackMissing, true);
+  const draft = application.createEditDraft(initial.selectedRecord);
+  draft.steps[0].actualReps = '18';
+  application.correctRecord({
+    recordId: initial.selectedRecord.id,
+    expectedRevision: initial.selectedRecord.revision,
+    commandKey: 'correct_record_without_feedback',
+    nowMs: START_AT + 120_000,
+    draft
+  });
+
+  const corrected = application.getView({ selectedRecordId: initial.selectedRecord.id });
+  assert.equal(corrected.selectedRecord.steps[0].actualLabel, '18 次');
+  assert.equal(corrected.selectedRecord.feedbackMissing, true);
+  assert.equal(corrected.selectedRecord.feedback.rpe, null);
+  const durable = findTrainingRecords(
+    database.load().records,
+    'session_record_without_feedback'
+  )[0];
+  assert.equal(durable.feedback, null);
+});
+
 test('real record page drives the production application and repository through edit and confirmed delete', () => {
   const database = createLocalDatabase({
     storage: new StorageDouble(),

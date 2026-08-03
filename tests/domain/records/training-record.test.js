@@ -575,6 +575,12 @@ test('Attack Round 1: malicious correction structures and values cannot forge ex
 
 test('Attack Round 1: feedback enforces the existing private schema and strips derived safety advice', () => {
   const record = baseline('completed');
+  const withoutFeedback = applyCorrection(record, correctionCommand(record, {
+    commandKey: 'correct_feedback_null',
+    feedback: null
+  }));
+  assert.equal(withoutFeedback.feedback, null);
+
   const valid = applyCorrection(record, correctionCommand(record, {
     commandKey: 'correct_feedback_canonical',
     actualCorrections: [],

@@ -238,6 +238,9 @@ function assertRecord(record) {
 }
 
 function canonicalFeedback(feedback) {
+  if (feedback === null) {
+    return null;
+  }
   assertClosedObject(
     feedback,
     ['rpe', 'weightBeforeKg', 'pain', 'note'],
