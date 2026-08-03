@@ -88,8 +88,7 @@ function machineKind(step) {
     return 'treadmill';
   }
   if (
-    Object.prototype.hasOwnProperty.call(targets, 'cadenceSpm') ||
-    Object.prototype.hasOwnProperty.call(targets, 'resistance')
+    Object.prototype.hasOwnProperty.call(targets, 'cadenceSpm')
   ) {
     return 'rowing';
   }
@@ -248,7 +247,14 @@ function aggregate({ range, dates, contributions, builtAt }) {
   const weekly = contributions.filter(({ trainingDate }) => (
     trainingDate >= range.startDate && trainingDate <= range.endDate
   ));
-  const completedCount = weekly.filter(({ status }) => status === 'completed').length;
+  const plannedDateSet = new Set(dates);
+  const completedCount = new Set(
+    weekly
+      .filter(({ status, trainingDate }) => (
+        status === 'completed' && plannedDateSet.has(trainingDate)
+      ))
+      .map(({ trainingDate }) => trainingDate)
+  ).size;
   const plannedCount = dates.length;
   const eligible = contributions
     .filter(({ trainingDate }) => trainingDate <= range.endDate)
@@ -278,9 +284,17 @@ function aggregate({ range, dates, contributions, builtAt }) {
     },
     latestBodyWeight: latestKnown(eligible, 'weightKg'),
     recent: {
-      duration: recent.map(({ trainingDate, activeSeconds }) => ({ trainingDate, value: activeSeconds })),
-      rpe: recent.map(({ trainingDate, rpe }) => ({ trainingDate, value: rpe })),
-      weight: recent.map(({ trainingDate, weightKg }) => ({ trainingDate, value: weightKg }))
+      duration: recent.map(({ recordId, trainingDate, activeSeconds }) => ({
+        recordId,
+        trainingDate,
+        value: activeSeconds
+      })),
+      rpe: recent.map(({ recordId, trainingDate, rpe }) => ({ recordId, trainingDate, value: rpe })),
+      weight: recent.map(({ recordId, trainingDate, weightKg }) => ({
+        recordId,
+        trainingDate,
+        value: weightKg
+      }))
     },
     _plannedDates: clone(dates),
     _recordContributions: clone(contributions).sort(compareContribution)
@@ -342,6 +356,7 @@ function publicStatisticsProjection(projection) {
   delete copy._plannedDates;
   delete copy._recordContributions;
   delete copy.databaseRevision;
+  delete copy.projectionFingerprint;
   delete copy.sourceFingerprint;
   return copy;
 }

@@ -24,7 +24,8 @@ function trendPoints(points, formatter) {
     .filter(({ value }) => value !== null)
     .map(({ value }) => value);
   const max = knownValues.length === 0 ? 0 : Math.max(...knownValues);
-  return points.map(({ trainingDate, value }) => ({
+  return points.map(({ recordId, trainingDate, value }) => ({
+    key: recordId,
     trainingDate,
     dateLabel: formatShortDate(trainingDate),
     valueLabel: value === null ? '未记录' : formatter(value),

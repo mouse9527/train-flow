@@ -118,16 +118,16 @@ test('rebuild computes trustworthy weekly totals and recent trends from normaliz
     trainingDate: '2026-08-03'
   });
   assert.deepEqual(projection.recent.duration, [
-    { trainingDate: '2026-08-03', value: 1800 },
-    { trainingDate: '2026-08-05', value: 1200 }
+    { recordId: 'record_mon', trainingDate: '2026-08-03', value: 1800 },
+    { recordId: 'record_wed', trainingDate: '2026-08-05', value: 1200 }
   ]);
   assert.deepEqual(projection.recent.rpe, [
-    { trainingDate: '2026-08-03', value: 7 },
-    { trainingDate: '2026-08-05', value: null }
+    { recordId: 'record_mon', trainingDate: '2026-08-03', value: 7 },
+    { recordId: 'record_wed', trainingDate: '2026-08-05', value: null }
   ]);
   assert.deepEqual(projection.recent.weight, [
-    { trainingDate: '2026-08-03', value: 80.5 },
-    { trainingDate: '2026-08-05', value: null }
+    { recordId: 'record_mon', trainingDate: '2026-08-03', value: 80.5 },
+    { recordId: 'record_wed', trainingDate: '2026-08-05', value: null }
   ]);
   assert.equal(projection.builtAt, 1786032000000);
 });
@@ -204,6 +204,8 @@ test('completed target fallback is marked as estimated and streak de-duplicates 
   assert.equal(projection.summary.treadmillEstimated, true);
   assert.equal(projection.summary.rowingSeconds, 120);
   assert.equal(projection.summary.rowingEstimated, true);
+  assert.equal(projection.summary.completedCount, 2);
+  assert.equal(projection.summary.completionRate, 1);
   assert.equal(projection.summary.streakDays, 2);
 });
 
@@ -252,6 +254,13 @@ test('planning and classification use scheduled facts and structured targets bef
     sets: 4,
     targets: { cadenceSpm: { min: 18, max: 22 }, resistance: null }
   };
+  const structuredBike = {
+    id: 'step_structured_bike',
+    kind: 'timed',
+    name: '动感单车',
+    durationSeconds: 90,
+    targets: { resistance: { min: 3, max: 5 } }
+  };
   const plans = [
     plan({ id: 'scheduled', trainingDate: '2026-08-03', steps: [structuredTreadmill] }),
     plan({ id: 'draft', trainingDate: '2026-08-04', steps: [structuredRowing], status: 'draft' }),
@@ -262,10 +271,11 @@ test('planning and classification use scheduled facts and structured targets bef
     trainingDate: '2026-08-03',
     endedAt: 500,
     elapsedActiveSeconds: 360,
-    steps: [structuredTreadmill, structuredRowing],
+    steps: [structuredTreadmill, structuredRowing, structuredBike],
     results: [
       { stepId: structuredTreadmill.id, status: 'completed', actualDurationSeconds: 240, setResults: [] },
-      { stepId: structuredRowing.id, status: 'completed', actualDurationSeconds: 120, setResults: [] }
+      { stepId: structuredRowing.id, status: 'completed', actualDurationSeconds: 120, setResults: [] },
+      { stepId: structuredBike.id, status: 'completed', actualDurationSeconds: 90, setResults: [] }
     ]
   });
 
@@ -443,7 +453,7 @@ test('an unplanned completed workout keeps completion unknown while retaining ac
   const projection = new StatisticsService({ now: () => 1_300 }).rebuild([unplanned], [], RANGE);
 
   assert.equal(projection.summary.plannedCount, 0);
-  assert.equal(projection.summary.completedCount, 1);
+  assert.equal(projection.summary.completedCount, 0);
   assert.equal(projection.summary.completionRate, null);
   assert.equal(projection.summary.totalActiveSeconds, 900);
 });

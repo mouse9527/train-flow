@@ -96,7 +96,13 @@ test('local statistics refreshes dirty record changes and repairs a corrupted pr
   const cached = database.load().statisticsProjection;
   assert.equal(initial.summary.totalActiveSeconds, 600);
   assert.match(cached.sourceFingerprint, /^[a-f0-9]{64}$/);
+  assert.match(cached.projectionFingerprint, /^[a-f0-9]{64}$/);
   assert.equal(cached.databaseRevision, database.load().localRevision);
+  assert.equal(Object.hasOwn(cached, '_recordContributions'), false);
+  assert.equal(Object.hasOwn(cached, '_plannedDates'), false);
+  const revisionBeforeCacheHit = database.load().localRevision;
+  assert.deepEqual(service.getProjection(RANGE), initial);
+  assert.equal(database.load().localRevision, revisionBeforeCacheHit);
 
   database.commit((draft) => {
     draft.records[0] = completedRecord({ revision: 2, activeSeconds: 900 });
@@ -112,17 +118,18 @@ test('local statistics refreshes dirty record changes and repairs a corrupted pr
   assert.equal(afterEdit.summary.totalActiveSeconds, 900);
   assert.equal(database.load().statisticsProjection.summary.totalActiveSeconds, 900);
 
+  const logicallyCorrupted = database.load().statisticsProjection;
+  const corruptionRevision = database.load().localRevision + 1;
   database.commit((draft) => {
-    draft.statisticsProjection = {
-      schemaVersion: 1,
-      range: clone(RANGE),
-      sourceFingerprint: '0'.repeat(64),
-      summary: { completedCount: 999 }
-    };
+    draft.statisticsProjection = clone(logicallyCorrupted);
+    draft.statisticsProjection.databaseRevision = corruptionRevision;
+    draft.statisticsProjection.summary.completedCount = 999;
   });
+  const revisionBeforeRepair = database.load().localRevision;
   const repaired = service.getProjection(RANGE);
   assert.equal(repaired.summary.completedCount, 1);
-  assert.notEqual(database.load().statisticsProjection.sourceFingerprint, '0'.repeat(64));
+  assert.equal(database.load().statisticsProjection.summary.completedCount, 1);
+  assert.equal(database.load().localRevision, revisionBeforeRepair + 1);
 
   database.commit((draft) => {
     draft.records[0] = {

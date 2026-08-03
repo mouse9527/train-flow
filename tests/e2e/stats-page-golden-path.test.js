@@ -52,16 +52,16 @@ function projectionFixture() {
     latestBodyWeight: { valueKg: 80.5, trainingDate: '2026-08-03' },
     recent: {
       duration: [
-        { trainingDate: '2026-08-03', value: 1800 },
-        { trainingDate: '2026-08-05', value: 1200 }
+        { recordId: 'record_mon', trainingDate: '2026-08-03', value: 1800 },
+        { recordId: 'record_wed', trainingDate: '2026-08-05', value: 1200 }
       ],
       rpe: [
-        { trainingDate: '2026-08-03', value: 7 },
-        { trainingDate: '2026-08-05', value: null }
+        { recordId: 'record_mon', trainingDate: '2026-08-03', value: 7 },
+        { recordId: 'record_wed', trainingDate: '2026-08-05', value: null }
       ],
       weight: [
-        { trainingDate: '2026-08-03', value: 80.5 },
-        { trainingDate: '2026-08-05', value: null }
+        { recordId: 'record_mon', trainingDate: '2026-08-03', value: 80.5 },
+        { recordId: 'record_wed', trainingDate: '2026-08-05', value: null }
       ]
     }
   };
@@ -98,11 +98,15 @@ test('statistics application maps seconds and nullable facts into honest labels 
   });
   assert.equal(view.latestBodyWeight.valueLabel, '80.5 kg');
   assert.deepEqual(
-    view.trends.find(({ key }) => key === 'rpe').points.map(({ valueLabel, known }) => ({
+    view.trends.find(({ key }) => key === 'rpe').points.map(({ key, valueLabel, known }) => ({
+      key,
       valueLabel,
       known
     })),
-    [{ valueLabel: '7', known: true }, { valueLabel: '未记录', known: false }]
+    [
+      { key: 'record_mon', valueLabel: '7', known: true },
+      { key: 'record_wed', valueLabel: '未记录', known: false }
+    ]
   );
   assert.equal(view.emptyState, null);
 });
@@ -203,7 +207,10 @@ test('stats deliverable uses CSS-only lightweight charts with labels, units and 
   assert.match(wxml, /最近趋势/);
   assert.match(wxml, /仅用于回顾训练记录，不用于诊断/);
   assert.match(wxml, /style="height: \{\{point\.barPercent\}\}%"/);
+  assert.match(wxml, /wx:key="key" wx:for-item="point"/);
   assert.match(wxss, /\.trend-bar__fill/);
+  assert.match(wxss, /\.trend-point__value[^}]*font-size:\s*26rpx/s);
+  assert.match(wxss, /\.trend-point__date[^}]*font-size:\s*26rpx/s);
   assert.doesNotMatch(wxml, /<canvas/i);
   assert.match(recordWxml, /url="\/pages\/stats\/index"/);
   assert.match(readme, /pages\/stats\/index\?fixture=worked-sample&state=populated/);

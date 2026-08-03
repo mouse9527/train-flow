@@ -82,7 +82,7 @@
           <text class="trend__unit">{{trend.unit}}</text>
         </view>
         <view class="trend-bars">
-          <view class="trend-point" wx:for="{{trend.points}}" wx:key="trainingDate" wx:for-item="point">
+          <view class="trend-point" wx:for="{{trend.points}}" wx:key="key" wx:for-item="point">
             <view class="trend-bar">
               <view class="trend-bar__fill {{point.known ? '' : 'trend-bar__fill--unknown'}}" style="height: {{point.barPercent}}%"></view>
             </view>

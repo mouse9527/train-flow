@@ -47,20 +47,35 @@ function sameRange(left, right) {
   );
 }
 
+function cacheProjection(cache) {
+  return {
+    schemaVersion: cache.schemaVersion,
+    range: cache.range,
+    builtAt: cache.builtAt,
+    summary: cache.summary,
+    latestStrength: cache.latestStrength,
+    latestBodyWeight: cache.latestBodyWeight,
+    recent: cache.recent
+  };
+}
+
 function cacheMatches(cache, range, sourceFingerprint, databaseRevision) {
-  return Boolean(
-    cache &&
-    cache.schemaVersion === 1 &&
-    cache.dirty !== true &&
-    sameRange(cache.range, range) &&
-    cache.sourceFingerprint === sourceFingerprint &&
-    cache.databaseRevision === databaseRevision &&
-    cache.summary &&
-    cache.latestStrength &&
-    cache.recent &&
-    Array.isArray(cache._plannedDates) &&
-    Array.isArray(cache._recordContributions)
-  );
+  try {
+    return Boolean(
+      cache &&
+      cache.schemaVersion === 1 &&
+      cache.dirty !== true &&
+      sameRange(cache.range, range) &&
+      cache.sourceFingerprint === sourceFingerprint &&
+      cache.databaseRevision === databaseRevision &&
+      cache.summary &&
+      cache.latestStrength &&
+      cache.recent &&
+      cache.projectionFingerprint === computeChecksum(cacheProjection(cache))
+    );
+  } catch (_error) {
+    return false;
+  }
 }
 
 class LocalStatisticsService extends StatisticsService {
@@ -108,9 +123,11 @@ class LocalStatisticsService extends StatisticsService {
         return this.publicProjection(snapshot.statisticsProjection);
       }
 
+      const projection = this.publicProjection(this.rebuild(records, plans, range));
       const rebuilt = {
-        ...this.rebuild(records, plans, range),
+        ...projection,
         sourceFingerprint,
+        projectionFingerprint: computeChecksum(projection),
         databaseRevision: snapshot.localRevision + 1
       };
       try {
