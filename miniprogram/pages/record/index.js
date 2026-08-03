@@ -8,6 +8,9 @@ const {
 const {
   createLocalDatabase
 } = require('../../services/local-database');
+const {
+  consumePendingRecordSelection
+} = require('../../application/record-navigation-handoff');
 
 function developerFixturesEnabled(wxApi) {
   if (!wxApi || typeof wxApi.getAccountInfoSync !== 'function') {
@@ -37,7 +40,8 @@ function createRecordPageDefinition({
   fixtureApplicationFactory = createDeveloperRecordApplicationService,
   getWx = () => wx,
   now = Date.now,
-  commandKeyFactory = defaultCommandKey
+  commandKeyFactory = defaultCommandKey,
+  consumePendingSelection = consumePendingRecordSelection
 } = {}) {
   return {
     data: {
@@ -63,7 +67,8 @@ function createRecordPageDefinition({
         trainingDate: query.trainingDate || null,
         kind: query.kind || null
       };
-      this.refresh(query.recordId || null);
+      const pendingRecordId = consumePendingSelection();
+      this.refresh(query.recordId || pendingRecordId || null);
       this.skipNextShowRefresh = true;
       if (useFixture && query.state === 'edit') {
         this.onStartEdit();
@@ -81,8 +86,9 @@ function createRecordPageDefinition({
       if (!this.application || this.data.editing || this.data.deleteConfirmation) {
         return;
       }
+      const pendingRecordId = consumePendingSelection();
       const selected = this.data.view && this.data.view.selectedRecord;
-      this.refresh(selected ? selected.id : null);
+      this.refresh(pendingRecordId || (selected ? selected.id : null));
     },
 
     refresh(selectedRecordId = null) {

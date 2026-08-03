@@ -175,6 +175,30 @@ test('record page loads list/detail, applies date and kind filters, and preserve
   assert.equal(application.calls.getView.at(-1).selectedRecordId, 'record_page_fixture');
 });
 
+test('record page consumes a pending cross-tab record selection on first load and later onShow', () => {
+  const application = applicationDouble();
+  const pendingSelections = ['record_from_today_first', 'record_from_today_later'];
+  const page = mount(createRecordPageDefinition({
+    applicationFactory: () => application,
+    getWx: () => wxDouble('release'),
+    consumePendingSelection: () => pendingSelections.shift() || null
+  }));
+
+  page.onLoad({});
+  assert.equal(
+    application.calls.getView[0].selectedRecordId,
+    'record_from_today_first'
+  );
+  page.onShow();
+  assert.equal(application.calls.getView.length, 1);
+
+  page.onShow();
+  assert.equal(
+    application.calls.getView.at(-1).selectedRecordId,
+    'record_from_today_later'
+  );
+});
+
 test('record page edits completed values and feedback, but does not expose inputs for skipped or unknown steps', () => {
   const application = applicationDouble();
   const wxApi = wxDouble('release');

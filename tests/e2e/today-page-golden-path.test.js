@@ -2,6 +2,9 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const {
+  consumePendingRecordSelection
+} = require('../../miniprogram/application/record-navigation-handoff');
 
 const ROOT = path.join(__dirname, '..', '..');
 
@@ -133,6 +136,11 @@ test('Today page routes only the primary action supplied by TodayPlanView', () =
       ['navigateTo', '/pages/workout/index?sessionId=session_today_fixture'],
       ['switchTab', '/pages/record/index']
     ]);
+    assert.equal(
+      consumePendingRecordSelection(),
+      completed.data.view.completedSessionSummary.recordId,
+      'switchTab must hand the requested record to the already-mounted records tab'
+    );
   });
 });
 

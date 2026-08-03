@@ -1,4 +1,7 @@
 const { createTodayPlanRuntime } = require('../../application/today-plan-runtime');
+const {
+  setPendingRecordSelection
+} = require('../../application/record-navigation-handoff');
 
 function currentTrainingDate(now = Date.now()) {
   const local = new Date(now + 8 * 60 * 60 * 1000);
@@ -19,6 +22,27 @@ function developerFixturesEnabled() {
   } catch (error) {
     return false;
   }
+}
+
+function recordIdFromActionUrl(url) {
+  if (typeof url !== 'string') {
+    return null;
+  }
+  const query = url.split('?')[1];
+  if (!query) {
+    return null;
+  }
+  for (const pair of query.split('&')) {
+    const [rawKey, rawValue = ''] = pair.split('=');
+    try {
+      if (decodeURIComponent(rawKey) === 'recordId') {
+        return decodeURIComponent(rawValue);
+      }
+    } catch (_error) {
+      return null;
+    }
+  }
+  return null;
 }
 
 Page({
@@ -52,6 +76,10 @@ Page({
       return;
     }
     if (action.navigationMode === 'switchTab') {
+      const recordId = recordIdFromActionUrl(action.url);
+      if (recordId) {
+        setPendingRecordSelection(recordId);
+      }
       wx.switchTab({ url: action.url.split('?')[0] });
       return;
     }
@@ -59,4 +87,4 @@ Page({
   }
 });
 
-module.exports = { currentTrainingDate, developerFixturesEnabled };
+module.exports = { currentTrainingDate, developerFixturesEnabled, recordIdFromActionUrl };
