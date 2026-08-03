@@ -1090,13 +1090,22 @@ test('[B] Attack: purge candidate/pointer/cleanup/remove 各 crash prefix 重启
   assert.ok(cleanupWriteIndex > pointerIndex, 'cleanup identity becomes durable after empty pointer');
   assert.ok(cleanupRemoveIndex > cleanupWriteIndex);
 
-  for (const index of [emptyWriteIndex, pointerIndex]) {
-    const storage = replayMutations(initial, mutations.slice(0, index + 1));
+  {
+    const storage = replayMutations(initial, mutations.slice(0, emptyWriteIndex + 1));
     const { database } = createDatabase({ storage });
     assert.throws(() => database.load(), /purge|cleanup|marker|incomplete|unsafe/i);
-    if (index >= pointerIndex) {
-      assert.equal(storage.peek(ACTIVE), mutations[pointerIndex].value, 'fail closed must not revive old pointer');
-    }
+  }
+
+  {
+    const storage = replayMutations(initial, mutations.slice(0, pointerIndex + 1));
+    const oldKey = initial[ACTIVE] === 'a' ? SLOT_A : SLOT_B;
+    const { database } = createDatabase({ storage });
+    const recovered = database.load();
+    assert.deepEqual(recovered, purged);
+    assert.deepEqual(recovered.plans, []);
+    assert.deepEqual(recovered.records, []);
+    assert.equal(storage.peek(ACTIVE), mutations[pointerIndex].value);
+    assert.equal(storage.peek(oldKey), undefined, 'recovery must never retain or revive old sensitive slot');
   }
 
   for (let index = cleanupWriteIndex; index <= cleanupRemoveIndex; index += 1) {
@@ -1424,4 +1433,150 @@ test('[F2] Attack: purge confirmation 必须绑定 TTL、single-use、baseline�
     assert.equal(importError.code, 'IMPORT_CONFIRMATION_ACTION_MISMATCH');
     assertNoWrites(target.storage);
   });
+});
+
+function attempt(operation) {
+  try {
+    return { result: operation(), error: null };
+  } catch (error) {
+    return { result: null, error };
+  }
+}
+
+test('[F2-marker] Attack: IMPORT_INTENT 初写/持久后抛错/read-back 抛错或损坏均不得继续 candidate/pointer', async (t) => {
+  const source = exportFixture().jsonText;
+  const cases = [
+    ['write before persist', (storage) => storage.failNextWrite(
+      IMPORT_INTENT,
+      new Error('intent write failed')
+    )],
+    ['persist then throw', (storage) => storage.failNextWrite(
+      IMPORT_INTENT,
+      new Error('intent persisted then process failed'),
+      { persistBeforeThrow: true }
+    )],
+    ['read-back throws', (storage) => storage.failNextRead(
+      IMPORT_INTENT,
+      new Error('intent read-back failed'),
+      { afterWrites: 1 }
+    )],
+    ['read-back corrupt', (storage) => storage.transformNextRead(
+      IMPORT_INTENT,
+      (marker) => ({ ...marker, phase: 'CORRUPT_INITIAL_PHASE' }),
+      { mutateStored: true, afterWrites: 1 }
+    )]
+  ];
+
+  for (const [name, inject] of cases) {
+    await t.test(name, () => {
+      const target = createTargetDatabase();
+      const baseline = target.database.load();
+      const preview = target.database.previewPortableImport(source);
+      target.storage.clearOperations();
+      inject(target.storage);
+
+      const outcome = attempt(
+        () => target.database.applyPortableImport(source, preview.confirmationId)
+      );
+      assert.ok(outcome.error, 'unverified import intent must not report success');
+      const candidateWrites = target.storage.operations.filter(
+        ({ type, key }) => type === 'write' && [SLOT_A, SLOT_B].includes(key)
+      );
+      const pointerAdvances = target.storage.operations.filter(
+        ({ type, key, value }) => type === 'write' && key === ACTIVE && value !== target.storage.peek(ACTIVE)
+      );
+      assert.deepEqual(candidateWrites, [], 'candidate advanced before verified intent');
+      assert.deepEqual(pointerAdvances, [], 'pointer advanced before verified intent');
+
+      const restarted = createDatabase({ storage: target.storage }).database;
+      assert.deepEqual(restarted.load(), baseline);
+      assert.equal(target.storage.peek(IMPORT_INTENT), undefined);
+    });
+  }
+});
+
+test('[F2-marker] Attack: CLEANUP marker 初写/read-back fault 重启后必须恢复 empty truth', async (t) => {
+  const cases = [
+    ['write before persist', (storage) => storage.failNextWrite(
+      CLEANUP_PENDING,
+      new Error('cleanup marker write failed')
+    )],
+    ['persist then throw', (storage) => storage.failNextWrite(
+      CLEANUP_PENDING,
+      new Error('cleanup marker persisted then process failed'),
+      { persistBeforeThrow: true }
+    )],
+    ['read-back throws', (storage) => storage.failNextRead(
+      CLEANUP_PENDING,
+      new Error('cleanup marker read-back failed'),
+      { afterWrites: 1 }
+    )],
+    ['read-back corrupt', (storage) => storage.transformNextRead(
+      CLEANUP_PENDING,
+      (marker) => ({ ...marker, phase: 'CORRUPT_CLEANUP_PHASE' }),
+      { mutateStored: true, afterWrites: 1 }
+    )]
+  ];
+
+  for (const [name, inject] of cases) {
+    await t.test(name, () => {
+      const target = createTargetDatabase();
+      const oldSlot = target.storage.peek(ACTIVE);
+      const oldKey = oldSlot === 'a' ? SLOT_A : SLOT_B;
+      const preview = target.database.prepareLocalPurge();
+      target.storage.clearOperations();
+      inject(target.storage);
+
+      attempt(() => target.database.applyLocalPurge(preview.confirmationId));
+      const oldRemoveIndex = target.storage.operations.findIndex(
+        ({ type, key }) => type === 'remove' && key === oldKey
+      );
+      if (oldRemoveIndex >= 0) {
+        const markerWriteIndex = target.storage.operations.findIndex(
+          ({ type, key }) => type === 'write' && key === CLEANUP_PENDING
+        );
+        const markerReadIndex = target.storage.operations.findIndex(
+          ({ type, key }, index) => index > markerWriteIndex && type === 'read' && key === CLEANUP_PENDING
+        );
+        assert.ok(markerReadIndex > markerWriteIndex && markerReadIndex < oldRemoveIndex);
+      }
+
+      const restarted = createDatabase({ storage: target.storage }).database;
+      const empty = restarted.load();
+      assert.deepEqual(empty.plans, []);
+      assert.deepEqual(empty.records, []);
+      assert.equal(target.storage.peek(ACTIVE) === oldSlot, false);
+      assert.equal(target.storage.peek(oldKey), undefined);
+      assert.equal(target.storage.peek(CLEANUP_PENDING), undefined);
+    });
+  }
+});
+
+test('[F2-marker] Attack: cleanup marker remove 前/后抛错都必须在重启后保持唯一 empty truth', async (t) => {
+  const cases = [
+    ['throw before remove', false],
+    ['remove then throw', true]
+  ];
+  for (const [name, removeBeforeThrow] of cases) {
+    await t.test(name, () => {
+      const target = createTargetDatabase();
+      const oldSlot = target.storage.peek(ACTIVE);
+      const oldKey = oldSlot === 'a' ? SLOT_A : SLOT_B;
+      const preview = target.database.prepareLocalPurge();
+      target.storage.failNextRemove(
+        CLEANUP_PENDING,
+        new Error(`cleanup marker ${name}`),
+        { removeBeforeThrow }
+      );
+      attempt(() => target.database.applyLocalPurge(preview.confirmationId));
+
+      const restarted = createDatabase({ storage: target.storage }).database;
+      const empty = restarted.load();
+      assert.deepEqual(empty.plans, []);
+      assert.deepEqual(empty.records, []);
+      assert.equal(target.storage.peek(ACTIVE) === oldSlot, false);
+      assert.equal(target.storage.peek(oldKey), undefined);
+      assert.equal(target.storage.peek(CLEANUP_PENDING), undefined);
+    });
+  }
 });
