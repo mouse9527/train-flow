@@ -232,6 +232,96 @@ test('[F4] Attack: one-argument copy 必须复制 preview 同一份私有 JSON�
   assert.deepEqual(clipboardWrites, [firstJson]);
 });
 
+test('[F5-registry] Attack: 新 export preview 必须立即撤销旧 confirmation 并只保留最新私密 JSON', async () => {
+  const exports = [
+    '{"privateTrainingPayload":"STALE_EXPORT_PRIVATE_a81c"}',
+    '{"privateTrainingPayload":"LATEST_EXPORT_PRIVATE_f247"}'
+  ];
+  let exportIndex = 0;
+  const database = {
+    exportPortableBackup() {
+      const jsonText = exports[exportIndex++];
+      return {
+        jsonText,
+        summary: {
+          plans: exportIndex,
+          records: 0,
+          bytes: Buffer.byteLength(jsonText),
+          checksumPrefix: `preview${exportIndex}`
+        }
+      };
+    }
+  };
+  const clipboardWrites = [];
+  const clipboard = {
+    setClipboardData({ data, success }) {
+      clipboardWrites.push(data);
+      if (success) success();
+    }
+  };
+  const service = loadServiceContract({
+    database,
+    repository: { load() { return {}; }, save(value) { return value; } },
+    wx: clipboard,
+    clipboard
+  });
+
+  const stale = await maybePromise(service.createExportPreview());
+  const latest = await maybePromise(service.createExportPreview());
+  assert.notEqual(stale.confirmationId, latest.confirmationId);
+
+  await assert.rejects(
+    Promise.resolve().then(() => service.copyExportToClipboard(stale.confirmationId)),
+    /missing|invalid|replaced|confirmation/i
+  );
+  assert.deepEqual(clipboardWrites, [], 'revoked confirmation must not disclose stale private JSON');
+
+  await maybePromise(service.copyExportToClipboard(latest.confirmationId));
+  assert.deepEqual(clipboardWrites, [exports[1]]);
+});
+
+test('[F5-registry] Attack: expired export confirmation 首次访问即删除，时钟回拨也不得复活私密 JSON', async () => {
+  const privateJson = '{"privateTrainingPayload":"EXPIRED_EXPORT_PRIVATE_321b"}';
+  let now = 1785719340000;
+  const clipboardWrites = [];
+  const clipboard = {
+    setClipboardData({ data, success }) {
+      clipboardWrites.push(data);
+      if (success) success();
+    }
+  };
+  const service = loadServiceContract({
+    database: {
+      exportPortableBackup() {
+        return {
+          jsonText: privateJson,
+          summary: { plans: 1, records: 0, bytes: Buffer.byteLength(privateJson), checksumPrefix: 'expired3' }
+        };
+      }
+    },
+    repository: { load() { return {}; }, save(value) { return value; } },
+    wx: clipboard,
+    clipboard,
+    now: () => now,
+    confirmationTtlMs: 300000
+  });
+
+  const preview = await maybePromise(service.createExportPreview());
+  now += 300001;
+  await assert.rejects(
+    Promise.resolve().then(() => service.copyExportToClipboard(preview.confirmationId)),
+    /expired/i
+  );
+  assert.deepEqual(clipboardWrites, []);
+
+  now -= 300001;
+  await assert.rejects(
+    Promise.resolve().then(() => service.copyExportToClipboard(preview.confirmationId)),
+    /missing|invalid|consumed|confirmation/i
+  );
+  assert.deepEqual(clipboardWrites, [], 'expired private JSON must not revive after a clock rollback');
+});
+
 test('[C] Attack: service import/clear 只传递私有 payload，不把内容塞进 preview，并保持本机/云端边界', async () => {
   const { service, calls } = createServiceHarness();
 
