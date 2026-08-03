@@ -50,6 +50,7 @@ function createRecordPageDefinition({
       selectedKindIndex: 0,
       editing: false,
       editDraft: null,
+      editRecordIdentity: null,
       editCommandKey: null,
       editCommandNowMs: null,
       deleteConfirmation: null,
@@ -114,16 +115,25 @@ function createRecordPageDefinition({
     },
 
     onDateFilterChange({ detail }) {
+      if (this.data.editing) {
+        return;
+      }
       this.filters.trainingDate = detail.value || null;
       this.refresh(null);
     },
 
     onClearDateFilter() {
+      if (this.data.editing) {
+        return;
+      }
       this.filters.trainingDate = null;
       this.refresh(null);
     },
 
     onKindFilterChange({ detail }) {
+      if (this.data.editing) {
+        return;
+      }
       const options = this.data.view ? this.data.view.kindOptions : [];
       const selected = options[Number(detail.value)] || options[0];
       this.filters.kind = selected ? selected.value : null;
@@ -131,6 +141,9 @@ function createRecordPageDefinition({
     },
 
     onSelectRecord({ currentTarget }) {
+      if (this.data.editing) {
+        return;
+      }
       const recordId = currentTarget && currentTarget.dataset
         ? currentTarget.dataset.recordId
         : null;
@@ -148,6 +161,10 @@ function createRecordPageDefinition({
       this.setData({
         editing: true,
         editDraft: this.application.createEditDraft(record),
+        editRecordIdentity: {
+          recordId: record.id,
+          revision: record.revision
+        },
         editCommandKey: commandKeyFactory('correct', record.id, record.revision, nowMs),
         editCommandNowMs: nowMs,
         validationError: null
@@ -158,6 +175,7 @@ function createRecordPageDefinition({
       this.setData({
         editing: false,
         editDraft: null,
+        editRecordIdentity: null,
         editCommandKey: null,
         editCommandNowMs: null
       });
@@ -214,14 +232,14 @@ function createRecordPageDefinition({
     },
 
     onSaveEdit() {
-      const record = this.data.view && this.data.view.selectedRecord;
-      if (!record || !this.data.editDraft) {
+      const identity = this.data.editRecordIdentity;
+      if (!identity || !this.data.editDraft) {
         return;
       }
       try {
         this.application.correctRecord({
-          recordId: record.id,
-          expectedRevision: record.revision,
+          recordId: identity.recordId,
+          expectedRevision: identity.revision,
           commandKey: this.data.editCommandKey,
           nowMs: this.data.editCommandNowMs,
           draft: this.data.editDraft
@@ -229,11 +247,12 @@ function createRecordPageDefinition({
         this.setData({
           editing: false,
           editDraft: null,
+          editRecordIdentity: null,
           editCommandKey: null,
           editCommandNowMs: null,
           validationError: null
         });
-        this.refresh(record.id);
+        this.refresh(identity.recordId);
         const wxApi = getWx();
         if (typeof wxApi.showToast === 'function') {
           wxApi.showToast({ title: '训练记录已更新', icon: 'none' });

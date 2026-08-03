@@ -251,6 +251,40 @@ test('record page edits completed values and feedback, but does not expose input
   assert.deepEqual(wxApi.toasts, [{ title: '训练记录已更新', icon: 'none' }]);
 });
 
+test('record page binds an edit to the record that opened it and blocks selection drift', () => {
+  const application = applicationDouble();
+  const page = mount(createRecordPageDefinition({
+    applicationFactory: () => application,
+    getWx: () => wxDouble('release'),
+    now: () => 1785719450000,
+    commandKeyFactory: () => 'bound-edit-command'
+  }));
+  page.onLoad({});
+  page.onStartEdit();
+  const viewCallsBeforeBlockedNavigation = application.calls.getView.length;
+
+  page.onDateFilterChange({ detail: { value: '2026-08-04' } });
+  page.onClearDateFilter();
+  page.onKindFilterChange({ detail: { value: 1 } });
+  page.onSelectRecord({ currentTarget: { dataset: { recordId: 'record_other' } } });
+
+  assert.equal(application.calls.getView.length, viewCallsBeforeBlockedNavigation);
+  assert.deepEqual(page.filters, { trainingDate: null, kind: null });
+
+  page.data.view.selectedRecord = {
+    ...page.data.view.selectedRecord,
+    id: 'record_other',
+    revision: 99,
+    title: '其他记录'
+  };
+  page.onSaveEdit();
+
+  assert.equal(application.calls.correctRecord[0].recordId, 'record_page_fixture');
+  assert.equal(application.calls.correctRecord[0].expectedRevision, 4);
+  assert.equal(application.calls.getView.at(-1).selectedRecordId, 'record_page_fixture');
+  assert.equal(page.data.editRecordIdentity, null);
+});
+
 test('record page updates one strength set field without cloning the full edit draft', () => {
   const page = mount(createRecordPageDefinition({
     applicationFactory: () => applicationDouble(),
