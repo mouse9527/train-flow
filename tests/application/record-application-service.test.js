@@ -154,6 +154,30 @@ test('record application maps deterministic filters, list summaries and honest c
   assert.match(empty.emptyState.guidance, /调整日期|类型/);
 });
 
+test('Reviewer regression: detail formats persisted zero body weight as 0 kg and reserves 未填 for null', () => {
+  const zeroRepository = repositoryDouble([effectiveRecord({
+    feedback: {
+      rpe: 7,
+      weightBeforeKg: 0,
+      pain: { knee: false, lowerBack: false, ankleOrToe: false, dizziness: false },
+      note: ''
+    }
+  })]);
+  const zeroView = createRecordApplicationService({ repository: zeroRepository }).getView();
+  assert.equal(zeroView.selectedRecord.feedback.weightBeforeLabel, '0 kg');
+
+  const nullRepository = repositoryDouble([effectiveRecord({
+    feedback: {
+      rpe: 7,
+      weightBeforeKg: null,
+      pain: { knee: false, lowerBack: false, ankleOrToe: false, dizziness: false },
+      note: ''
+    }
+  })]);
+  const nullView = createRecordApplicationService({ repository: nullRepository }).getView();
+  assert.equal(nullView.selectedRecord.feedback.weightBeforeLabel, '未填');
+});
+
 test('record application builds a closed correction command only from completed editable actuals and canonical feedback', () => {
   const repository = repositoryDouble();
   const application = createRecordApplicationService({ repository });

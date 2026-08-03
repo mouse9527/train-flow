@@ -268,6 +268,8 @@ test('record WXML binds filters, list/detail actual states, edit inputs and dele
   assert.match(wxml, /selectedRecord\.steps/);
   assert.match(wxml, /statusLabel/);
   assert.match(wxml, /actualLabel/);
+  assert.match(wxml, /feedback\.weightBeforeLabel/);
+  assert.doesNotMatch(wxml, /feedback\.weightBeforeKg\s*\|\|/);
   assert.match(wxml, /wx:if="\{\{editing\}\}"/);
   assert.match(wxml, /bindtap="onSaveEdit"/);
   assert.match(wxml, /deleteConfirmation/);

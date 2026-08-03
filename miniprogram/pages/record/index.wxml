@@ -85,7 +85,7 @@
 
     <view class="feedback-summary">
       <view class="feedback-chip">RPE {{view.selectedRecord.feedback.rpe || '未填'}}</view>
-      <view class="feedback-chip">体重 {{view.selectedRecord.feedback.weightBeforeKg || '未填'}}<text wx:if="{{view.selectedRecord.feedback.weightBeforeKg}}"> kg</text></view>
+      <view class="feedback-chip">体重 {{view.selectedRecord.feedback.weightBeforeLabel}}</view>
       <text class="feedback-note">{{view.selectedRecord.feedback.note || '暂无备注'}}</text>
     </view>
 

@@ -49,12 +49,16 @@ function feedbackView(feedback) {
     ? {
       rpe: feedback.rpe,
       weightBeforeKg: feedback.weightBeforeKg,
+      weightBeforeLabel: feedback.weightBeforeKg === null
+        ? '未填'
+        : `${feedback.weightBeforeKg} kg`,
       pain: canonicalPain(feedback.pain),
       note: feedback.note
     }
     : {
       rpe: null,
       weightBeforeKg: null,
+      weightBeforeLabel: '未填',
       pain: canonicalPain(),
       note: ''
     };
