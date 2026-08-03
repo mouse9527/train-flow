@@ -187,11 +187,14 @@ Page({
     });
     const wxApi = getWxApi();
     if (!wxApi || typeof wxApi.showModal !== 'function') return apply();
+    const pendingSyncWarning = this.data.clearPreview && this.data.clearPreview.hasPendingSync
+      ? '未同步变更会从本机移除并丢失。'
+      : '';
     return new Promise((resolve, reject) => {
       wxApi.showModal({
         title: '再次确认清除',
-        content: '仅清除本机数据，不会删除云端数据。此操作会移除本机计划、记录与设置。',
-        confirmText: '仅清除本机数据',
+        content: `仅清除本机数据，不会删除云端数据。${pendingSyncWarning}此操作会移除本机计划、记录与设置。`,
+        confirmText: '清除本机',
         confirmColor: '#B42318',
         success: ({ confirm }) => {
           if (!confirm) {
