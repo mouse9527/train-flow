@@ -35,8 +35,10 @@ Page({
   _importJsonText: '',
   _importConfirmationId: '',
   _clearConfirmationId: '',
+  _isUnloaded: false,
 
   onLoad(query) {
+    this._isUnloaded = false;
     const requestedSection = query && query.section;
     this.setData({
       section: requestedSection === 'about' || requestedSection === 'data'
@@ -79,6 +81,7 @@ Page({
   },
 
   onGenerateBackup() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
     this.setData({ dataError: '', dataNotice: '' });
     return Promise.resolve(settingsService.createExportPreview()).then((preview) => {
       this._exportConfirmationId = preview.confirmationId;
@@ -95,6 +98,7 @@ Page({
   },
 
   onCopyBackup() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
     const confirmationId = this._exportConfirmationId;
     return Promise.resolve(
       settingsService.copyExportToClipboard(confirmationId)
@@ -109,6 +113,7 @@ Page({
   },
 
   onImportInput(event) {
+    if (this._isUnloaded) return;
     this._importJsonText = event && event.detail ? String(event.detail.value || '') : '';
     this._importConfirmationId = '';
     this.setData({
@@ -122,6 +127,7 @@ Page({
   },
 
   onPreviewImport() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
     const jsonText = this._importJsonText;
     return Promise.resolve(settingsService.previewImport(jsonText)).then((preview) => {
       this._importConfirmationId = preview.confirmationId;
@@ -134,6 +140,7 @@ Page({
   },
 
   onConfirmImport() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
     const jsonText = this._importJsonText;
     const confirmationId = this._importConfirmationId;
     return Promise.resolve(settingsService.confirmImport(jsonText, confirmationId)).then((result) => {
@@ -154,6 +161,7 @@ Page({
   },
 
   onPrepareLocalClear() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
     return Promise.resolve(settingsService.prepareLocalClear()).then((preview) => {
       this._clearConfirmationId = preview.confirmationId;
       this.setData({ clearPreview: preview, dataError: '', dataNotice: '' });
@@ -165,6 +173,7 @@ Page({
   },
 
   onConfirmLocalClear() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
     const confirmationId = this._clearConfirmationId;
     const apply = () => Promise.resolve(settingsService.confirmLocalClear(confirmationId)).then((result) => {
       this._clearConfirmationId = '';
@@ -209,10 +218,20 @@ Page({
   },
 
   onUnload() {
+    this._isUnloaded = true;
     this._exportConfirmationId = '';
     this._importJsonText = '';
     this._importConfirmationId = '';
     this._clearConfirmationId = '';
+    this.setData({
+      exportSummary: null,
+      exportReady: false,
+      importBytes: 0,
+      importPreview: null,
+      clearPreview: null,
+      dataError: '',
+      dataNotice: ''
+    });
     if (typeof settingsService.clearSensitiveData === 'function') {
       settingsService.clearSensitiveData();
     }
