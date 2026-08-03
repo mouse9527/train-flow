@@ -189,6 +189,88 @@ function validCommandReceipts(receipts, recordRevision) {
   return receipts[receipts.length - 1].resultRevision === recordRevision;
 }
 
+function isSafeIntegerAtLeast(value, minimum) {
+  return Number.isSafeInteger(value) && !Object.is(value, -0) && value >= minimum;
+}
+
+function validNullablePositiveInteger(value) {
+  return value === null || isSafeIntegerAtLeast(value, 1);
+}
+
+function validNullableDuration(value) {
+  return value === null || isSafeIntegerAtLeast(value, 0);
+}
+
+function validNullableMeasurement(value) {
+  if (value === null) {
+    return true;
+  }
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    Number.isSafeInteger(Math.trunc(value)) &&
+    !Object.is(value, -0) &&
+    value >= 0 &&
+    value <= Number.MAX_SAFE_INTEGER &&
+    Math.abs(value * 10 - Math.round(value * 10)) <= Number.EPSILON * 10;
+}
+
+function validFeedback(feedback) {
+  if (feedback === null) {
+    return true;
+  }
+  if (
+    !hasExactFields(feedback, ['rpe', 'weightBeforeKg', 'pain', 'note']) ||
+    !Number.isSafeInteger(feedback.rpe) ||
+    feedback.rpe < 1 ||
+    feedback.rpe > 10 ||
+    !validNullableMeasurement(feedback.weightBeforeKg) ||
+    !hasExactFields(feedback.pain, ['knee', 'lowerBack', 'ankleOrToe', 'dizziness']) ||
+    Object.values(feedback.pain).some((value) => typeof value !== 'boolean') ||
+    typeof feedback.note !== 'string' ||
+    feedback.note.length > 500
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function validCorrectionForStep(correction, step, sourceResult) {
+  if (step.kind === 'manual') {
+    return hasExactFields(correction, ['stepId', 'actualReps']) &&
+      validNullablePositiveInteger(correction.actualReps);
+  }
+  if (step.kind === 'timed' || step.kind === 'interval') {
+    return hasExactFields(correction, ['stepId', 'actualDurationSeconds']) &&
+      validNullableDuration(correction.actualDurationSeconds);
+  }
+  if (
+    step.kind !== 'strength' ||
+    !hasExactFields(correction, ['stepId', 'setCorrections']) ||
+    !Array.isArray(correction.setCorrections) ||
+    !Array.isArray(sourceResult.setResults)
+  ) {
+    return false;
+  }
+  const sourceSetNumbers = new Set(
+    sourceResult.setResults.map(({ setNumber }) => setNumber)
+  );
+  const correctedSetNumbers = new Set();
+  for (const setCorrection of correction.setCorrections) {
+    if (
+      !hasExactFields(setCorrection, ['setNumber', 'reps', 'weightKg']) ||
+      !isSafeIntegerAtLeast(setCorrection.setNumber, 1) ||
+      !sourceSetNumbers.has(setCorrection.setNumber) ||
+      correctedSetNumbers.has(setCorrection.setNumber) ||
+      !validNullablePositiveInteger(setCorrection.reps) ||
+      !validNullableMeasurement(setCorrection.weightKg)
+    ) {
+      return false;
+    }
+    correctedSetNumbers.add(setCorrection.setNumber);
+  }
+  return true;
+}
+
 function validCorrectionOverlay(record) {
   const hasCorrections = Object.prototype.hasOwnProperty.call(record, 'actualCorrections');
   const hasReceipts = Object.prototype.hasOwnProperty.call(record, 'processedCorrectionCommands');
@@ -226,19 +308,9 @@ function validCorrectionOverlay(record) {
       return false;
     }
     stepIds.add(step.id);
-    const fields = Object.keys(correction).sort();
     if (
-      step.kind === 'manual'
-        ? canonicalize(fields) !== canonicalize(['actualReps', 'stepId'])
-        : step.kind === 'timed' || step.kind === 'interval'
-          ? canonicalize(fields) !== canonicalize(['actualDurationSeconds', 'stepId'])
-          : step.kind === 'strength'
-            ? canonicalize(fields) !== canonicalize(['setCorrections', 'stepId'])
-            : true
+      !validCorrectionForStep(correction, step, sourceResult)
     ) {
-      return false;
-    }
-    if (step.kind === 'strength' && !Array.isArray(correction.setCorrections)) {
       return false;
     }
   }
@@ -282,7 +354,7 @@ function recordMatchesTerminalSource(record, source) {
     TERMINAL_RECORD_REQUIRED_FIELDS.some(
       (field) => !Object.prototype.hasOwnProperty.call(record, field)
     ) ||
-    !(record.feedback === null || isPlainObject(record.feedback)) ||
+    !validFeedback(record.feedback) ||
     !validCorrectionOverlay(record) ||
     !recordMetadataMatches(record, source.id)
   ) {

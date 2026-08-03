@@ -2,7 +2,10 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
-  createBaselineTrainingRecord
+  createBaselineTrainingRecord,
+  ensureTerminalTrainingRecord,
+  recordMatchesTerminalSource,
+  terminalSourceFromRecord
 } = require('../../../miniprogram/domain/execution/training-record');
 const {
   applyWorkoutCommand,
@@ -300,6 +303,58 @@ test('Attack Round 1: source terminal facts are immutable while corrections use 
   });
   assert.equal(Object.hasOwn(corrected.feedback, 'hasSafetyAlarm'), false);
   assert.equal(Object.hasOwn(corrected.feedback, 'safetyAdvice'), false);
+});
+
+test('Reviewer regression: terminal-source matching rejects every malformed persisted strength set correction', () => {
+  const session = completedSession();
+  const baselineRecord = createBaselineTrainingRecord(session);
+  const strength = baselineRecord.planSnapshot.steps.find(({ kind }) => kind === 'strength');
+  const corrected = applyCorrection(baselineRecord, correctionCommand(baselineRecord, {
+    actualCorrections: [{
+      stepId: strength.id,
+      setCorrections: [{ setNumber: 1, reps: 10, weightKg: 22.5 }]
+    }]
+  }));
+  const source = terminalSourceFromRecord(corrected);
+  assert.equal(recordMatchesTerminalSource(corrected, source), true);
+
+  const malformedRecords = [
+    (() => {
+      const value = clone(corrected);
+      value.actualCorrections[0].setCorrections[0].setNumber = 2;
+      return value;
+    })(),
+    (() => {
+      const value = clone(corrected);
+      value.actualCorrections[0].setCorrections[0].reps = -1;
+      return value;
+    })(),
+    (() => {
+      const value = clone(corrected);
+      value.actualCorrections[0].setCorrections[0].weightKg = 22.55;
+      return value;
+    })(),
+    (() => {
+      const value = clone(corrected);
+      value.actualCorrections[0].setCorrections[0].completedAt = CORRECTION_NOW;
+      return value;
+    })(),
+    (() => {
+      const value = clone(corrected);
+      value.actualCorrections[0].setCorrections.push(
+        clone(value.actualCorrections[0].setCorrections[0])
+      );
+      return value;
+    })()
+  ];
+
+  for (const malformed of malformedRecords) {
+    assert.equal(recordMatchesTerminalSource(malformed, source), false);
+    assert.throws(
+      () => ensureTerminalTrainingRecord([malformed], session),
+      /does not match its source/
+    );
+  }
 });
 
 test('Attack Round 1: effective completed facts merge overlays without rewriting source results', () => {

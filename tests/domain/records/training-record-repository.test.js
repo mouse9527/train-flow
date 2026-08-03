@@ -500,6 +500,6 @@ test('Independent review regression: lazy materialization correction keeps an ex
   });
   assert.throws(
     () => corruptedRepository.correct(commandA, { source }),
-    /feedback|schema|unknown|invalid/i
+    /feedback|schema|unknown|invalid|terminal source/i
   );
 });
