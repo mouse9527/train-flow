@@ -207,6 +207,133 @@ test('completed target fallback is marked as estimated and streak de-duplicates 
   assert.equal(projection.summary.streakDays, 2);
 });
 
+test('planning and classification use scheduled facts and structured targets before controlled name fallback', () => {
+  const structuredTreadmill = {
+    id: 'step_structured_treadmill',
+    kind: 'timed',
+    name: '匿名有氧 A',
+    durationSeconds: 240,
+    targets: { speedKph: { min: 4, max: 5 }, inclinePercent: { min: 0, max: 1 } }
+  };
+  const structuredRowing = {
+    id: 'step_structured_rowing',
+    kind: 'interval',
+    name: '匿名有氧 B',
+    durationSeconds: 30,
+    sets: 4,
+    targets: { cadenceSpm: { min: 18, max: 22 }, resistance: null }
+  };
+  const plans = [
+    plan({ id: 'scheduled', trainingDate: '2026-08-03', steps: [structuredTreadmill] }),
+    plan({ id: 'draft', trainingDate: '2026-08-04', steps: [structuredRowing], status: 'draft' }),
+    plan({ id: 'cancelled', trainingDate: '2026-08-05', steps: [structuredRowing], status: 'cancelled' })
+  ];
+  const facts = record({
+    id: 'record_structured_machine',
+    trainingDate: '2026-08-03',
+    endedAt: 500,
+    elapsedActiveSeconds: 360,
+    steps: [structuredTreadmill, structuredRowing],
+    results: [
+      { stepId: structuredTreadmill.id, status: 'completed', actualDurationSeconds: 240, setResults: [] },
+      { stepId: structuredRowing.id, status: 'completed', actualDurationSeconds: 120, setResults: [] }
+    ]
+  });
+
+  const projection = new StatisticsService({ now: () => 600 }).rebuild([facts], plans, RANGE);
+
+  assert.equal(projection.summary.plannedCount, 1);
+  assert.equal(projection.summary.treadmillSeconds, 240);
+  assert.equal(projection.summary.rowingSeconds, 120);
+});
+
+test('aborted work contributes real completed activity but not completion rate or streak', () => {
+  const treadmill = {
+    id: 'step_aborted_treadmill',
+    kind: 'timed',
+    name: '跑步机快走',
+    durationSeconds: 300
+  };
+  const strength = {
+    id: 'step_aborted_strength',
+    kind: 'strength',
+    name: '综合训练器推胸'
+  };
+  const aborted = record({
+    id: 'record_aborted_work',
+    status: 'aborted',
+    trainingDate: '2026-08-03',
+    endedAt: 700,
+    elapsedActiveSeconds: 420,
+    steps: [treadmill, strength],
+    results: [
+      { stepId: treadmill.id, status: 'completed', actualDurationSeconds: 300, setResults: [] },
+      { stepId: strength.id, status: 'completed', setResults: [{ setNumber: 1, weightKg: 8 }] }
+    ]
+  });
+
+  const projection = new StatisticsService({ now: () => 800 }).rebuild(
+    [aborted],
+    [plan({ id: 'plan_aborted', trainingDate: '2026-08-03', steps: [treadmill, strength] })],
+    RANGE
+  );
+
+  assert.equal(projection.summary.completedCount, 0);
+  assert.equal(projection.summary.completionRate, 0);
+  assert.equal(projection.summary.streakDays, 0);
+  assert.equal(projection.summary.totalActiveSeconds, 420);
+  assert.equal(projection.summary.treadmillSeconds, 300);
+  assert.equal(projection.summary.strengthCount, 1);
+});
+
+test('last known strength and body weights survive seven newer records with explicit unknown values', () => {
+  const chest = { id: 'step_old_chest', kind: 'strength', name: '综合训练器推胸' };
+  const oldKnown = record({
+    id: 'record_old_known',
+    trainingDate: '2026-07-20',
+    endedAt: 100,
+    elapsedActiveSeconds: 600,
+    steps: [chest],
+    results: [{
+      stepId: chest.id,
+      status: 'completed',
+      setResults: [{ setNumber: 1, reps: 10, weightKg: 9 }]
+    }],
+    feedback: {
+      rpe: 5,
+      weightBeforeKg: 81,
+      pain: { knee: false, lowerBack: false, ankleOrToe: false, dizziness: false },
+      note: ''
+    }
+  });
+  const newerUnknown = Array.from({ length: 7 }, (_, index) => record({
+    id: `record_unknown_${index}`,
+    trainingDate: `2026-08-0${index + 1}`,
+    endedAt: 200 + index,
+    elapsedActiveSeconds: 300,
+    steps: [],
+    results: [],
+    feedback: null
+  }));
+
+  const projection = new StatisticsService({ now: () => 900 }).rebuild(
+    [oldKnown, ...newerUnknown],
+    [],
+    RANGE
+  );
+
+  assert.deepEqual(projection.latestStrength.chest, {
+    valueKg: 9,
+    trainingDate: '2026-07-20'
+  });
+  assert.deepEqual(projection.latestBodyWeight, {
+    valueKg: 81,
+    trainingDate: '2026-07-20'
+  });
+  assert.equal(projection.recent.duration.length, 7);
+  assert.equal(projection.recent.weight.every(({ value }) => value === null), true);
+});
+
 test('record create, edit and delete incremental updates remain identical to authoritative rebuilds', () => {
   const { plans, monday, wednesday } = fixtures();
   const service = new StatisticsService({ now: () => 1786032000000 });

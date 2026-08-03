@@ -80,6 +80,19 @@ function machineKind(step) {
   if (!step || !['timed', 'interval'].includes(step.kind)) {
     return null;
   }
+  const targets = step.targets && typeof step.targets === 'object' ? step.targets : {};
+  if (
+    Object.prototype.hasOwnProperty.call(targets, 'speedKph') ||
+    Object.prototype.hasOwnProperty.call(targets, 'inclinePercent')
+  ) {
+    return 'treadmill';
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(targets, 'cadenceSpm') ||
+    Object.prototype.hasOwnProperty.call(targets, 'resistance')
+  ) {
+    return 'rowing';
+  }
   const name = typeof step.name === 'string' ? step.name.toLowerCase() : '';
   if (/跑步机|treadmill/.test(name)) {
     return 'treadmill';
@@ -183,7 +196,7 @@ function plannedDates(plans, range) {
   }
   const dates = new Set();
   for (const plan of plans) {
-    if (!plan || plan.status === 'deleted' || !Array.isArray(plan.steps)) {
+    if (!plan || plan.status !== 'scheduled' || !Array.isArray(plan.steps)) {
       continue;
     }
     assertTrainingDate(plan.trainingDate, `plan ${plan.id || 'unknown'} trainingDate`);
@@ -237,10 +250,10 @@ function aggregate({ range, dates, contributions, builtAt }) {
   ));
   const completedCount = weekly.filter(({ status }) => status === 'completed').length;
   const plannedCount = dates.length;
-  const recent = contributions
+  const eligible = contributions
     .filter(({ trainingDate }) => trainingDate <= range.endDate)
-    .sort(compareContribution)
-    .slice(-MAX_TREND_POINTS);
+    .sort(compareContribution);
+  const recent = eligible.slice(-MAX_TREND_POINTS);
   const sum = (field) => weekly.reduce((total, item) => total + item[field], 0);
 
   return {
@@ -260,10 +273,10 @@ function aggregate({ range, dates, contributions, builtAt }) {
       streakDays: calculateStreak(contributions, range.endDate)
     },
     latestStrength: {
-      chest: latestKnown(recent, 'chestWeightKg'),
-      back: latestKnown(recent, 'backWeightKg')
+      chest: latestKnown(eligible, 'chestWeightKg'),
+      back: latestKnown(eligible, 'backWeightKg')
     },
-    latestBodyWeight: latestKnown(recent, 'weightKg'),
+    latestBodyWeight: latestKnown(eligible, 'weightKg'),
     recent: {
       duration: recent.map(({ trainingDate, activeSeconds }) => ({ trainingDate, value: activeSeconds })),
       rpe: recent.map(({ trainingDate, rpe }) => ({ trainingDate, value: rpe })),
@@ -329,6 +342,7 @@ function publicStatisticsProjection(projection) {
   delete copy._plannedDates;
   delete copy._recordContributions;
   delete copy.databaseRevision;
+  delete copy.sourceFingerprint;
   return copy;
 }
 
