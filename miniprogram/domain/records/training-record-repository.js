@@ -365,10 +365,13 @@ function buildTombstone(record, command) {
     throw new Error('TrainingRecord delete time is before its current revision');
   }
   const nextRevision = record.revision + 1;
+  const sourceSessionFingerprint = hasOwn(record, 'sourceSessionFingerprint')
+    ? record.sourceSessionFingerprint
+    : terminalFactFingerprint(record);
   return {
     id: record.id,
     sourceSessionId: record.sourceSessionId,
-    sourceSessionFingerprint: record.sourceSessionFingerprint,
+    sourceSessionFingerprint,
     status: record.status,
     trainingDate: record.trainingDate,
     createdAt: record.createdAt,

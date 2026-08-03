@@ -8,7 +8,8 @@ const {
   createSessionRepository
 } = require('../../miniprogram/domain/execution/session-repository');
 const {
-  findTrainingRecords
+  findTrainingRecords,
+  terminalFactFingerprint
 } = require('../../miniprogram/domain/execution/training-record');
 const {
   isDeletedTrainingRecord
@@ -264,6 +265,32 @@ test('Attack Round 3: delete is one CAS commit producing a minimal private-free 
 
   returned.processedDeletionCommands[0].key = 'mutated-return';
   assert.equal(recordFor(harness.database).processedDeletionCommands[0].key, input.commandKey);
+});
+
+test('Reviewer regression: deleting a valid legacy record derives its missing source fingerprint before writing the tombstone', () => {
+  const harness = createHarness();
+  completeSession(harness, { sessionId: 'session_legacy_delete_fingerprint' });
+  const canonical = recordFor(harness.database, 'session_legacy_delete_fingerprint');
+  const expectedFingerprint = terminalFactFingerprint(canonical);
+
+  harness.database.commit((draft) => {
+    delete draft.records[0].sourceSessionFingerprint;
+  });
+  const legacy = recordFor(harness.database, 'session_legacy_delete_fingerprint');
+  assert.equal(Object.hasOwn(legacy, 'sourceSessionFingerprint'), false);
+
+  const tombstone = deleteRecord(harness.records, deleteCommand(legacy, {
+    commandKey: 'delete_legacy_fingerprint'
+  }));
+
+  assert.equal(tombstone.sourceSessionFingerprint, expectedFingerprint);
+  assert.match(tombstone.sourceSessionFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(Object.hasOwn(tombstone, 'planSnapshot'), false);
+  assert.equal(Object.hasOwn(tombstone, 'feedback'), false);
+  assert.deepEqual(recordFor(
+    harness.database,
+    'session_legacy_delete_fingerprint'
+  ), tombstone);
 });
 
 test('Attack Round 3: exact delete replay is a zero-write deep copy while conflicting, stale and correction-after-delete intents fail closed', () => {
