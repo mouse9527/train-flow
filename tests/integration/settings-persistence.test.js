@@ -13,7 +13,9 @@ const ROOT = path.join(__dirname, '..', '..');
 const SLOT_A = 'train_flow:v1:db:a';
 const SLOT_B = 'train_flow:v1:db:b';
 const ACTIVE = 'train_flow:v1:db:active';
-const STORAGE_KEY_PATTERN = /train_flow:v1:(?:db:(?:active|a|b)|install)/g;
+const IMPORT_INTENT = 'train_flow:v1:db:import-intent';
+const CLEANUP_PENDING = 'train_flow:v1:db:cleanup-pending';
+const STORAGE_KEY_PATTERN = /train_flow:v1:(?:db:(?:active|a|b|import-intent|cleanup-pending)|install)/g;
 const WX_WRITE_PATTERN = /wx\.(?:setStorage|setStorageSync)\s*\(/;
 
 function loadPersistenceContract() {
@@ -141,7 +143,14 @@ test('Attack: train_flow:v1 storage key 只能出现在 LocalDatabase，不能�
   );
   assert.deepEqual(
     new Set(keyOwners.flatMap(({ matches }) => matches)),
-    new Set([SLOT_A, SLOT_B, ACTIVE, 'train_flow:v1:install'])
+    new Set([
+      SLOT_A,
+      SLOT_B,
+      ACTIVE,
+      IMPORT_INTENT,
+      CLEANUP_PENDING,
+      'train_flow:v1:install'
+    ])
   );
 });
 

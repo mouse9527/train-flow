@@ -18,7 +18,9 @@ const SLOT_A = 'train_flow:v1:db:a';
 const SLOT_B = 'train_flow:v1:db:b';
 const ACTIVE = 'train_flow:v1:db:active';
 const INSTALL = 'train_flow:v1:install';
-const FORBIDDEN_KEY = /^(?:openid|unionid|session_?key|ownerid|token|secret|appsecret|cursor|outbox)$/i;
+const IMPORT_INTENT = 'train_flow:v1:db:import-intent';
+const CLEANUP_PENDING = 'train_flow:v1:db:cleanup-pending';
+const FORBIDDEN_KEY = /^(?:openid|unionid|session_?key|ownerid|(?:auth)?token|secret|appsecret|cursor|outbox)$/i;
 
 function loadDatabaseContract(options = {}) {
   const localDatabaseModule = require('../../miniprogram/services/local-database');
@@ -97,7 +99,12 @@ function populate(database, overrides = {}) {
       manualPlan('plan_portable_a', '2026-08-05')
     ];
     draft.records = [completedRecord()];
-    draft.notifications = { leaked: 'device-only notification state' };
+    draft.notifications = {
+      expiredOccurrences: ['device-only-expired-occurrence'],
+      pendingExpiredOccurrences: ['device-only-pending-occurrence'],
+      attemptedExpiredOccurrences: ['device-only-attempted-occurrence'],
+      terminalOccurrences: ['device-only-terminal-occurrence']
+    };
     draft.statisticsProjection = { leaked: 'device-only projection state' };
     draft.sync = {
       enabled: true,
@@ -227,12 +234,12 @@ test('[A] Attack: export 必须闭合且递归排除 identity、sync、server、
     'statisticsProjection',
     'sync',
     'cloudSyncEnabled',
-    'revision',
     'serverRevision',
     '_id'
   ]) {
     assert.equal(JSON.stringify(parsed).includes(`\"${forbidden}\"`), false, `${forbidden} leaked`);
   }
+  assert.equal(Object.hasOwn(parsed.data.settings, 'revision'), false, 'settings revision leaked');
 });
 
 test('[A] Attack: 5 MiB 上限必须按 UTF-8 byte 精确判定，不能按 JS 字符数', () => {
@@ -253,14 +260,14 @@ test('[A] Attack: 深度 64 与节点 100000 是闭合边界，超一必须零�
   const source = exportFixture().jsonText;
   const deep = rewritePackage(source, (candidate) => {
     let cursor = {};
-    candidate.extra = cursor;
+    candidate.data.profile = cursor;
     for (let depth = 0; depth < 65; depth += 1) {
       cursor.child = {};
       cursor = cursor.child;
     }
   });
   const manyNodes = rewritePackage(source, (candidate) => {
-    candidate.extra = Array.from({ length: 100001 }, () => null);
+    candidate.data.plans = Array.from({ length: 100001 }, () => null);
   });
   const { database, storage } = createDatabase();
 
@@ -506,5 +513,604 @@ test('[A] Attack: activeSession 必须在 preview 与 apply 两阶段阻断且�
     const error = captureError(() => database.applyPortableImport(source, preview.confirmationId));
     assert.match(errorSignal(error), /IMPORT_ACTIVE_SESSION|active.?session|训练/i);
     assertNoWrites(storage);
+  });
+});
+
+function createTargetDatabase({
+  title = 'PRIVATE_OLD_PLAN_TITLE_4b1c',
+  settings = {},
+  sync = {},
+  now = () => FIXED_NOW,
+  options = {}
+} = {}) {
+  const storage = new StorageDouble({
+    [INSTALL]: { deviceId: 'device_target_install', createdAt: FIXED_NOW - 500_000 }
+  });
+  const { database } = createDatabase({ storage, now, ...options });
+  database.commit((draft) => {
+    draft.settings = {
+      ...draft.settings,
+      revision: 7,
+      vibrationEnabled: false,
+      soundEnabled: true,
+      defaultRestSeconds: 45,
+      ...clone(settings)
+    };
+    draft.plans = [manualPlan('plan_old_private', '2026-07-31', title)];
+    draft.records = [completedRecord('session_old_private')];
+    draft.statisticsProjection = { oldPrivateProjection: true };
+    draft.notifications = {
+      expiredOccurrences: ['plan_old_private'],
+      pendingExpiredOccurrences: [],
+      attemptedExpiredOccurrences: [],
+      terminalOccurrences: []
+    };
+    draft.sync = {
+      ...draft.sync,
+      ...clone(sync)
+    };
+  });
+  return { database, storage };
+}
+
+function durableState(storage) {
+  return {
+    [SLOT_A]: storage.peek(SLOT_A),
+    [SLOT_B]: storage.peek(SLOT_B),
+    [ACTIVE]: storage.peek(ACTIVE),
+    [INSTALL]: storage.peek(INSTALL),
+    [IMPORT_INTENT]: storage.peek(IMPORT_INTENT),
+    [CLEANUP_PENDING]: storage.peek(CLEANUP_PENDING)
+  };
+}
+
+function seedDurableState(state) {
+  const compact = {};
+  for (const [key, value] of Object.entries(state)) {
+    if (value !== undefined) compact[key] = clone(value);
+  }
+  return new StorageDouble(compact);
+}
+
+function replayMutations(initialState, operations) {
+  const storage = seedDurableState(initialState);
+  for (const operation of operations) {
+    if (operation.type === 'write') storage.seed(operation.key, operation.value);
+    if (operation.type === 'remove') storage.values.delete(operation.key);
+  }
+  storage.clearOperations();
+  return storage;
+}
+
+function mutationOperations(storage) {
+  return storage.operations.filter(({ type }) => type === 'write' || type === 'remove');
+}
+
+function inactiveSlotKey(storage) {
+  return storage.peek(ACTIVE) === 'a' ? SLOT_B : SLOT_A;
+}
+
+function assertPortableState(snapshot, packageData) {
+  assert.equal(snapshot.profile, null);
+  assert.deepEqual(snapshot.plans, packageData.plans);
+  assert.deepEqual(snapshot.records, packageData.records);
+  const { revision, cloudSyncEnabled, ...portableSettings } = snapshot.settings;
+  assert.deepEqual(portableSettings, packageData.settings);
+  assert.equal(cloudSyncEnabled, false);
+}
+
+function assertRuntimeMetadataRebuilt(snapshot, expectedInstall) {
+  assert.deepEqual(snapshot.install, expectedInstall);
+  assert.equal(snapshot.activeSession, null);
+  assert.deepEqual(snapshot.notifications, {
+    expiredOccurrences: [],
+    pendingExpiredOccurrences: [],
+    attemptedExpiredOccurrences: [],
+    terminalOccurrences: []
+  });
+  assert.equal(snapshot.statisticsProjection.dirty, true);
+  assert.match(String(snapshot.statisticsProjection.reason || snapshot.statisticsProjection.source), /import/i);
+  assert.deepEqual(snapshot.sync, {
+    enabled: false,
+    provider: 'none',
+    cursor: null,
+    lastSyncedAt: null,
+    lastError: null,
+    outbox: [],
+    conflicts: []
+  });
+}
+
+test('[B] Attack: apply 只允许一次 A/B candidate+pointer commit，并保留 install、重建运行元数据', () => {
+  const source = exportFixture();
+  const packageData = parsePackage(source.jsonText).data;
+  const { database, storage } = createTargetDatabase();
+  const before = database.load();
+  const preview = database.previewPortableImport(source.jsonText);
+  storage.clearOperations();
+
+  const result = database.applyPortableImport(source.jsonText, preview.confirmationId);
+  const mutations = mutationOperations(storage);
+  const slotWrites = mutations.filter(({ type, key }) => type === 'write' && [SLOT_A, SLOT_B].includes(key));
+  const pointerWrites = mutations.filter(({ type, key }) => type === 'write' && key === ACTIVE);
+
+  assert.equal(result.applied, true);
+  assert.equal(slotWrites.length, 1, 'import must write exactly one inactive candidate slot');
+  assert.equal(pointerWrites.length, 1, 'import must switch the active pointer exactly once');
+  assert.equal(result.snapshot.localRevision, before.localRevision + 1);
+  assert.equal(result.snapshot.settings.revision, before.settings.revision + 1);
+  assertPortableState(result.snapshot, packageData);
+  assertRuntimeMetadataRebuilt(result.snapshot, before.install);
+  assert.equal(storage.peek(IMPORT_INTENT), undefined, 'successful import must clear strict intent');
+});
+
+test('[B] Attack: 相同 package 连续三次恢复时后两次 already_current、settings revision 稳定且零写', () => {
+  const source = exportFixture();
+  const { database, storage } = createTargetDatabase();
+  const firstPreview = database.previewPortableImport(source.jsonText);
+  const first = database.applyPortableImport(source.jsonText, firstPreview.confirmationId);
+  const stableRevision = first.snapshot.settings.revision;
+  const stableLocalRevision = first.snapshot.localRevision;
+
+  for (let attempt = 2; attempt <= 3; attempt += 1) {
+    const preview = database.previewPortableImport(source.jsonText);
+    storage.clearOperations();
+    const replay = database.applyPortableImport(source.jsonText, preview.confirmationId);
+    assert.deepEqual(replay, { applied: false, reason: 'already_current' });
+    assertNoWrites(storage);
+    const snapshot = database.load();
+    assert.equal(snapshot.settings.revision, stableRevision);
+    assert.equal(snapshot.localRevision, stableLocalRevision);
+  }
+});
+
+test('[B] Attack: 仅 plans/records 变化而 portable settings 相同时必须保留现有 settings revision', () => {
+  const source = exportFixture();
+  const portableSettings = parsePackage(source.jsonText).data.settings;
+  const { database } = createTargetDatabase({ settings: portableSettings });
+  const before = database.load();
+  const preview = database.previewPortableImport(source.jsonText);
+
+  const result = database.applyPortableImport(source.jsonText, preview.confirmationId);
+
+  assert.equal(result.applied, true);
+  assert.equal(result.snapshot.settings.revision, before.settings.revision);
+});
+
+test('[B] Attack: confirmation 同时绑定 packageDigest 与 candidateDigest，envelope metadata 替换也必须零写', async (t) => {
+  const source = exportFixture().jsonText;
+  const cases = [
+    ['exportedAt replacement', (value) => { value.exportedAt += 1; }],
+    ['portable candidate replacement', (value) => { value.data.settings.voiceEnabled = !value.data.settings.voiceEnabled; }]
+  ];
+
+  for (const [name, mutate] of cases) {
+    await t.test(name, () => {
+      const { database, storage } = createTargetDatabase();
+      const preview = database.previewPortableImport(source);
+      const replacement = rewritePackage(source, mutate);
+      storage.clearOperations();
+      const error = captureError(() => database.applyPortableImport(replacement, preview.confirmationId));
+      assert.match(errorSignal(error), /packageDigest|candidateDigest|digest|confirmation|mismatch/i);
+      assertNoWrites(storage);
+    });
+  }
+
+  await t.test('raw checksum is revalidated at apply', () => {
+    const { database, storage } = createTargetDatabase();
+    const preview = database.previewPortableImport(source);
+    const damaged = source.replace(/"title":"Portable plan/, '"title":"Changed after checksum');
+    storage.clearOperations();
+    const error = captureError(() => database.applyPortableImport(damaged, preview.confirmationId));
+    assert.match(errorSignal(error), /IMPORT_CHECKSUM_MISMATCH|checksum/i);
+    assertNoWrites(storage);
+  });
+});
+
+test('[B] Attack: preview 面对旧 AppDatabase schema 只能内存迁移，不能落盘 migration/pointer/intent', () => {
+  const source = exportFixture().jsonText;
+  const target = createTargetDatabase();
+  const storage = target.storage;
+  const before = durableState(storage);
+  const migrations = {
+    1(snapshot) {
+      snapshot.schemaVersion = 2;
+      return snapshot;
+    }
+  };
+  const portableAppMigrations = {
+    1(candidate) {
+      candidate.appSchemaVersion = 2;
+      return candidate;
+    }
+  };
+  const { database } = createDatabase({
+    storage,
+    currentSchemaVersion: 2,
+    migrations,
+    portableAppMigrations
+  });
+  storage.clearOperations();
+
+  const preview = database.previewPortableImport(source);
+
+  assert.ok(preview.confirmationId);
+  assertNoWrites(storage);
+  assert.deepEqual(durableState(storage), before);
+});
+
+test('[B] Attack: storage-full、read-back 损坏/抛错、pointer write 失败必须保持旧 truth', async (t) => {
+  const source = exportFixture().jsonText;
+  const cases = [
+    ['storage full', (storage, target) => storage.failNextWrite(target, new Error('storage full'))],
+    ['write then throw', (storage, target) => storage.failNextWrite(
+      target,
+      new Error('write completed then process failed'),
+      { persistBeforeThrow: true }
+    )],
+    ['read-back corrupt', (storage, target) => storage.transformNextRead(
+      target,
+      (snapshot) => ({ ...snapshot, localRevision: snapshot.localRevision + 100 }),
+      { mutateStored: true, afterWrites: 1 }
+    )],
+    ['read-back throws', (storage, target) => storage.failNextRead(
+      target,
+      new Error('read-back unavailable'),
+      { afterWrites: 1 }
+    )],
+    ['pointer write', (storage) => storage.failNextWrite(ACTIVE, new Error('pointer write failed'))],
+    ['pointer write then throw', (storage) => storage.failNextWrite(
+      ACTIVE,
+      new Error('pointer persisted then process failed'),
+      { persistBeforeThrow: true }
+    )]
+  ];
+
+  for (const [name, inject] of cases) {
+    await t.test(name, () => {
+      const { database, storage } = createTargetDatabase();
+      const preview = database.previewPortableImport(source);
+      const beforeSnapshot = database.load();
+      const beforeStorage = durableState(storage);
+      const target = inactiveSlotKey(storage);
+      inject(storage, target);
+      const error = captureError(() => database.applyPortableImport(source, preview.confirmationId));
+      assert.match(errorSignal(error), /storage|write|read.?back|pointer|rollback|failed|unavailable|corrupt/i);
+      assert.deepEqual(storage.peek(ACTIVE), beforeStorage[ACTIVE]);
+      assert.deepEqual(storage.peek(SLOT_A), beforeStorage[SLOT_A]);
+      assert.deepEqual(storage.peek(SLOT_B), beforeStorage[SLOT_B], 'candidate/preimage must be rolled back');
+      assert.equal(storage.peek(IMPORT_INTENT), undefined, 'completed rollback must clear intent');
+      assert.deepEqual(database.load(), beforeSnapshot);
+    });
+  }
+});
+
+test('[B] Attack: strict import intent 的每个持久化 crash prefix 重启后只能恢复 baseline，不得选 higher candidate', () => {
+  const source = exportFixture().jsonText;
+  const successful = createTargetDatabase();
+  const initial = durableState(successful.storage);
+  const baseline = successful.database.load();
+  const preview = successful.database.previewPortableImport(source);
+  successful.storage.clearOperations();
+  const imported = successful.database.applyPortableImport(source, preview.confirmationId).snapshot;
+  const mutations = mutationOperations(successful.storage);
+  const intentWriteIndex = mutations.findIndex(({ type, key }) => type === 'write' && key === IMPORT_INTENT);
+  const intentClearIndex = mutations.findIndex(({ type, key }) => type === 'remove' && key === IMPORT_INTENT);
+  assert.ok(intentWriteIndex >= 0, 'strict import must persist an intent marker before candidate write');
+  assert.ok(intentClearIndex > intentWriteIndex, 'strict import must clear intent only after completion');
+
+  for (let index = intentWriteIndex; index < intentClearIndex; index += 1) {
+    const storage = replayMutations(initial, mutations.slice(0, index + 1));
+    const { database } = createDatabase({ storage });
+    const recovered = database.load();
+    assert.deepEqual(recovered, baseline, `crash prefix ${index} must recover baseline truth`);
+    assert.equal(storage.peek(ACTIVE), initial[ACTIVE]);
+    assert.deepEqual(storage.peek(inactiveSlotKey(storage)), initial[inactiveSlotKey(storage)]);
+    assert.equal(storage.peek(IMPORT_INTENT), undefined);
+  }
+
+  const completedStorage = replayMutations(initial, mutations);
+  const completed = createDatabase({ storage: completedStorage }).database.load();
+  assert.deepEqual(completed, imported);
+});
+
+test('[B] Attack: import intent 缺失、损坏、unknown phase、incomplete identity 必须 fail closed', async (t) => {
+  const source = exportFixture().jsonText;
+  const successful = createTargetDatabase();
+  const initial = durableState(successful.storage);
+  const preview = successful.database.previewPortableImport(source);
+  successful.storage.clearOperations();
+  successful.database.applyPortableImport(source, preview.confirmationId);
+  const mutations = mutationOperations(successful.storage);
+  const candidateIndex = mutations.findIndex(({ type, key }) => type === 'write' && [SLOT_A, SLOT_B].includes(key));
+  const prefix = mutations.slice(0, candidateIndex + 1);
+  const validInterrupted = replayMutations(initial, prefix);
+  const marker = validInterrupted.peek(IMPORT_INTENT);
+  assert.ok(marker && typeof marker === 'object', 'strict import marker must be structured identity data');
+
+  await t.test('missing marker beside higher candidate', () => {
+    const storage = seedDurableState(durableState(validInterrupted));
+    storage.values.delete(IMPORT_INTENT);
+    const { database } = createDatabase({ storage });
+    assert.throws(() => database.load(), /intent|marker|incomplete|unsafe|fail.?closed/i);
+    assert.equal(storage.peek(ACTIVE), initial[ACTIVE]);
+  });
+
+  await t.test('unknown phase', () => {
+    const storage = seedDurableState(durableState(validInterrupted));
+    storage.seed(IMPORT_INTENT, { ...marker, phase: 'UNKNOWN_PHASE' });
+    const { database } = createDatabase({ storage });
+    assert.throws(() => database.load(), /phase|intent|marker|unsafe/i);
+  });
+
+  await t.test('incomplete identity', () => {
+    const keys = Object.keys(marker).filter((key) => key !== 'phase');
+    assert.ok(keys.length > 0, 'intent marker must bind baseline/target identity');
+    const damaged = clone(marker);
+    delete damaged[keys[0]];
+    const storage = seedDurableState(durableState(validInterrupted));
+    storage.seed(IMPORT_INTENT, damaged);
+    const { database } = createDatabase({ storage });
+    assert.throws(() => database.load(), /identity|intent|marker|incomplete|unsafe/i);
+  });
+});
+
+test('[B] Attack: pending import intent 下 generic commit 必须阻断，不能掩盖未决 rollback', () => {
+  const source = exportFixture().jsonText;
+  const successful = createTargetDatabase();
+  const initial = durableState(successful.storage);
+  const preview = successful.database.previewPortableImport(source);
+  successful.storage.clearOperations();
+  successful.database.applyPortableImport(source, preview.confirmationId);
+  const mutations = mutationOperations(successful.storage);
+  const candidateIndex = mutations.findIndex(({ type, key }) => type === 'write' && [SLOT_A, SLOT_B].includes(key));
+  const storage = replayMutations(initial, mutations.slice(0, candidateIndex + 1));
+  const { database } = createDatabase({ storage });
+
+  assert.throws(
+    () => database.commit((draft) => { draft.settings.soundEnabled = !draft.settings.soundEnabled; }),
+    /pending|intent|rollback|unsafe/i
+  );
+});
+
+test('[B] Attack: local purge prepare 零写、双确认、active session 阻断、pending sync 警告且绝不调用云端', async (t) => {
+  let remoteCalls = 0;
+  const remoteSyncProvider = new Proxy({}, {
+    get() {
+      return () => { remoteCalls += 1; };
+    }
+  });
+  const { database, storage } = createTargetDatabase({
+    sync: {
+      enabled: true,
+      provider: 'fixture-provider',
+      outbox: [{ opId: 'pending-op' }]
+    },
+    options: { remoteSyncProvider }
+  });
+  storage.clearOperations();
+
+  const preview = database.prepareLocalPurge();
+
+  assertNoWrites(storage);
+  assert.equal(preview.counts.plans, 1);
+  assert.equal(preview.counts.records, 1);
+  assert.equal(preview.hasPendingSync, true);
+  assert.ok(preview.warnings.some((warning) => /未同步|pending sync/i.test(warning)));
+  assert.ok(preview.warnings.some((warning) => /不会删除云端|cloud.*not.*delete/i.test(warning)));
+  assert.throws(() => database.applyLocalPurge(), /confirmation/i);
+  assert.throws(() => database.applyLocalPurge('wrong-confirmation'), /confirmation/i);
+  assertNoWrites(storage);
+  assert.equal(remoteCalls, 0);
+
+  await t.test('active session blocks both phases', () => {
+    const active = createWorkoutSession({
+      plan: manualPlan('plan_purge_active', '2026-08-08'),
+      sessionId: 'session_purge_active',
+      originDeviceId: 'device_purge_active',
+      commandKey: 'start_purge_active',
+      nowMs: FIXED_NOW
+    });
+    database.commit((draft) => { draft.activeSession = active; });
+    storage.clearOperations();
+    assert.throws(() => database.prepareLocalPurge(), /active.?session|训练/i);
+    assertNoWrites(storage);
+  });
+
+  await t.test('active session appearing after preview blocks apply', () => {
+    const target = createTargetDatabase();
+    const prepared = target.database.prepareLocalPurge();
+    const active = createWorkoutSession({
+      plan: manualPlan('plan_purge_apply_guard', '2026-08-09'),
+      sessionId: 'session_purge_apply_guard',
+      originDeviceId: 'device_purge_apply_guard',
+      commandKey: 'start_purge_apply_guard',
+      nowMs: FIXED_NOW
+    });
+    target.database.commit((draft) => { draft.activeSession = active; });
+    target.storage.clearOperations();
+    assert.throws(
+      () => target.database.applyLocalPurge(prepared.confirmationId),
+      /active.?session|训练/i
+    );
+    assertNoWrites(target.storage);
+  });
+});
+
+test('[B] Attack: confirmed local purge 以 empty snapshot 为唯一 truth，保留 install、清空本机且不碰云端', () => {
+  let remoteCalls = 0;
+  const remoteSyncProvider = { purge() { remoteCalls += 1; }, push() { remoteCalls += 1; } };
+  const { database, storage } = createTargetDatabase({ options: { remoteSyncProvider } });
+  const install = database.load().install;
+  const preview = database.prepareLocalPurge();
+  storage.clearOperations();
+
+  const result = database.applyLocalPurge(preview.confirmationId);
+
+  assert.equal(result.purged, true);
+  assert.deepEqual(result.snapshot.install, install);
+  assert.equal(result.snapshot.profile, null);
+  assert.deepEqual(result.snapshot.plans, []);
+  assert.deepEqual(result.snapshot.records, []);
+  assert.equal(result.snapshot.activeSession, null);
+  assert.deepEqual(result.snapshot.notifications, {
+    expiredOccurrences: [],
+    pendingExpiredOccurrences: [],
+    attemptedExpiredOccurrences: [],
+    terminalOccurrences: []
+  });
+  assert.deepEqual(result.snapshot.statisticsProjection, {});
+  assert.equal(result.snapshot.settings.revision, 1);
+  assert.deepEqual(result.snapshot.sync, {
+    enabled: false,
+    provider: 'none',
+    cursor: null,
+    lastSyncedAt: null,
+    lastError: null,
+    outbox: [],
+    conflicts: []
+  });
+  assert.equal(remoteCalls, 0);
+  assert.deepEqual(database.load(), result.snapshot);
+});
+
+test('[B] Attack: old slot cleanup 失败必须保留非敏感 marker，重启重试且永不复活旧数据', () => {
+  const privateTitle = 'PRIVATE_PURGE_TITLE_MUST_NOT_ENTER_MARKER_82aa';
+  const { database, storage } = createTargetDatabase({ title: privateTitle });
+  const oldSlot = storage.peek(ACTIVE);
+  const oldKey = oldSlot === 'a' ? SLOT_A : SLOT_B;
+  const preview = database.prepareLocalPurge();
+  storage.failNextRemove(oldKey, new Error('old slot cleanup failed'));
+
+  const result = database.applyLocalPurge(preview.confirmationId);
+  const marker = storage.peek(CLEANUP_PENDING);
+
+  assert.equal(result.purged, true);
+  assert.equal(result.cleanupPending, true);
+  assert.ok(marker && typeof marker === 'object');
+  assert.equal(JSON.stringify(marker).includes(privateTitle), false);
+  assert.equal(/plans|records|settings|profile|payload|data|note|title/i.test(JSON.stringify(marker)), false);
+  assert.equal(storage.peek(ACTIVE) === oldSlot, false, 'empty slot must remain active truth');
+  assert.ok(storage.peek(oldKey), 'failed old slot cleanup remains physically present only');
+
+  const restarted = createDatabase({ storage }).database;
+  const empty = restarted.load();
+  assert.deepEqual(empty.plans, []);
+  assert.deepEqual(empty.records, []);
+  assert.equal(storage.peek(oldKey), undefined);
+  assert.equal(storage.peek(CLEANUP_PENDING), undefined);
+  assert.equal(storage.peek(ACTIVE) === oldSlot, false);
+});
+
+test('[B] Attack: cleanup marker clear 失败必须幂等保留，重启清理不得 fallback 已删旧槽', () => {
+  const { database, storage } = createTargetDatabase();
+  const oldSlot = storage.peek(ACTIVE);
+  const oldKey = oldSlot === 'a' ? SLOT_A : SLOT_B;
+  const preview = database.prepareLocalPurge();
+  storage.failNextRemove(CLEANUP_PENDING, new Error('marker clear failed'));
+
+  const result = database.applyLocalPurge(preview.confirmationId);
+
+  assert.equal(result.purged, true);
+  assert.equal(result.cleanupPending, true);
+  assert.equal(storage.peek(oldKey), undefined);
+  assert.ok(storage.peek(CLEANUP_PENDING));
+  const restarted = createDatabase({ storage }).database;
+  const empty = restarted.load();
+  assert.deepEqual(empty.plans, []);
+  assert.deepEqual(empty.records, []);
+  assert.equal(storage.peek(CLEANUP_PENDING), undefined);
+  assert.equal(storage.peek(ACTIVE) === oldSlot, false);
+});
+
+test('[B] Attack: pending cleanup 时 generic commit 必须先安全清理或明确阻断', () => {
+  const { database, storage } = createTargetDatabase();
+  const oldSlot = storage.peek(ACTIVE);
+  const oldKey = oldSlot === 'a' ? SLOT_A : SLOT_B;
+  const preview = database.prepareLocalPurge();
+  storage.failNextRemove(oldKey, new Error('old slot cleanup failed'));
+  database.applyLocalPurge(preview.confirmationId);
+  assert.ok(storage.peek(CLEANUP_PENDING));
+
+  const restarted = createDatabase({ storage }).database;
+  let blocked = false;
+  try {
+    restarted.commit((draft) => { draft.settings.soundEnabled = false; });
+  } catch (error) {
+    blocked = true;
+    assert.match(errorSignal(error), /cleanup|pending|unsafe/i);
+  }
+  if (!blocked) {
+    assert.equal(storage.peek(CLEANUP_PENDING), undefined);
+    assert.equal(storage.peek(oldKey), undefined);
+  }
+});
+
+test('[B] Attack: purge candidate/pointer/cleanup/remove 各 crash prefix 重启时只能 empty truth 或 fail closed', () => {
+  const successful = createTargetDatabase();
+  const initial = durableState(successful.storage);
+  const preview = successful.database.prepareLocalPurge();
+  successful.storage.clearOperations();
+  const purged = successful.database.applyLocalPurge(preview.confirmationId).snapshot;
+  const mutations = mutationOperations(successful.storage);
+  const emptyWriteIndex = mutations.findIndex(({ type, key }) => type === 'write' && [SLOT_A, SLOT_B].includes(key));
+  const pointerIndex = mutations.findIndex(({ type, key }) => type === 'write' && key === ACTIVE);
+  const cleanupWriteIndex = mutations.findIndex(({ type, key }) => type === 'write' && key === CLEANUP_PENDING);
+  const cleanupRemoveIndex = mutations.findIndex(({ type, key }) => type === 'remove' && key === CLEANUP_PENDING);
+  assert.ok(emptyWriteIndex >= 0);
+  assert.ok(pointerIndex > emptyWriteIndex);
+  assert.ok(cleanupWriteIndex > pointerIndex, 'cleanup identity becomes durable after empty pointer');
+  assert.ok(cleanupRemoveIndex > cleanupWriteIndex);
+
+  for (const index of [emptyWriteIndex, pointerIndex]) {
+    const storage = replayMutations(initial, mutations.slice(0, index + 1));
+    const { database } = createDatabase({ storage });
+    assert.throws(() => database.load(), /purge|cleanup|marker|incomplete|unsafe/i);
+    if (index >= pointerIndex) {
+      assert.equal(storage.peek(ACTIVE), mutations[pointerIndex].value, 'fail closed must not revive old pointer');
+    }
+  }
+
+  for (let index = cleanupWriteIndex; index <= cleanupRemoveIndex; index += 1) {
+    const storage = replayMutations(initial, mutations.slice(0, index + 1));
+    const { database } = createDatabase({ storage });
+    const recovered = database.load();
+    assert.deepEqual(recovered, purged);
+    assert.deepEqual(recovered.plans, []);
+    assert.deepEqual(recovered.records, []);
+    assert.equal(storage.peek(ACTIVE) === initial[ACTIVE], false);
+  }
+});
+
+test('[B] Attack: cleanup marker 或 empty identity 损坏必须 fail closed，绝不 fallback 旧敏感槽', async (t) => {
+  function interruptedPurge() {
+    const target = createTargetDatabase();
+    const oldSlot = target.storage.peek(ACTIVE);
+    const oldKey = oldSlot === 'a' ? SLOT_A : SLOT_B;
+    const preview = target.database.prepareLocalPurge();
+    target.storage.failNextRemove(oldKey, new Error('keep old slot for recovery attack'));
+    target.database.applyLocalPurge(preview.confirmationId);
+    return { ...target, oldSlot, oldKey };
+  }
+
+  await t.test('unknown cleanup phase', () => {
+    const { storage, oldSlot } = interruptedPurge();
+    const marker = storage.peek(CLEANUP_PENDING);
+    storage.seed(CLEANUP_PENDING, { ...marker, phase: 'UNKNOWN_PHASE' });
+    const { database } = createDatabase({ storage });
+    assert.throws(() => database.load(), /cleanup|phase|marker|unsafe/i);
+    assert.equal(storage.peek(ACTIVE) === oldSlot, false);
+  });
+
+  await t.test('empty snapshot checksum corruption', () => {
+    const { storage, oldSlot } = interruptedPurge();
+    const emptySlot = storage.peek(ACTIVE);
+    const emptyKey = emptySlot === 'a' ? SLOT_A : SLOT_B;
+    const damaged = storage.peek(emptyKey);
+    damaged.checksum = '0'.repeat(64);
+    storage.seed(emptyKey, damaged);
+    const { database } = createDatabase({ storage });
+    assert.throws(() => database.load(), /cleanup|empty|checksum|unsafe/i);
+    assert.equal(storage.peek(ACTIVE) === oldSlot, false);
   });
 });
