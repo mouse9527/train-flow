@@ -1364,3 +1364,64 @@ test('[F1] Attack: portable plan 时间戳必须是非负 safe integer，非法�
     });
   }
 });
+
+test('[F2] Attack: purge confirmation 必须绑定 TTL、single-use、baseline、counts 与 action 并返回稳定 code', async (t) => {
+  await t.test('expiry', () => {
+    let now = FIXED_NOW;
+    const target = createTargetDatabase({ now: () => now, options: { confirmationTtlMs: 300000 } });
+    const preview = target.database.prepareLocalPurge();
+    now += 300001;
+    target.storage.clearOperations();
+    const error = captureError(() => target.database.applyLocalPurge(preview.confirmationId));
+    assert.equal(error.code, 'PURGE_CONFIRMATION_EXPIRED');
+    assertNoWrites(target.storage);
+  });
+
+  await t.test('single use', () => {
+    const target = createTargetDatabase();
+    const preview = target.database.prepareLocalPurge();
+    target.database.applyLocalPurge(preview.confirmationId);
+    target.storage.clearOperations();
+    const error = captureError(() => target.database.applyLocalPurge(preview.confirmationId));
+    assert.equal(error.code, 'PURGE_CONFIRMATION_CONSUMED');
+    assertNoWrites(target.storage);
+  });
+
+  await t.test('ordinary baseline change and count binding', () => {
+    const target = createTargetDatabase();
+    const preparedBaseline = target.database.load().localRevision;
+    const preview = target.database.prepareLocalPurge();
+    assert.deepEqual(preview.counts, { plans: 1, records: 1 });
+    target.database.commit((draft) => {
+      draft.plans.push(manualPlan('plan_after_purge_preview', '2026-08-21'));
+    });
+    const newer = target.database.load();
+    assert.equal(newer.localRevision, preparedBaseline + 1);
+    target.storage.clearOperations();
+    const error = captureError(() => target.database.applyLocalPurge(preview.confirmationId));
+    assert.equal(error.code, 'PURGE_BASELINE_CHANGED');
+    assertNoWrites(target.storage);
+    assert.deepEqual(target.database.load(), newer);
+  });
+
+  await t.test('import/purge action confusion', () => {
+    const source = exportFixture().jsonText;
+    const target = createTargetDatabase();
+    const importPreview = target.database.previewPortableImport(source);
+    const purgePreview = target.database.prepareLocalPurge();
+
+    target.storage.clearOperations();
+    const purgeError = captureError(
+      () => target.database.applyLocalPurge(importPreview.confirmationId)
+    );
+    assert.equal(purgeError.code, 'PURGE_CONFIRMATION_ACTION_MISMATCH');
+    assertNoWrites(target.storage);
+
+    target.storage.clearOperations();
+    const importError = captureError(
+      () => target.database.applyPortableImport(source, purgePreview.confirmationId)
+    );
+    assert.equal(importError.code, 'IMPORT_CONFIRMATION_ACTION_MISMATCH');
+    assertNoWrites(target.storage);
+  });
+});
