@@ -84,12 +84,25 @@ function createRecordPageDefinition({
         this.skipNextShowRefresh = false;
         return;
       }
-      if (!this.application || this.data.editing || this.data.deleteConfirmation) {
+      if (!this.application) {
         return;
       }
       const pendingRecordId = consumePendingSelection();
+      if (pendingRecordId) {
+        if (this.data.editing) {
+          this.onCancelEdit();
+        }
+        if (this.data.deleteConfirmation) {
+          this.onCancelDelete();
+        }
+        this.refresh(pendingRecordId);
+        return;
+      }
+      if (this.data.editing || this.data.deleteConfirmation) {
+        return;
+      }
       const selected = this.data.view && this.data.view.selectedRecord;
-      this.refresh(pendingRecordId || (selected ? selected.id : null));
+      this.refresh(selected ? selected.id : null);
     },
 
     refresh(selectedRecordId = null) {

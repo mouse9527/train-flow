@@ -199,6 +199,45 @@ test('record page consumes a pending cross-tab record selection on first load an
   );
 });
 
+test('record page consumes a pending cross-tab selection by closing preserved edit or delete state', () => {
+  for (const modalState of ['edit', 'delete']) {
+    const application = applicationDouble();
+    let pendingSelection = null;
+    const page = mount(createRecordPageDefinition({
+      applicationFactory: () => application,
+      getWx: () => wxDouble('release'),
+      consumePendingSelection() {
+        const selected = pendingSelection;
+        pendingSelection = null;
+        return selected;
+      }
+    }));
+
+    page.onLoad({});
+    page.onShow();
+    if (modalState === 'edit') {
+      page.onStartEdit();
+    } else {
+      page.onRequestDelete();
+    }
+    pendingSelection = `record_from_today_with_${modalState}`;
+
+    page.onShow();
+
+    assert.equal(page.data.editing, false, `${modalState} must not block the handoff`);
+    assert.equal(page.data.editDraft, null);
+    assert.equal(page.data.editRecordIdentity, null);
+    assert.equal(page.data.deleteConfirmation, null);
+    assert.equal(page.deleteCommandIntent ?? null, null);
+    assert.equal(
+      application.calls.getView.at(-1).selectedRecordId,
+      `record_from_today_with_${modalState}`
+    );
+    assert.equal(application.calls.correctRecord.length, 0);
+    assert.equal(application.calls.deleteRecord.length, 0);
+  }
+});
+
 test('record page edits completed values and feedback, but does not expose inputs for skipped or unknown steps', () => {
   const application = applicationDouble();
   const wxApi = wxDouble('release');
