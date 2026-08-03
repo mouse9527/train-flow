@@ -1580,3 +1580,105 @@ test('[F2-marker] Attack: cleanup marker remove 前/后抛错都必须在重启�
     });
   }
 });
+
+test('[F3-migration] Attack: legacy package 与 app schema 必须顺序迁移并可 preview/apply/re-export', () => {
+  const current = exportFixture();
+  const legacy = rewritePackage(current.jsonText, (value) => {
+    value.packageVersion = 0;
+    value.appSchemaVersion = 0;
+  });
+  const calls = [];
+  const packageMigrations = {
+    0(value) {
+      calls.push(`package:${value.packageVersion}->1`);
+      value.packageVersion = 1;
+      return value;
+    }
+  };
+  const appMigrations = {
+    0(value) {
+      calls.push(`app:${value.appSchemaVersion}->1`);
+      assert.equal(value.packageVersion, 1, 'package migration must finish before app migration');
+      value.appSchemaVersion = 1;
+      return value;
+    }
+  };
+  const target = createTargetDatabase({
+    options: {
+      portableMigrations: packageMigrations,
+      packageMigrations,
+      portableAppMigrations: appMigrations,
+      appMigrations
+    }
+  });
+  target.storage.clearOperations();
+
+  const preview = target.database.previewPortableImport(legacy);
+  assert.deepEqual(calls, ['package:0->1', 'app:0->1']);
+  assert.equal(preview.packageVersion, 1);
+  assert.equal(preview.appSchemaVersion, 1);
+  assertNoWrites(target.storage);
+
+  const applied = target.database.applyPortableImport(legacy, preview.confirmationId);
+  assert.equal(applied.applied, true);
+  assert.deepEqual(calls, [
+    'package:0->1',
+    'app:0->1',
+    'package:0->1',
+    'app:0->1'
+  ]);
+  const reExported = parsePackage(target.database.exportPortableBackup().jsonText);
+  const original = parsePackage(current.jsonText);
+  assert.equal(reExported.packageVersion, 1);
+  assert.equal(reExported.appSchemaVersion, 1);
+  assert.deepEqual(reExported.data, original.data);
+});
+
+test('[F3-migration] Attack: portable import 失败分类必须暴露稳定且精确的 error.code', async (t) => {
+  const source = exportFixture().jsonText;
+  const forbidden = (() => {
+    const raw = source.replace('"settings":{', '"settings":{"authToken":"PRIVATE_CODE_TOKEN_9ea1",');
+    const value = JSON.parse(raw);
+    value.checksum = computeChecksum(value);
+    return JSON.stringify(value);
+  })();
+  const cases = [
+    ['malformed JSON', '{"format":', 'IMPORT_JSON_INVALID'],
+    ['oversize UTF-8', `${source}${' '.repeat(MAX_IMPORT_BYTES)}`, 'IMPORT_TOO_LARGE'],
+    ['future schema', rewritePackage(source, (value) => { value.packageVersion = 99; }), 'IMPORT_SCHEMA_UNSUPPORTED'],
+    ['checksum mismatch', source.replace(/"checksum":"[a-f0-9]{64}"/, '"checksum":"0000000000000000000000000000000000000000000000000000000000000000"'), 'IMPORT_CHECKSUM_MISMATCH'],
+    ['unknown field', rewritePackage(source, (value) => { value.unknown = true; }), 'IMPORT_UNKNOWN_FIELD'],
+    ['forbidden field', forbidden, 'IMPORT_FORBIDDEN_FIELD'],
+    ['duplicate plan id', rewritePackage(source, (value) => { value.data.plans[1].id = value.data.plans[0].id; }), 'IMPORT_DUPLICATE_PLAN_ID'],
+    ['duplicate plan date', rewritePackage(source, (value) => { value.data.plans[1].trainingDate = value.data.plans[0].trainingDate; }), 'IMPORT_DUPLICATE_PLAN_DATE'],
+    ['record identity conflict', rewritePackage(source, (value) => { value.data.records[0].id = 'record_wrong_session'; }), 'IMPORT_RECORD_ID_CONFLICT'],
+    ['domain invalid', rewritePackage(source, (value) => { value.data.settings.defaultRestSeconds = 601; }), 'IMPORT_DOMAIN_INVALID']
+  ];
+
+  for (const [name, jsonText, code] of cases) {
+    await t.test(name, () => {
+      const { database, storage } = createDatabase();
+      storage.clearOperations();
+      const error = captureError(() => database.previewPortableImport(jsonText));
+      assert.equal(error.code, code);
+      assert.equal(errorSignal(error).includes('PRIVATE_CODE_TOKEN_9ea1'), false);
+      assertNoWrites(storage);
+    });
+  }
+
+  await t.test('active session', () => {
+    const active = createWorkoutSession({
+      plan: manualPlan('plan_code_active', '2026-08-22'),
+      sessionId: 'session_code_active',
+      originDeviceId: 'device_code_active',
+      commandKey: 'start_code_active',
+      nowMs: FIXED_NOW
+    });
+    const { database, storage } = createDatabase();
+    database.commit((draft) => { draft.activeSession = active; });
+    storage.clearOperations();
+    const error = captureError(() => database.previewPortableImport(source));
+    assert.equal(error.code, 'IMPORT_ACTIVE_SESSION');
+    assertNoWrites(storage);
+  });
+});
