@@ -489,4 +489,17 @@ test('Independent review regression: lazy materialization correction keeps an ex
     /conflict|intent/i
   );
   assert.equal(JSON.stringify(database.load()), JSON.stringify(snapshotAfterB));
+
+  const corruptedSnapshot = clone(snapshotAfterB);
+  corruptedSnapshot.records[0].feedback.unexpectedPrivate = 'must-fail-closed';
+  const corruptedRepository = createRepository({
+    load: () => clone(corruptedSnapshot),
+    commit() {
+      throw new Error('corrupt replay must fail before commit');
+    }
+  });
+  assert.throws(
+    () => corruptedRepository.correct(commandA, { source }),
+    /feedback|schema|unknown|invalid/i
+  );
 });

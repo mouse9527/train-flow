@@ -450,6 +450,7 @@ function materializeCorrection(command, source) {
 }
 
 function replayMaterializationCorrection(record, command, source) {
+  buildEffectiveTrainingRecord(record);
   const terminalSource = terminalSourceFromRecord(record);
   if (source && !recordMatchesTerminalSource(record, source)) {
     throw new Error('TrainingRecord source does not match the replayed materialization');
