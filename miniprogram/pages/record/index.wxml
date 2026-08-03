@@ -1,5 +1,157 @@
-<view class="tf-page">
-  <view class="tf-empty-state">
-    <text class="tf-caption">训练记录即将上线</text>
+<view class="tf-page record-page" wx:if="{{view}}">
+  <view class="record-hero">
+    <view>
+      <text class="record-kicker">TRAINFLOW · 本机记录</text>
+      <view class="record-title">训练记录</view>
+      <text class="record-subtitle">按真实完成情况回看、修正与删除</text>
+    </view>
+    <view class="record-count">
+      <text class="record-count-number">{{view.records.length}}</text>
+      <text class="record-count-label">条记录</text>
+    </view>
+  </view>
+
+  <view class="filter-panel">
+    <picker mode="date" value="{{view.filters.trainingDate}}" bindchange="onDateFilterChange">
+      <view class="filter-control">
+        <text class="filter-label">训练日期</text>
+        <text class="filter-value">{{view.filters.trainingDate || '全部日期'}}</text>
+      </view>
+    </picker>
+    <button class="filter-clear" wx:if="{{view.filters.trainingDate}}" bindtap="onClearDateFilter">清除</button>
+    <picker range="{{kindLabels}}" value="{{selectedKindIndex}}" bindchange="onKindFilterChange">
+      <view class="filter-control">
+        <text class="filter-label">训练类型</text>
+        <text class="filter-value">{{kindLabels[selectedKindIndex]}}</text>
+      </view>
+    </picker>
+  </view>
+
+  <view class="validation-error" wx:if="{{validationError}}">{{validationError}}</view>
+
+  <view class="tf-empty-state record-empty" wx:if="{{view.emptyState}}">
+    <view class="empty-mark">○</view>
+    <text class="empty-title">{{view.emptyState.title}}</text>
+    <text class="tf-caption">{{view.emptyState.guidance}}</text>
+  </view>
+
+  <scroll-view class="record-list" scroll-y wx:if="{{view.records.length}}">
+    <view
+      class="record-card {{record.selected ? 'record-card-selected' : ''}}"
+      wx:for="{{view.records}}"
+      wx:key="id"
+      wx:for-item="record"
+      data-record-id="{{record.id}}"
+      bindtap="onSelectRecord"
+    >
+      <view class="record-card-topline">
+        <text class="record-date">{{record.trainingDate}}</text>
+        <text class="record-status">{{record.statusLabel}}</text>
+      </view>
+      <view class="record-card-title">{{record.title}}</view>
+      <text class="record-card-meta">{{record.kindLabel}} · {{record.durationLabel}}</text>
+      <view class="record-card-footer">
+        <text class="record-progress">{{record.progressLabel}}</text>
+        <text class="pain-chip" wx:if="{{record.hasPain}}">有不适</text>
+      </view>
+    </view>
+  </scroll-view>
+
+  <view class="detail-panel" wx:if="{{view.selectedRecord && !editing}}">
+    <view class="detail-header">
+      <view>
+        <text class="detail-date">{{view.selectedRecord.trainingDate}} · {{view.selectedRecord.statusLabel}}</text>
+        <view class="detail-title">{{view.selectedRecord.title}}</view>
+      </view>
+      <text class="detail-duration">{{view.selectedRecord.durationLabel}}</text>
+    </view>
+
+    <view class="result-list">
+      <view class="result-row" wx:for="{{view.selectedRecord.steps}}" wx:key="stepId" wx:for-item="step">
+        <view class="result-main">
+          <view class="result-heading">
+            <text class="result-name">{{step.name}}</text>
+            <text class="result-kind">{{step.kindLabel}}</text>
+          </view>
+          <text class="result-status result-status-{{step.status}}">{{step.statusLabel}}</text>
+        </view>
+        <text class="result-actual">{{step.actualLabel}}</text>
+      </view>
+    </view>
+
+    <view class="feedback-summary">
+      <view class="feedback-chip">RPE {{view.selectedRecord.feedback.rpe || '未填'}}</view>
+      <view class="feedback-chip">体重 {{view.selectedRecord.feedback.weightBeforeKg || '未填'}}<text wx:if="{{view.selectedRecord.feedback.weightBeforeKg}}"> kg</text></view>
+      <text class="feedback-note">{{view.selectedRecord.feedback.note || '暂无备注'}}</text>
+    </view>
+
+    <view class="detail-actions">
+      <button class="edit-action" bindtap="onStartEdit">编辑实际结果</button>
+      <button class="delete-action" bindtap="onRequestDelete">删除记录</button>
+    </view>
+  </view>
+
+  <view class="edit-panel" wx:if="{{editing}}">
+    <view class="edit-heading">
+      <view>
+        <text class="edit-kicker">修正记录</text>
+        <view class="edit-title">{{view.selectedRecord.title}}</view>
+      </view>
+      <button class="text-action" bindtap="onCancelEdit">取消</button>
+    </view>
+
+    <view class="edit-step" wx:for="{{editDraft.steps}}" wx:key="stepId" wx:for-item="step" wx:for-index="stepIndex">
+      <view class="edit-step-header">
+        <text class="edit-step-name">{{step.name}}</text>
+        <text class="result-status result-status-{{step.status}}">{{step.statusLabel}}</text>
+      </view>
+      <text class="locked-copy" wx:if="{{!step.editable}}">{{step.actualLabel}}，该步骤不可补填为已完成</text>
+      <view class="field-row" wx:if="{{step.editable && step.kind === 'manual'}}">
+        <text class="field-label">实际次数</text>
+        <input class="field-input" type="number" value="{{step.actualReps}}" data-step-index="{{stepIndex}}" data-field="actualReps" bindinput="onStepValueInput" placeholder="未记录" />
+      </view>
+      <view class="field-row" wx:if="{{step.editable && (step.kind === 'timed' || step.kind === 'interval')}}">
+        <text class="field-label">实际秒数</text>
+        <input class="field-input" type="number" value="{{step.actualDurationSeconds}}" data-step-index="{{stepIndex}}" data-field="actualDurationSeconds" bindinput="onStepValueInput" placeholder="未记录" />
+      </view>
+      <view class="set-editor" wx:if="{{step.editable && step.kind === 'strength'}}">
+        <view class="set-row" wx:for="{{step.sets}}" wx:key="setNumber" wx:for-item="set" wx:for-index="setIndex">
+          <text class="set-number">第 {{set.setNumber}} 组</text>
+          <input class="set-input" type="number" value="{{set.reps}}" data-step-index="{{stepIndex}}" data-set-index="{{setIndex}}" data-field="reps" bindinput="onSetValueInput" placeholder="次数" />
+          <input class="set-input" type="digit" value="{{set.weightKg}}" data-step-index="{{stepIndex}}" data-set-index="{{setIndex}}" data-field="weightKg" bindinput="onSetValueInput" placeholder="kg" />
+        </view>
+      </view>
+    </view>
+
+    <view class="feedback-editor">
+      <view class="field-row">
+        <text class="field-label">RPE</text>
+        <input class="field-input" type="number" value="{{editDraft.feedback.rpe}}" data-field="rpe" bindinput="onFeedbackInput" placeholder="1–10" />
+      </view>
+      <view class="field-row">
+        <text class="field-label">训练前体重</text>
+        <input class="field-input" type="digit" value="{{editDraft.feedback.weightBeforeKg}}" data-field="weightBeforeKg" bindinput="onFeedbackInput" placeholder="kg，可不填" />
+      </view>
+      <view class="pain-grid">
+        <label class="pain-toggle"><switch checked="{{editDraft.feedback.pain.knee}}" data-field="knee" bindchange="onPainChange" />膝盖</label>
+        <label class="pain-toggle"><switch checked="{{editDraft.feedback.pain.lowerBack}}" data-field="lowerBack" bindchange="onPainChange" />下背</label>
+        <label class="pain-toggle"><switch checked="{{editDraft.feedback.pain.ankleOrToe}}" data-field="ankleOrToe" bindchange="onPainChange" />踝 / 脚趾</label>
+        <label class="pain-toggle"><switch checked="{{editDraft.feedback.pain.dizziness}}" data-field="dizziness" bindchange="onPainChange" />头晕</label>
+      </view>
+      <textarea class="note-input" value="{{editDraft.feedback.note}}" maxlength="500" data-field="note" bindinput="onFeedbackInput" placeholder="训练备注，仅保存在你的数据中" />
+    </view>
+    <button class="save-action" bindtap="onSaveEdit">保存修正</button>
+  </view>
+
+  <view class="delete-confirmation" wx:if="{{deleteConfirmation}}">
+    <view class="delete-dialog">
+      <text class="delete-kicker">确认删除</text>
+      <view class="delete-title">删除“{{deleteConfirmation.title}}”？</view>
+      <text class="delete-copy">记录会从正常列表隐藏，并保留一条最小删除意图用于后续同步。此操作不会把计划目标改成实际结果。</text>
+      <view class="delete-buttons">
+        <button class="cancel-delete" bindtap="onCancelDelete">取消</button>
+        <button class="confirm-delete" bindtap="onConfirmDelete">确认删除</button>
+      </view>
+    </view>
   </view>
 </view>
