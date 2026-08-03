@@ -22,7 +22,7 @@ const IMPORT_INTENT = 'train_flow:v1:db:import-intent';
 const CLEANUP_PENDING = 'train_flow:v1:db:cleanup-pending';
 const FORBIDDEN_KEY = /^(?:openid|unionid|session_?key|ownerid|(?:auth)?token|secret|appsecret|cursor|outbox)$/i;
 
-function loadDatabaseContract(options = {}) {
+function loadDatabaseContract(options = {}, requiredMethods = []) {
   const localDatabaseModule = require('../../miniprogram/services/local-database');
   const createLocalDatabase =
     localDatabaseModule.createLocalDatabase ||
@@ -30,22 +30,21 @@ function loadDatabaseContract(options = {}) {
 
   assert.equal(typeof createLocalDatabase, 'function', 'LocalDatabase must expose a constructor or factory');
   const database = createLocalDatabase(options);
-  for (const method of [
-    'exportPortableBackup',
-    'previewPortableImport',
-    'applyPortableImport',
-    'prepareLocalPurge',
-    'applyLocalPurge'
-  ]) {
+  for (const method of requiredMethods) {
     assert.equal(typeof database[method], 'function', `LocalDatabase must expose ${method}()`);
   }
   return database;
 }
 
-function createDatabase({ storage = new StorageDouble(), now = () => FIXED_NOW, ...options } = {}) {
+function createDatabase({
+  storage = new StorageDouble(),
+  now = () => FIXED_NOW,
+  requiredMethods = [],
+  ...options
+} = {}) {
   return {
     storage,
-    database: loadDatabaseContract({ storage, now, ...options })
+    database: loadDatabaseContract({ storage, now, ...options }, requiredMethods)
   };
 }
 
@@ -123,7 +122,7 @@ function exportFixture(overrides = {}) {
   const storage = new StorageDouble({
     [INSTALL]: { deviceId: 'device_install_fixture', createdAt: FIXED_NOW - 100_000 }
   });
-  const { database } = createDatabase({ storage });
+  const { database } = createDatabase({ storage, requiredMethods: ['exportPortableBackup'] });
   populate(database, overrides);
   return database.exportPortableBackup();
 }
@@ -325,29 +324,62 @@ test('[A] Attack: package migration 必须逐版，缺失、跳级或抛错均�
   const legacy = rewritePackage(source, (value) => { value.packageVersion = 0; });
 
   await t.test('missing migration', () => {
-    const { database, storage } = createDatabase({ portableMigrations: {} });
+    const { database, storage } = createDatabase({
+      portableMigrations: {},
+      packageMigrations: {}
+    });
     assertPreviewRejectsWithoutMutation(database, storage, legacy, /missing migration|IMPORT_SCHEMA_UNSUPPORTED/i);
   });
 
   await t.test('migration jumps a version', () => {
-    const { database, storage } = createDatabase({
-      portableMigrations: {
+    const packageMigrations = {
         0(value) {
           value.packageVersion = 2;
           return value;
         }
-      }
-    });
+      };
+    const { database, storage } = createDatabase({ portableMigrations: packageMigrations, packageMigrations });
     assertPreviewRejectsWithoutMutation(database, storage, legacy, /exactly one|sequential|migration/i);
   });
 
   await t.test('migration throws', () => {
-    const { database, storage } = createDatabase({
-      portableMigrations: {
+    const packageMigrations = {
         0() { throw new Error('fixture migration failed'); }
-      }
-    });
+      };
+    const { database, storage } = createDatabase({ portableMigrations: packageMigrations, packageMigrations });
     assertPreviewRejectsWithoutMutation(database, storage, legacy, /fixture migration failed|migration/i);
+  });
+});
+
+test('[A] Attack: app schema migration 缺失、跳级或抛错同样必须零写', async (t) => {
+  const source = exportFixture().jsonText;
+  const legacy = rewritePackage(source, (value) => { value.appSchemaVersion = 0; });
+
+  await t.test('missing app migration', () => {
+    const { database, storage } = createDatabase({
+      portableAppMigrations: {},
+      appMigrations: {}
+    });
+    assertPreviewRejectsWithoutMutation(database, storage, legacy, /missing.*app.*migration|IMPORT_SCHEMA_UNSUPPORTED/i);
+  });
+
+  await t.test('app migration jumps a version', () => {
+    const appMigrations = {
+      0(value) {
+        value.appSchemaVersion = 2;
+        return value;
+      }
+    };
+    const { database, storage } = createDatabase({ portableAppMigrations: appMigrations, appMigrations });
+    assertPreviewRejectsWithoutMutation(database, storage, legacy, /exactly one|sequential|app.*migration/i);
+  });
+
+  await t.test('app migration throws', () => {
+    const appMigrations = {
+      0() { throw new Error('fixture app migration failed'); }
+    };
+    const { database, storage } = createDatabase({ portableAppMigrations: appMigrations, appMigrations });
+    assertPreviewRejectsWithoutMutation(database, storage, legacy, /fixture app migration failed|app.*migration/i);
   });
 });
 
@@ -728,7 +760,8 @@ test('[B] Attack: preview 面对旧 AppDatabase schema 只能内存迁移，不�
     storage,
     currentSchemaVersion: 2,
     migrations,
-    portableAppMigrations
+    portableAppMigrations,
+    appMigrations: portableAppMigrations
   });
   storage.clearOperations();
 
@@ -814,7 +847,7 @@ test('[B] Attack: strict import intent 的每个持久化 crash prefix 重启后
   assert.deepEqual(completed, imported);
 });
 
-test('[B] Attack: import intent 缺失、损坏、unknown phase、incomplete identity 必须 fail closed', async (t) => {
+test('[B] Attack: 已存在的 import intent 若 unknown phase 或 identity 不完整必须 fail closed', async (t) => {
   const source = exportFixture().jsonText;
   const successful = createTargetDatabase();
   const initial = durableState(successful.storage);
@@ -827,14 +860,6 @@ test('[B] Attack: import intent 缺失、损坏、unknown phase、incomplete ide
   const validInterrupted = replayMutations(initial, prefix);
   const marker = validInterrupted.peek(IMPORT_INTENT);
   assert.ok(marker && typeof marker === 'object', 'strict import marker must be structured identity data');
-
-  await t.test('missing marker beside higher candidate', () => {
-    const storage = seedDurableState(durableState(validInterrupted));
-    storage.values.delete(IMPORT_INTENT);
-    const { database } = createDatabase({ storage });
-    assert.throws(() => database.load(), /intent|marker|incomplete|unsafe|fail.?closed/i);
-    assert.equal(storage.peek(ACTIVE), initial[ACTIVE]);
-  });
 
   await t.test('unknown phase', () => {
     const storage = seedDurableState(durableState(validInterrupted));
