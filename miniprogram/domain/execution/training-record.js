@@ -333,6 +333,8 @@ function tombstoneMatchesTerminalSource(record, source) {
     record.deletedAt !== record.updatedAt ||
     !Number.isSafeInteger(record.revision) ||
     record.revision < 2 ||
+    !Array.isArray(record.processedDeletionCommands) ||
+    record.processedDeletionCommands.length !== 1 ||
     !validCommandReceipts(record.processedDeletionCommands, record.revision)
   ) {
     return false;

@@ -357,6 +357,33 @@ test('Reviewer regression: terminal-source matching rejects every malformed pers
   }
 });
 
+test('Reviewer regression: terminal-source matching rejects tombstones with extra deletion receipts', () => {
+  const session = completedSession();
+  const record = createBaselineTrainingRecord(session);
+  const deletedAt = record.updatedAt + 1_000;
+  const malformed = {
+    id: record.id,
+    sourceSessionId: record.sourceSessionId,
+    sourceSessionFingerprint: record.sourceSessionFingerprint,
+    status: record.status,
+    trainingDate: record.trainingDate,
+    createdAt: record.createdAt,
+    updatedAt: deletedAt,
+    revision: 3,
+    deletedAt,
+    processedDeletionCommands: [
+      { key: 'delete_once', fingerprint: 'a'.repeat(64), resultRevision: 2 },
+      { key: 'delete_twice', fingerprint: 'b'.repeat(64), resultRevision: 3 }
+    ]
+  };
+
+  assert.equal(recordMatchesTerminalSource(malformed, session), false);
+  assert.throws(
+    () => ensureTerminalTrainingRecord([malformed], session),
+    /does not match its source/
+  );
+});
+
 test('Attack Round 1: effective completed facts merge overlays without rewriting source results', () => {
   const source = baseline('completed');
   const corrected = applyCorrection(source, correctionCommand(source));
