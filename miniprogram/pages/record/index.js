@@ -160,28 +160,29 @@ function createRecordPageDefinition({
     onStepValueInput({ currentTarget, detail }) {
       const index = Number(currentTarget.dataset.stepIndex);
       const field = currentTarget.dataset.field;
-      const draft = clone(this.data.editDraft);
-      if (!draft || !draft.steps[index] || !draft.steps[index].editable) {
+      const draft = this.data.editDraft;
+      const step = draft && draft.steps[index];
+      if (!step || !step.editable) {
         return;
       }
       if (!['actualReps', 'actualDurationSeconds'].includes(field)) {
         return;
       }
-      draft.steps[index][field] = detail.value;
-      this.setData({ editDraft: draft });
+      this.setData({ [`editDraft.steps[${index}].${field}`]: detail.value });
     },
 
     onSetValueInput({ currentTarget, detail }) {
       const stepIndex = Number(currentTarget.dataset.stepIndex);
       const setIndex = Number(currentTarget.dataset.setIndex);
       const field = currentTarget.dataset.field;
-      const draft = clone(this.data.editDraft);
+      const draft = this.data.editDraft;
       const setResult = draft && draft.steps[stepIndex] && draft.steps[stepIndex].sets[setIndex];
       if (!setResult || !['reps', 'weightKg'].includes(field)) {
         return;
       }
-      setResult[field] = detail.value;
-      this.setData({ editDraft: draft });
+      this.setData({
+        [`editDraft.steps[${stepIndex}].sets[${setIndex}].${field}`]: detail.value
+      });
     },
 
     onFeedbackInput({ currentTarget, detail }) {
@@ -189,19 +190,21 @@ function createRecordPageDefinition({
       if (!['rpe', 'weightBeforeKg', 'note'].includes(field)) {
         return;
       }
-      const draft = clone(this.data.editDraft);
-      draft.feedback[field] = detail.value;
-      this.setData({ editDraft: draft });
+      if (!this.data.editDraft) {
+        return;
+      }
+      this.setData({ [`editDraft.feedback.${field}`]: detail.value });
     },
 
     onPainChange({ currentTarget, detail }) {
       const field = currentTarget.dataset.field;
-      const draft = clone(this.data.editDraft);
+      const draft = this.data.editDraft;
       if (!draft || !Object.prototype.hasOwnProperty.call(draft.feedback.pain, field)) {
         return;
       }
-      draft.feedback.pain[field] = detail.value === true;
-      this.setData({ editDraft: draft });
+      this.setData({
+        [`editDraft.feedback.pain.${field}`]: detail.value === true
+      });
     },
 
     onSaveEdit() {
@@ -287,10 +290,6 @@ function createRecordPageDefinition({
       }
     }
   };
-}
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
 }
 
 const definition = createRecordPageDefinition();

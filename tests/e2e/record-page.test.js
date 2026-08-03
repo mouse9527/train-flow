@@ -14,12 +14,31 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function assignDataPath(target, pathExpression, value) {
+  const parts = pathExpression
+    .replace(/\[(\d+)\]/g, '.$1')
+    .split('.');
+  let current = target;
+  for (const part of parts.slice(0, -1)) {
+    current = current[part];
+  }
+  current[parts.at(-1)] = clone(value);
+}
+
 function mount(definition) {
   return {
     ...definition,
     data: clone(definition.data),
+    setDataCalls: [],
     setData(patch) {
-      this.data = { ...this.data, ...clone(patch) };
+      this.setDataCalls.push(clone(patch));
+      for (const [pathExpression, value] of Object.entries(patch)) {
+        if (pathExpression.includes('.') || pathExpression.includes('[')) {
+          assignDataPath(this.data, pathExpression, value);
+        } else {
+          this.data[pathExpression] = clone(value);
+        }
+      }
     }
   };
 }
@@ -172,12 +191,24 @@ test('record page edits completed values and feedback, but does not expose input
   assert.equal(page.data.editing, true);
   assert.equal(page.data.editDraft.steps[0].editable, true);
   assert.equal(page.data.editDraft.steps[1].editable, false);
+  let updateIndex = page.setDataCalls.length;
   page.onStepValueInput({
     currentTarget: { dataset: { stepIndex: 0, field: 'actualReps' } },
     detail: { value: '15' }
   });
+  assert.deepEqual(page.setDataCalls[updateIndex], {
+    'editDraft.steps[0].actualReps': '15'
+  });
+  updateIndex = page.setDataCalls.length;
   page.onFeedbackInput({ currentTarget: { dataset: { field: 'rpe' } }, detail: { value: '8' } });
+  assert.deepEqual(page.setDataCalls[updateIndex], {
+    'editDraft.feedback.rpe': '8'
+  });
+  updateIndex = page.setDataCalls.length;
   page.onPainChange({ currentTarget: { dataset: { field: 'lowerBack' } }, detail: { value: true } });
+  assert.deepEqual(page.setDataCalls[updateIndex], {
+    'editDraft.feedback.pain.lowerBack': true
+  });
   page.onFeedbackInput({ currentTarget: { dataset: { field: 'note' } }, detail: { value: '更新备注' } });
   page.onSaveEdit();
 
@@ -194,6 +225,31 @@ test('record page edits completed values and feedback, but does not expose input
   assert.equal(application.calls.correctRecord[0].draft.feedback.pain.lowerBack, true);
   assert.equal(page.data.editing, false);
   assert.deepEqual(wxApi.toasts, [{ title: '训练记录已更新', icon: 'none' }]);
+});
+
+test('record page updates one strength set field without cloning the full edit draft', () => {
+  const page = mount(createRecordPageDefinition({
+    applicationFactory: () => applicationDouble(),
+    getWx: () => wxDouble('release')
+  }));
+  page.onLoad({});
+  page.onStartEdit();
+  page.data.editDraft.steps[0] = {
+    ...page.data.editDraft.steps[0],
+    kind: 'strength',
+    sets: [{ setNumber: 1, reps: 10, weightKg: 20 }]
+  };
+  const updateIndex = page.setDataCalls.length;
+
+  page.onSetValueInput({
+    currentTarget: { dataset: { stepIndex: 0, setIndex: 0, field: 'weightKg' } },
+    detail: { value: '22.5' }
+  });
+
+  assert.deepEqual(page.setDataCalls[updateIndex], {
+    'editDraft.steps[0].sets[0].weightKg': '22.5'
+  });
+  assert.equal(page.data.editDraft.steps[0].sets[0].weightKg, '22.5');
 });
 
 test('record page requires an explicit in-page confirmation before deletion and refreshes to the honest empty state', () => {

@@ -45,12 +45,29 @@ function manualPlan() {
   };
 }
 
+function assignDataPath(target, pathExpression, value) {
+  const parts = pathExpression
+    .replace(/\[(\d+)\]/g, '.$1')
+    .split('.');
+  let current = target;
+  for (const part of parts.slice(0, -1)) {
+    current = current[part];
+  }
+  current[parts.at(-1)] = clone(value);
+}
+
 function mount(definition) {
   return {
     ...definition,
     data: clone(definition.data),
     setData(patch) {
-      this.data = { ...this.data, ...clone(patch) };
+      for (const [pathExpression, value] of Object.entries(patch)) {
+        if (pathExpression.includes('.') || pathExpression.includes('[')) {
+          assignDataPath(this.data, pathExpression, value);
+        } else {
+          this.data[pathExpression] = clone(value);
+        }
+      }
     }
   };
 }
