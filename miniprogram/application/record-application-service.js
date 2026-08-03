@@ -210,7 +210,7 @@ class RecordApplicationService {
       ? selectedRecordId
       : records[0] ? records[0].id : null;
     const selectedRecord = selectedId
-      ? this.repository.findById(selectedId)
+      ? records.find(({ id }) => id === selectedId) || null
       : null;
     return {
       filters: { trainingDate, kind },

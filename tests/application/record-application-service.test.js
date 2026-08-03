@@ -119,6 +119,11 @@ test('record application maps deterministic filters, list summaries and honest c
   });
 
   assert.deepEqual(repository.calls.list, [{ trainingDate: null, kind: null }]);
+  assert.deepEqual(
+    repository.calls.findById,
+    [],
+    'one view query must reuse the validated list result instead of reading the database twice'
+  );
   assert.equal(view.records.length, 2);
   assert.deepEqual(view.kindOptions.map(({ value }) => value), [null, 'manual', 'timed', 'interval', 'strength']);
   assert.equal(view.records[0].statusLabel, '已中止');

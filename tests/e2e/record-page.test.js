@@ -137,6 +137,13 @@ test('record page loads list/detail, applies date and kind filters, and preserve
   assert.equal(page.data.view.records.length, 1);
   assert.equal(page.data.view.selectedRecord.steps[1].statusLabel, '已跳过');
   assert.equal(page.data.view.selectedRecord.steps[2].statusLabel, '未执行');
+  assert.equal(application.calls.getView.length, 1);
+  page.onShow();
+  assert.equal(
+    application.calls.getView.length,
+    1,
+    'the initial onShow after onLoad must not repeat the first full record query'
+  );
 
   page.onDateFilterChange({ detail: { value: '2026-08-03' } });
   page.onKindFilterChange({ detail: { value: 1 } });
@@ -145,6 +152,7 @@ test('record page loads list/detail, applies date and kind filters, and preserve
 
   page.onSelectRecord({ currentTarget: { dataset: { recordId: 'record_page_fixture' } } });
   page.onShow();
+  assert.equal(application.calls.getView.length, 5);
   assert.equal(application.calls.getView.at(-1).selectedRecordId, 'record_page_fixture');
 });
 

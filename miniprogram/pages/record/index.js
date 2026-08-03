@@ -64,6 +64,7 @@ function createRecordPageDefinition({
         kind: query.kind || null
       };
       this.refresh(query.recordId || null);
+      this.skipNextShowRefresh = true;
       if (useFixture && query.state === 'edit') {
         this.onStartEdit();
       }
@@ -73,6 +74,10 @@ function createRecordPageDefinition({
     },
 
     onShow() {
+      if (this.skipNextShowRefresh) {
+        this.skipNextShowRefresh = false;
+        return;
+      }
       if (!this.application || this.data.editing || this.data.deleteConfirmation) {
         return;
       }
