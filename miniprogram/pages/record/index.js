@@ -95,6 +95,10 @@ function createRecordPageDefinition({
         if (this.data.deleteConfirmation) {
           this.onCancelDelete();
         }
+        this.filters = {
+          trainingDate: null,
+          kind: null
+        };
         this.refresh(pendingRecordId);
         return;
       }

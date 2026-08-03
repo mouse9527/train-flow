@@ -215,6 +215,8 @@ test('record page consumes a pending cross-tab selection by closing preserved ed
 
     page.onLoad({});
     page.onShow();
+    page.onDateFilterChange({ detail: { value: '2026-08-03' } });
+    page.onKindFilterChange({ detail: { value: 1 } });
     if (modalState === 'edit') {
       page.onStartEdit();
     } else {
@@ -233,6 +235,9 @@ test('record page consumes a pending cross-tab selection by closing preserved ed
       application.calls.getView.at(-1).selectedRecordId,
       `record_from_today_with_${modalState}`
     );
+    assert.deepEqual(page.filters, { trainingDate: null, kind: null });
+    assert.equal(application.calls.getView.at(-1).trainingDate, null);
+    assert.equal(application.calls.getView.at(-1).kind, null);
     assert.equal(application.calls.correctRecord.length, 0);
     assert.equal(application.calls.deleteRecord.length, 0);
   }
