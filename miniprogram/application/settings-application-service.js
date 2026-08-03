@@ -60,6 +60,17 @@ function createSettingsApplicationService({
   const exportConfirmations = new Map();
   let exportSequence = 0;
 
+  function discardExportConfirmation(confirmationId, confirmation) {
+    if (confirmation) confirmation.jsonText = '';
+    exportConfirmations.delete(confirmationId);
+  }
+
+  function discardAllExportConfirmations() {
+    for (const [confirmationId, confirmation] of exportConfirmations) {
+      discardExportConfirmation(confirmationId, confirmation);
+    }
+  }
+
   function requireDatabase(method) {
     if (!database || typeof database[method] !== 'function') {
       throw new Error(`Settings data service requires LocalDatabase.${method}()`);
@@ -68,6 +79,7 @@ function createSettingsApplicationService({
   }
 
   function registerExport(jsonText) {
+    discardAllExportConfirmations();
     exportSequence += 1;
     const digest = computeChecksum(JSON.parse(jsonText));
     const expiresAt = now() + confirmationTtlMs;
@@ -79,8 +91,14 @@ function createSettingsApplicationService({
   function requireExportConfirmation(confirmationId) {
     const confirmation = exportConfirmations.get(confirmationId);
     if (!confirmation) throw new Error('Export confirmation is missing');
-    if (confirmation.consumed) throw new Error('Export confirmation was already consumed');
-    if (now() > confirmation.expiresAt) throw new Error('Export confirmation expired');
+    if (confirmation.consumed) {
+      discardExportConfirmation(confirmationId, confirmation);
+      throw new Error('Export confirmation was already consumed');
+    }
+    if (now() > confirmation.expiresAt) {
+      discardExportConfirmation(confirmationId, confirmation);
+      throw new Error('Export confirmation expired');
+    }
     return confirmation;
   }
 
@@ -156,8 +174,7 @@ function createSettingsApplicationService({
       }
       return writeClipboard(jsonText).then((result) => {
         confirmation.consumed = true;
-        confirmation.jsonText = '';
-        exportConfirmations.delete(confirmationId);
+        discardExportConfirmation(confirmationId, confirmation);
         return result;
       });
     },
@@ -183,7 +200,7 @@ function createSettingsApplicationService({
     },
 
     clearSensitiveData() {
-      exportConfirmations.clear();
+      discardAllExportConfirmations();
     }
   };
   return service;
