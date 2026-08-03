@@ -1682,3 +1682,28 @@ test('[F3-migration] Attack: portable import 失败分类必须暴露稳定且�
     assertNoWrites(storage);
   });
 });
+
+test('[F5-package] Attack: V1 shallow profile 与非法 envelope exportedAt 必须精确 domain code 零写拒绝', async (t) => {
+  const source = exportFixture().jsonText;
+  const cases = [
+    ['shallow non-null profile', (value) => {
+      value.data.profile = { displayName: 'PRIVATE_PROFILE_NAME_5b91' };
+    }],
+    ['negative exportedAt', (value) => { value.exportedAt = -1; }],
+    ['fractional exportedAt', (value) => { value.exportedAt = FIXED_NOW + 0.5; }],
+    ['unsafe exportedAt', (value) => { value.exportedAt = Number.MAX_SAFE_INTEGER + 1; }],
+    ['string exportedAt', (value) => { value.exportedAt = '2026-08-03T00:00:00.000Z'; }]
+  ];
+
+  for (const [name, mutate] of cases) {
+    await t.test(name, () => {
+      const candidate = rewritePackage(source, mutate);
+      const { database, storage } = createDatabase();
+      storage.clearOperations();
+      const error = captureError(() => database.previewPortableImport(candidate));
+      assert.equal(error.code, 'IMPORT_DOMAIN_INVALID');
+      assert.equal(errorSignal(error).includes('PRIVATE_PROFILE_NAME_5b91'), false);
+      assertNoWrites(storage);
+    });
+  }
+});

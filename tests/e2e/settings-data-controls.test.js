@@ -443,6 +443,84 @@ test('[C] Attack: page 的完整导入 JSON 只能短驻 controller 私有字段
   assert.equal(JSON.stringify(page).includes(PRIVATE_IMPORT_JSON), false, 'unload must clear private import text');
 });
 
+test('[F5-unload] Attack: pending export/import 在 onUnload 必须撤销服务引用并清空 page 私有 token', async (t) => {
+  const exportId = 'pending-export-id-17c4';
+  const importId = 'pending-import-id-92a8';
+  let retainedExportJson = PRIVATE_EXPORT_JSON;
+  let retainedImportJson = null;
+  const calls = [];
+  const fakeService = {
+    getSettings() { return { revision: 1 }; },
+    updateSettings(value) { return value; },
+    createExportPreview() {
+      calls.push({ type: 'export-preview' });
+      return {
+        confirmationId: exportId,
+        jsonText: retainedExportJson,
+        summary: { plans: 1, records: 1 },
+        privacyWarning: '包含私人训练数据'
+      };
+    },
+    copyExportToClipboard(confirmationId) {
+      calls.push({ type: 'copy', confirmationId, jsonText: retainedExportJson });
+      return { copied: true };
+    },
+    previewImport(jsonText) {
+      retainedImportJson = jsonText;
+      calls.push({ type: 'preview-import', jsonText });
+      return { confirmationId: importId, counts: { plans: 1, records: 1 }, warnings: [] };
+    },
+    confirmImport(jsonText, confirmationId) {
+      calls.push({ type: 'confirm-import', jsonText, confirmationId });
+      return { applied: true };
+    },
+    prepareLocalClear() { throw new Error('not used'); },
+    confirmLocalClear() { throw new Error('not used'); },
+    clearSensitiveData() {
+      calls.push({ type: 'clear-sensitive' });
+      retainedExportJson = null;
+      retainedImportJson = null;
+    }
+  };
+  const previousWx = global.wx;
+  global.wx = { showToast() {} };
+  try {
+    const page = loadSettingsPage(fakeService);
+    await maybePromise(page.onLoad({ section: 'data' }));
+    await maybePromise(page.onGenerateBackup());
+    page.onImportInput({ detail: { value: PRIVATE_IMPORT_JSON } });
+    await maybePromise(page.onPreviewImport());
+    assert.equal(retainedExportJson, PRIVATE_EXPORT_JSON);
+    assert.equal(retainedImportJson, PRIVATE_IMPORT_JSON);
+
+    page.onUnload();
+
+    await t.test('service and page references are cleared', () => {
+      assert.equal(retainedExportJson, null, 'unload must release service-held export JSON');
+      assert.equal(retainedImportJson, null, 'unload must release service-held import JSON');
+      const serialized = JSON.stringify(page);
+      for (const secret of [PRIVATE_EXPORT_JSON, PRIVATE_IMPORT_JSON, exportId, importId]) {
+        assert.equal(serialized.includes(secret), false, `page retained ${secret}`);
+      }
+      assert.equal(calls.filter(({ type }) => type === 'clear-sensitive').length, 1);
+    });
+
+    await t.test('post-unload actions cannot forward old ids or private JSON', async () => {
+      const callCountAfterUnload = calls.length;
+      await maybePromise(page.onCopyBackup());
+      await maybePromise(page.onConfirmImport());
+      await maybePromise(page.onPreviewImport());
+      const forwarded = JSON.stringify(calls.slice(callCountAfterUnload));
+      for (const secret of [PRIVATE_EXPORT_JSON, PRIVATE_IMPORT_JSON, exportId, importId]) {
+        assert.equal(forwarded.includes(secret), false, `post-unload action forwarded ${secret}`);
+      }
+    });
+  } finally {
+    if (previousWx === undefined) delete global.wx;
+    else global.wx = previousWx;
+  }
+});
+
 test('[F4] Attack: pending sync 的最终本机清除 modal 必须四字按钮并明确未同步变更会丢失', async (t) => {
   const calls = [];
   let modalOptions = null;
