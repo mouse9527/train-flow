@@ -31,7 +31,6 @@ Page({
     dataNotice: ''
   },
 
-  _exportJsonText: '',
   _exportConfirmationId: '',
   _importJsonText: '',
   _importConfirmationId: '',
@@ -82,7 +81,6 @@ Page({
   onGenerateBackup() {
     this.setData({ dataError: '', dataNotice: '' });
     return Promise.resolve(settingsService.createExportPreview()).then((preview) => {
-      this._exportJsonText = preview.jsonText;
       this._exportConfirmationId = preview.confirmationId;
       this.setData({
         exportSummary: preview.summary,
@@ -97,12 +95,10 @@ Page({
   },
 
   onCopyBackup() {
-    const jsonText = this._exportJsonText;
     const confirmationId = this._exportConfirmationId;
     return Promise.resolve(
-      settingsService.copyExportToClipboard(jsonText, confirmationId)
+      settingsService.copyExportToClipboard(confirmationId)
     ).then((result) => {
-      this._exportJsonText = '';
       this._exportConfirmationId = '';
       this.setData({ exportReady: false, dataNotice: '备份 JSON 已复制，请妥善保管。' });
       return result;
@@ -173,7 +169,6 @@ Page({
     const apply = () => Promise.resolve(settingsService.confirmLocalClear(confirmationId)).then((result) => {
       this._clearConfirmationId = '';
       this._importJsonText = '';
-      this._exportJsonText = '';
       this.setData({
         clearPreview: null,
         importPreview: null,
@@ -211,7 +206,6 @@ Page({
   },
 
   onUnload() {
-    this._exportJsonText = '';
     this._exportConfirmationId = '';
     this._importJsonText = '';
     this._importConfirmationId = '';

@@ -72,7 +72,7 @@ function createSettingsApplicationService({
     const digest = computeChecksum(JSON.parse(jsonText));
     const expiresAt = now() + confirmationTtlMs;
     const confirmationId = `export_${exportSequence}_${computeChecksum({ digest, expiresAt }).slice(0, 20)}`;
-    exportConfirmations.set(confirmationId, { digest, expiresAt, consumed: false });
+    exportConfirmations.set(confirmationId, { digest, expiresAt, consumed: false, jsonText });
     return confirmationId;
   }
 
@@ -150,12 +150,14 @@ function createSettingsApplicationService({
       const confirmation = requireExportConfirmation(confirmationId);
       const jsonText = explicitText
         ? jsonTextOrConfirmationId
-        : requireDatabase('exportPortableBackup').exportPortableBackup().jsonText;
+        : confirmation.jsonText;
       if (typeof jsonText !== 'string' || computeChecksum(JSON.parse(jsonText)) !== confirmation.digest) {
         throw new Error('Export confirmation digest mismatch');
       }
       return writeClipboard(jsonText).then((result) => {
         confirmation.consumed = true;
+        confirmation.jsonText = '';
+        exportConfirmations.delete(confirmationId);
         return result;
       });
     },
