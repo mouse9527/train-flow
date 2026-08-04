@@ -562,6 +562,73 @@ test('Attack: repository retry after a failed atomic write keeps one stable comm
   });
 });
 
+test('Attack: local clear gives rebuilt plan, settings and record commands fresh opIds', async (t) => {
+  function clearLocal(database) {
+    const preview = database.prepareLocalPurge();
+    return database.applyLocalPurge(preview.confirmationId);
+  }
+
+  await t.test('plan', () => {
+    const { database } = persistentRuntime();
+    const repository = createPlanRepository({ database, now: () => NOW });
+    repository.save(planFixture(), 0);
+    const beforeClear = database.load().sync.outbox.at(-1);
+
+    clearLocal(database);
+    repository.save(planFixture(), 0);
+    const afterClear = database.load().sync.outbox.at(-1);
+
+    assert.notEqual(afterClear.opId, beforeClear.opId);
+  });
+
+  await t.test('settings', () => {
+    const { database } = persistentRuntime();
+    const service = createSettingsApplicationService({
+      repository: createSettingsRepository({ database, now: () => NOW })
+    });
+    service.updateSettings({ soundEnabled: false }, 1);
+    const beforeClear = database.load().sync.outbox.at(-1);
+
+    clearLocal(database);
+    service.updateSettings({ soundEnabled: false }, 1);
+    const afterClear = database.load().sync.outbox.at(-1);
+
+    assert.notEqual(afterClear.opId, beforeClear.opId);
+  });
+
+  await t.test('terminal record', () => {
+    const { database } = persistentRuntime();
+    const sessions = createSessionRepository({ database });
+    function completeRecord() {
+      const plan = manualPlan('plan_clear_record');
+      const started = sessions.start({
+        plan,
+        sessionId: 'session_clear_record',
+        originDeviceId: 'device_repository_sync',
+        commandKey: 'start_clear_record',
+        nowMs: NOW
+      });
+      sessions.apply({
+        type: 'complete_step',
+        expectedSessionRevision: started.sessionRevision,
+        commandKey: 'complete_clear_record',
+        nowMs: NOW + 60_000,
+        payload: { stepId: started.planSnapshot.steps[0].id }
+      }, { originDeviceId: 'device_repository_sync' });
+      database.commit((draft) => {
+        draft.activeSession = null;
+      });
+      return database.load().sync.outbox.at(-1);
+    }
+
+    const beforeClear = completeRecord();
+    clearLocal(database);
+    const afterClear = completeRecord();
+
+    assert.notEqual(afterClear.opId, beforeClear.opId);
+  });
+});
+
 test('Attack: replaying the terminal command is a zero-write no-op and never queues a second record operation', () => {
   const { database, storage } = persistentRuntime();
   const repository = createSessionRepository({ database });

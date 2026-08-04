@@ -239,6 +239,7 @@ function appendSyncOperation(draft, sourceMutation, {
   deviceIdFactory
 } = {}) {
   ensureSyncState(draft);
+  assertNonNegativeSafeInteger(draft.localRevision, 'AppDatabase localRevision', 'SYNC_STATE_INVALID');
   assertNonNegativeSafeInteger(createdAt, 'SyncOperation createdAt');
   if (typeof intentKey !== 'string' || intentKey.length === 0) {
     throw operationError('SyncOperation intentKey must be a non-empty string', 'SYNC_INTENT_KEY_INVALID');
@@ -249,6 +250,7 @@ function appendSyncOperation(draft, sourceMutation, {
   const baseServerRevision = replica ? replica.serverRevision : 0;
   const opId = `op_${computeChecksum({
     deviceId,
+    localRevision: draft.localRevision,
     entityType: mutation.entityType,
     entityId: mutation.entityId,
     action: mutation.action,
