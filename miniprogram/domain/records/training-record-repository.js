@@ -10,6 +10,11 @@ const {
   buildEffectiveTrainingRecord,
   isDeletedTrainingRecord
 } = require('./training-record');
+const { ENTITY_TYPES } = require('../sync/entity-mapper');
+const {
+  appendRepositorySyncMutation,
+  createRepositoryDeviceIdFactory
+} = require('../sync/sync-operation');
 
 const CORRECTION_COMMAND_FIELDS = Object.freeze([
   'recordId',
@@ -191,22 +196,6 @@ function findCanonicalRecord(records, recordId) {
     throw new Error(`TrainingRecord ${recordId} canonical identity is invalid`);
   }
   return record;
-}
-
-function outboxDescriptor(command, record, kind = 'training-record.corrected') {
-  return {
-    opId: `op_${computeChecksum({
-      kind,
-      entityId: record.id,
-      entityRevision: record.revision,
-      commandKey: command.commandKey
-    })}`,
-    kind,
-    entityType: 'training-record',
-    entityId: record.id,
-    entityRevision: record.revision,
-    occurredAt: command.nowMs
-  };
 }
 
 function deleteFingerprint(command) {
@@ -483,9 +472,13 @@ function statisticsInvalidation(command, record) {
 }
 
 class TrainingRecordRepository {
-  constructor({ database }) {
+  constructor({ database, deviceIdFactory = createRepositoryDeviceIdFactory() }) {
     assertDatabase(database);
+    if (typeof deviceIdFactory !== 'function') {
+      throw new Error('TrainingRecordRepository deviceIdFactory must be a function');
+    }
     this.database = database;
+    this.deviceIdFactory = deviceIdFactory;
   }
 
   correct(sourceCommand, { source = null } = {}) {
@@ -542,7 +535,16 @@ class TrainingRecordRepository {
         const recordIndex = draft.records.indexOf(persisted);
         draft.records[recordIndex] = cloneJson(corrected);
       }
-      draft.sync.outbox.push(outboxDescriptor(command, corrected));
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: corrected.id,
+        action: 'upsert',
+        payload: corrected
+      }, {
+        commandIdentity: `record.correct:${command.recordId}:${command.commandKey}`,
+        createdAt: command.nowMs,
+        deviceIdFactory: this.deviceIdFactory
+      });
       draft.statisticsProjection = statisticsInvalidation(command, corrected);
     }, snapshot.localRevision);
 
@@ -566,9 +568,16 @@ class TrainingRecordRepository {
       const tombstone = buildTombstone(persisted, command);
       const recordIndex = draft.records.indexOf(persisted);
       draft.records[recordIndex] = cloneJson(tombstone);
-      draft.sync.outbox.push(
-        outboxDescriptor(command, tombstone, 'training-record.deleted')
-      );
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: tombstone.id,
+        action: 'delete',
+        payload: null
+      }, {
+        commandIdentity: `record.delete:${command.recordId}:${command.commandKey}`,
+        createdAt: command.nowMs,
+        deviceIdFactory: this.deviceIdFactory
+      });
       draft.statisticsProjection = statisticsInvalidation(command, tombstone);
     }, snapshot.localRevision);
 

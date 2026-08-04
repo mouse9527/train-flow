@@ -190,6 +190,49 @@ function ensureInstall(draft, { createdAt, deviceIdFactory, mutation }) {
   return deviceId;
 }
 
+function secureRandomBytes(size) {
+  const bytes = new Uint8Array(size);
+  if (
+    typeof globalThis !== 'undefined' &&
+    globalThis.crypto &&
+    typeof globalThis.crypto.getRandomValues === 'function'
+  ) {
+    globalThis.crypto.getRandomValues(bytes);
+    return bytes;
+  }
+  if (typeof wx !== 'undefined' && typeof wx.getRandomValues === 'function') {
+    const result = wx.getRandomValues(bytes);
+    return result instanceof Uint8Array ? result : bytes;
+  }
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Math.floor(Math.random() * 256);
+  }
+  return bytes;
+}
+
+function createRepositoryDeviceIdFactory({ randomBytes = secureRandomBytes } = {}) {
+  if (typeof randomBytes !== 'function') {
+    throw operationError('repository device identity factory is invalid', 'SYNC_DEVICE_ID_INVALID');
+  }
+  let deviceId = null;
+  return () => {
+    if (deviceId === null) {
+      const entropy = randomBytes(32);
+      if (
+        !(entropy instanceof Uint8Array) ||
+        entropy.length !== 32
+      ) {
+        throw operationError('repository device identity source is invalid', 'SYNC_DEVICE_ID_INVALID');
+      }
+      deviceId = `device_${computeChecksum({
+        scope: 'trainflow-install-v1',
+        entropy: Array.from(entropy)
+      })}`;
+    }
+    return deviceId;
+  };
+}
+
 function appendSyncOperation(draft, sourceMutation, {
   createdAt,
   intentKey,
@@ -209,9 +252,6 @@ function appendSyncOperation(draft, sourceMutation, {
     entityType: mutation.entityType,
     entityId: mutation.entityId,
     action: mutation.action,
-    baseServerRevision,
-    payload: mutation.payload,
-    createdAt,
     intentKey
   })}`;
   const operation = {
@@ -238,6 +278,35 @@ function appendSyncOperation(draft, sourceMutation, {
   }
   draft.sync.outbox.push(cloneJson(operation));
   return cloneJson(operation);
+}
+
+function appendRepositorySyncMutation(draft, sourceMutation, {
+  commandIdentity,
+  createdAt,
+  deviceId = null,
+  deviceIdFactory = null
+} = {}) {
+  if (typeof commandIdentity !== 'string' || commandIdentity.length === 0) {
+    throw operationError(
+      'repository commandIdentity must be a non-empty string',
+      'SYNC_INTENT_KEY_INVALID'
+    );
+  }
+  if (deviceId !== null && (typeof deviceId !== 'string' || deviceId.length === 0)) {
+    throw operationError('repository deviceId is invalid', 'SYNC_DEVICE_ID_INVALID');
+  }
+  if (deviceId === null && typeof deviceIdFactory !== 'function') {
+    throw operationError('repository deviceIdFactory is required', 'SYNC_DEVICE_ID_REQUIRED');
+  }
+  const mutation = mapLocalMutation(sourceMutation);
+  const intentKey = `repository:${mutation.entityType}:${mutation.entityId}:${commandIdentity}`;
+  return appendSyncOperation(draft, mutation, {
+    createdAt,
+    intentKey,
+    deviceIdFactory: deviceId === null
+      ? deviceIdFactory
+      : () => deviceId
+  });
 }
 
 function legacyEntityKey(operation) {
@@ -378,10 +447,12 @@ function applyAcceptedOperations(draft, receipts) {
 module.exports = {
   OPERATION_FIELDS,
   REPLICA_FIELDS,
+  appendRepositorySyncMutation,
   appendSyncOperation,
   applyAcceptedOperations,
   assertSyncOperation,
   assertSyncReplica,
+  createRepositoryDeviceIdFactory,
   entityKey,
   selectPushableOperations
 };

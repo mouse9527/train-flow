@@ -22,6 +22,10 @@ const {
 const {
   createLocalDatabase
 } = require('../../miniprogram/services/local-database');
+const {
+  OPERATION_FIELDS,
+  assertSyncOperation
+} = require('../../miniprogram/domain/sync/sync-operation');
 const { StorageDouble, clone } = require('../helpers/storage-double');
 
 const START_AT = 1785976500000;
@@ -162,23 +166,17 @@ function assertDeleteRejectedWithoutWrite(repository, database, command) {
   assert.deepEqual(command, commandBefore);
 }
 
-function assertCorrectionDescriptor(descriptor, record, occurredAt) {
-  assertClosedKeys(descriptor, [
-    'opId',
-    'kind',
-    'entityType',
-    'entityId',
-    'entityRevision',
-    'occurredAt'
-  ]);
-  assert.equal(descriptor.kind, 'training-record.corrected');
-  assert.equal(descriptor.entityType, 'training-record');
-  assert.equal(descriptor.entityId, record.id);
-  assert.equal(descriptor.entityRevision, record.revision);
-  assert.equal(descriptor.occurredAt, occurredAt);
+function assertCorrectionOperation(operation, record, createdAt) {
+  assertClosedKeys(operation, OPERATION_FIELDS);
+  assertSyncOperation(operation);
+  assert.equal(operation.entityType, 'training_record');
+  assert.equal(operation.entityId, record.id);
+  assert.equal(operation.action, 'upsert');
+  assert.equal(operation.createdAt, createdAt);
+  assert.deepEqual(operation.payload, record);
 }
 
-test('Attack Round 3: delete is one CAS commit producing a minimal private-free tombstone, outbox descriptor and statistics invalidation', () => {
+test('Attack Round 3: delete is one CAS commit producing a minimal private-free tombstone, sync tombstone and statistics invalidation', () => {
   const harness = createHarness();
   completeSession(harness);
   const baseline = recordFor(harness.database);
@@ -191,7 +189,7 @@ test('Attack Round 3: delete is one CAS commit producing a minimal private-free 
   const returned = deleteRecord(harness.records, input);
   const after = harness.database.load();
   const tombstone = after.records[0];
-  const deletionDescriptor = after.sync.outbox.at(-1);
+  const deletionOperation = after.sync.outbox.at(-1);
 
   assert.equal(after.localRevision, before.localRevision + 1);
   assert.equal(after.records.length, 1);
@@ -232,19 +230,13 @@ test('Attack Round 3: delete is one CAS commit producing a minimal private-free 
   assert.match(tombstone.processedDeletionCommands[0].fingerprint, /^[a-f0-9]{64}$/);
   assert.equal(tombstone.processedDeletionCommands[0].resultRevision, tombstone.revision);
 
-  assertClosedKeys(deletionDescriptor, [
-    'opId',
-    'kind',
-    'entityType',
-    'entityId',
-    'entityRevision',
-    'occurredAt'
-  ]);
-  assert.equal(deletionDescriptor.kind, 'training-record.deleted');
-  assert.equal(deletionDescriptor.entityType, 'training-record');
-  assert.equal(deletionDescriptor.entityId, tombstone.id);
-  assert.equal(deletionDescriptor.entityRevision, tombstone.revision);
-  assert.equal(deletionDescriptor.occurredAt, DELETE_AT);
+  assertClosedKeys(deletionOperation, OPERATION_FIELDS);
+  assertSyncOperation(deletionOperation);
+  assert.equal(deletionOperation.entityType, 'training_record');
+  assert.equal(deletionOperation.entityId, tombstone.id);
+  assert.equal(deletionOperation.action, 'delete');
+  assert.equal(deletionOperation.payload, null);
+  assert.equal(deletionOperation.createdAt, DELETE_AT);
   assert.deepEqual(after.statisticsProjection, {
     dirty: true,
     reason: 'training-record-changed',
@@ -469,7 +461,7 @@ test('Attack Round 3: Workout Summary feedback updates preserve corrections and 
   assert.equal(record.feedback.rpe, 6);
   assert.equal(record.feedback.note, 'UPDATED_PRIVATE_SUMMARY_NOTE_62cd');
   assert.equal(after.sync.outbox.length, before.sync.outbox.length + 1);
-  assertCorrectionDescriptor(descriptor, record, SUMMARY_AT);
+  assertCorrectionOperation(descriptor, record, SUMMARY_AT);
   assert.deepEqual(after.statisticsProjection, {
     dirty: true,
     reason: 'training-record-changed',
@@ -477,7 +469,6 @@ test('Attack Round 3: Workout Summary feedback updates preserve corrections and 
     recordRevision: record.revision,
     invalidatedAt: SUMMARY_AT
   });
-  assert.doesNotMatch(JSON.stringify(descriptor), /note|pain|rpe|weightBeforeKg|feedback|actualCorrections/i);
 });
 
 test('Attack Round 3: summary load and previously-bound save both reject active and historical tombstones without resurrection', () => {
