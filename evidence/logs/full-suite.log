@@ -1,0 +1,4484 @@
+command: npm test
+source-head: 7b9cf1731fb8a5d0d831ab90e6d42aa34ffc4f4e
+source-tree: 081e7b1f65069e529a70fc16799b30461997a737
+
+> train-flow-miniprogram@0.1.0 test
+> node --test 'tests/**/*.test.js'
+
+TAP version 13
+# Subtest: plan editor keeps a detached draft and supports add, remove and reorder without mutating persisted input
+ok 1 - plan editor keeps a detached draft and supports add, remove and reorder without mutating persisted input
+  ---
+  duration_ms: 16.378292
+  type: 'test'
+  ...
+# Subtest: plan editor returns field-level errors for required and kind-specific values
+ok 2 - plan editor returns field-level errors for required and kind-specific values
+  ---
+  duration_ms: 0.557
+  type: 'test'
+  ...
+# Subtest: required editor text rejects whitespace-only titles and step names
+ok 3 - required editor text rejects whitespace-only titles and step names
+  ---
+  duration_ms: 0.282541
+  type: 'test'
+  ...
+# Subtest: aggregate kind validation errors remain localized and actionable at plan and step scopes
+ok 4 - aggregate kind validation errors remain localized and actionable at plan and step scopes
+  ---
+  duration_ms: 0.540041
+  type: 'test'
+  ...
+# Subtest: new step defaults expose only fields valid for its kind
+ok 5 - new step defaults expose only fields valid for its kind
+  ---
+  duration_ms: 1.563916
+  type: 'test'
+  ...
+# Subtest: modeled duration uses the documented formula for every WorkoutStep kind
+ok 6 - modeled duration uses the documented formula for every WorkoutStep kind
+  ---
+  duration_ms: 0.185041
+  type: 'test'
+  ...
+# Subtest: modeled duration counts reps-only manual steps at five seconds per rep
+ok 7 - modeled duration counts reps-only manual steps at five seconds per rep
+  ---
+  duration_ms: 0.103583
+  type: 'test'
+  ...
+# Subtest: editor session reserves historical step IDs and rejects removed or forged identities at add and save boundaries
+ok 8 - editor session reserves historical step IDs and rejects removed or forged identities at add and save boundaries
+  ---
+  duration_ms: 72.205375
+  type: 'test'
+  ...
+# Subtest: application-generated step IDs remain fresh after a draft step is deleted
+ok 9 - application-generated step IDs remain fresh after a draft step is deleted
+  ---
+  duration_ms: 21.152625
+  type: 'test'
+  ...
+# Subtest: saving an editor draft updates the aggregate but leaves an active Session PlanSnapshot isolated
+ok 10 - saving an editor draft updates the aggregate but leaves an active Session PlanSnapshot isolated
+  ---
+  duration_ms: 98.657542
+  type: 'test'
+  ...
+# Subtest: invalid and stale drafts return field errors with zero partial writes
+ok 11 - invalid and stale drafts return field errors with zero partial writes
+  ---
+  duration_ms: 49.572583
+  type: 'test'
+  ...
+# Subtest: an empty date gets a valid custom draft and persists with expected revision zero
+ok 12 - an empty date gets a valid custom draft and persists with expected revision zero
+  ---
+  duration_ms: 32.621083
+  type: 'test'
+  ...
+# Subtest: saving recalculates estimated duration from kind-specific modeled seconds without discarding the persisted baseline
+ok 13 - saving recalculates estimated duration from kind-specific modeled seconds without discarding the persisted baseline
+  ---
+  duration_ms: 96.272542
+  type: 'test'
+  ...
+# Subtest: replacing an existing workout with only rest_day steps forces estimated duration to zero
+ok 14 - replacing an existing workout with only rest_day steps forces estimated duration to zero
+  ---
+  duration_ms: 37.962833
+  type: 'test'
+  ...
+# Subtest: copy uses the detached editor draft including unsaved nested edits and recalculated duration
+ok 15 - copy uses the detached editor draft including unsaved nested edits and recalculated duration
+  ---
+  duration_ms: 146.044167
+  type: 'test'
+  ...
+# Subtest: copy-to-empty-date is a deep copy and repeated confirmation is idempotent
+ok 16 - copy-to-empty-date is a deep copy and repeated confirmation is idempotent
+  ---
+  duration_ms: 87.773667
+  type: 'test'
+  ...
+# Subtest: copy-to-existing-date requires confirmation and its exact expected revision before one atomic replacement
+ok 17 - copy-to-existing-date requires confirmation and its exact expected revision before one atomic replacement
+  ---
+  duration_ms: 123.893792
+  type: 'test'
+  ...
+# Subtest: stale replacement confirmation rejects a different target plan with the same revision and performs zero writes
+ok 18 - stale replacement confirmation rejects a different target plan with the same revision and performs zero writes
+  ---
+  duration_ms: 113.221125
+  type: 'test'
+  ...
+# Subtest: stale replacement confirmation cannot downgrade to empty-date creation after its target is deleted
+ok 19 - stale replacement confirmation cannot downgrade to empty-date creation after its target is deleted
+  ---
+  duration_ms: 96.794584
+  type: 'test'
+  ...
+# Subtest: replacement confirmation rejects an incomplete target identity payload without writing
+ok 20 - replacement confirmation rejects an incomplete target identity payload without writing
+  ---
+  duration_ms: 30.392
+  type: 'test'
+  ...
+# Subtest: a fresh copy intent can reuse a source revision after an intervening replacement while replaying itself once
+ok 21 - a fresh copy intent can reuse a source revision after an intervening replacement while replaying itself once
+  ---
+  duration_ms: 295.729125
+  type: 'test'
+  ...
+# Subtest: different dialog tap keys replay one explicit copy intent
+ok 22 - different dialog tap keys replay one explicit copy intent
+  ---
+  duration_ms: 88.526083
+  type: 'test'
+  ...
+# Subtest: a newer source revision creates a new copy intent and can explicitly refresh the same target date
+ok 23 - a newer source revision creates a new copy intent and can explicitly refresh the same target date
+  ---
+  duration_ms: 167.931375
+  type: 'test'
+  ...
+# Subtest: copying a plan onto its own training date fails closed and preserves the active source
+ok 24 - copying a plan onto its own training date fails closed and preserves the active source
+  ---
+  duration_ms: 24.511542
+  type: 'test'
+  ...
+# Subtest: closing editor sessions prevents stale tokens from writing and keeps the session registry bounded
+ok 25 - closing editor sessions prevents stale tokens from writing and keeps the session registry bounded
+  ---
+  duration_ms: 28.227542
+  type: 'test'
+  ...
+# Subtest: record application maps deterministic filters, list summaries and honest completed/skipped/unknown detail
+ok 26 - record application maps deterministic filters, list summaries and honest completed/skipped/unknown detail
+  ---
+  duration_ms: 1.527167
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: detail formats persisted zero body weight as 0 kg and reserves 未填 for null
+ok 27 - Reviewer regression: detail formats persisted zero body weight as 0 kg and reserves 未填 for null
+  ---
+  duration_ms: 5.834
+  type: 'test'
+  ...
+# Subtest: record application builds a closed correction command only from completed editable actuals and canonical feedback
+ok 28 - record application builds a closed correction command only from completed editable actuals and canonical feedback
+  ---
+  duration_ms: 1.35775
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: correcting actuals preserves an untouched missing feedback as null
+ok 29 - Reviewer regression: correcting actuals preserves an untouched missing feedback as null
+  ---
+  duration_ms: 0.691916
+  type: 'test'
+  ...
+# Subtest: record application maps strength set corrections and delegates stale-safe deletion without leaking record payloads
+ok 30 - record application maps strength set corrections and delegates stale-safe deletion without leaking record payloads
+  ---
+  duration_ms: 0.703917
+  type: 'test'
+  ...
+# Subtest: scheduled TodayPlanView exposes ordered plan details and only the start action
+ok 31 - scheduled TodayPlanView exposes ordered plan details and only the start action
+  ---
+  duration_ms: 3.90625
+  type: 'test'
+  ...
+# Subtest: active session wins over scheduled state and exposes only continue
+ok 32 - active session wins over scheduled state and exposes only continue
+  ---
+  duration_ms: 0.374958
+  type: 'test'
+  ...
+# Subtest: completed and skipped records produce honest terminal states without a start action
+ok 33 - completed and skipped records produce honest terminal states without a start action
+  ---
+  duration_ms: 13.107917
+  type: 'test'
+  ...
+# Subtest: rest day never exposes a timer action and zero planned days use a null completion rate
+ok 34 - rest day never exposes a timer action and zero planned days use a null completion rate
+  ---
+  duration_ms: 0.182833
+  type: 'test'
+  ...
+# Subtest: no-plan state is explicit and does not invent plan or record data
+ok 35 - no-plan state is explicit and does not invent plan or record data
+  ---
+  duration_ms: 0.081083
+  type: 'test'
+  ...
+# Subtest: application service joins repositories for the selected week without date hard-coding
+ok 36 - application service joins repositories for the selected week without date hard-coding
+  ---
+  duration_ms: 0.242292
+  type: 'test'
+  ...
+# Subtest: TodayPlanView rejects invalid dates and ignores deleted or out-of-range records
+ok 37 - TodayPlanView rejects invalid dates and ignores deleted or out-of-range records
+  ---
+  duration_ms: 0.274417
+  type: 'test'
+  ...
+# Subtest: Attack: a completed fact wins over a later skipped record and duplicate sessions count once
+ok 38 - Attack: a completed fact wins over a later skipped record and duplicate sessions count once
+  ---
+  duration_ms: 0.24175
+  type: 'test'
+  ...
+# Subtest: Peer regression: rest and terminal records suppress every stale active-session action
+ok 39 - Peer regression: rest and terminal records suppress every stale active-session action
+  ---
+  duration_ms: 0.390583
+  type: 'test'
+  ...
+# Subtest: Peer regression: completed time follows UTC and arbitrary IANA zones with honest fallback
+ok 40 - Peer regression: completed time follows UTC and arbitrary IANA zones with honest fallback
+  ---
+  duration_ms: 4.693167
+  type: 'test'
+  ...
+# Subtest: WeekPlanView maps the confirmed seven-day week and joins completion, skip and discomfort summaries by trainingDate
+ok 41 - WeekPlanView maps the confirmed seven-day week and joins completion, skip and discomfort summaries by trainingDate
+  ---
+  duration_ms: 23.454416
+  type: 'test'
+  ...
+# Subtest: WeekPlanView preserves previous/next week boundaries and returns a useful empty week without cloning plans
+ok 42 - WeekPlanView preserves previous/next week boundaries and returns a useful empty week without cloning plans
+  ---
+  duration_ms: 0.200666
+  type: 'test'
+  ...
+# Subtest: WeekPlanView rejects non-Monday week starts and keeps date-only Monday boundaries stable
+ok 43 - WeekPlanView rejects non-Monday week starts and keeps date-only Monday boundaries stable
+  ---
+  duration_ms: 0.206833
+  type: 'test'
+  ...
+# Subtest: WeekPlanView enforces a closed strict record-summary schema and joins by trainingDate plus timezone
+ok 44 - WeekPlanView enforces a closed strict record-summary schema and joins by trainingDate plus timezone
+  ---
+  duration_ms: 1.230583
+  type: 'test'
+  ...
+# Subtest: WeekPlanView selects any day and exposes ordered kind-specific step duration, set, target and rest details
+ok 45 - WeekPlanView selects any day and exposes ordered kind-specific step duration, set, target and rest details
+  ---
+  duration_ms: 0.65475
+  type: 'test'
+  ...
+# Subtest: WeekPlanView maps nullable manual sets/reps and localized weight/RPE targets without null product copy
+ok 46 - WeekPlanView maps nullable manual sets/reps and localized weight/RPE targets without null product copy
+  ---
+  duration_ms: 0.4265
+  type: 'test'
+  ...
+# Subtest: WeekPlanView maps Sunday as rest guidance without total timer or start-workout action
+ok 47 - WeekPlanView maps Sunday as rest guidance without total timer or start-workout action
+  ---
+  duration_ms: 0.398875
+  type: 'test'
+  ...
+# Subtest: PlanApplicationService queries repository week ranges and keeps empty-week navigation read-only
+ok 48 - PlanApplicationService queries repository week ranges and keeps empty-week navigation read-only
+  ---
+  duration_ms: 150.644125
+  type: 'test'
+  ...
+# Subtest: AC1: authBootstrap derives one opaque owner from trusted context and ignores forged identity fields
+ok 49 - AC1: authBootstrap derives one opaque owner from trusted context and ignores forged identity fields
+  ---
+  duration_ms: 3.628291
+  type: 'test'
+  ...
+# Subtest: AC1: denied, missing and misconfigured identity paths are indistinguishable and reveal no allowlist detail
+ok 50 - AC1: denied, missing and misconfigured identity paths are indistinguishable and reveal no allowlist detail
+  ---
+  duration_ms: 0.452375
+  type: 'test'
+  ...
+# Subtest: AC1/AC5: security logs expose only stable metadata and never identity, token or request payload
+ok 51 - AC1/AC5: security logs expose only stable metadata and never identity, token or request payload
+  ---
+  duration_ms: 0.214666
+  type: 'test'
+  ...
+# Subtest: AC2/AC3: syncPush ignores forged server facts and atomically writes entity, receipt and change
+ok 52 - AC2/AC3: syncPush ignores forged server facts and atomically writes entity, receipt and change
+  ---
+  duration_ms: 8.88575
+  type: 'test'
+  ...
+# Subtest: AC3: duplicate opId replays one receipt, excludes retry metadata from identity and rejects changed intent
+ok 53 - AC3: duplicate opId replays one receipt, excludes retry metadata from identity and rejects changed intent
+  ---
+  duration_ms: 1.786875
+  type: 'test'
+  ...
+# Subtest: P1: one syncPush request rejects duplicate opIds before any transaction or response classification
+ok 54 - P1: one syncPush request rejects duplicate opIds before any transaction or response classification
+  ---
+  duration_ms: 6.852833
+  type: 'test'
+  ...
+# Subtest: P1: malformed closed wire payloads fail before writes for every synced entity type
+ok 55 - P1: malformed closed wire payloads fail before writes for every synced entity type
+  ---
+  duration_ms: 4.532125
+  type: 'test'
+  ...
+# Subtest: P1: deployable wire validation stays aligned with client mutation validators
+ok 56 - P1: deployable wire validation stays aligned with client mutation validators
+  ---
+  duration_ms: 9.380708
+  type: 'test'
+  ...
+# Subtest: AC3: concurrent same-base writes accept exactly one and return one owner-scoped conflict
+ok 57 - AC3: concurrent same-base writes accept exactly one and return one owner-scoped conflict
+  ---
+  duration_ms: 1.844458
+  type: 'test'
+  ...
+# Subtest: AC3: transaction failure leaves entity, receipt and change feed all absent
+ok 58 - AC3: transaction failure leaves entity, receipt and change feed all absent
+  ---
+  duration_ms: 0.945792
+  type: 'test'
+  ...
+# Subtest: AC2/AC3: delete writes a server-timed tombstone and stale delete cannot erase a newer revision
+ok 59 - AC2/AC3: delete writes a server-timed tombstone and stale delete cannot erase a newer revision
+  ---
+  duration_ms: 2.116125
+  type: 'test'
+  ...
+# Subtest: AC2: prototype-pollution keys are rejected at every payload depth
+ok 60 - AC2: prototype-pollution keys are rejected at every payload depth
+  ---
+  duration_ms: 0.229083
+  type: 'test'
+  ...
+# Subtest: AC4: syncPull uses an opaque owner-bound cursor, coalesces a raw page and advances across every raw change
+ok 61 - AC4: syncPull uses an opaque owner-bound cursor, coalesces a raw page and advances across every raw change
+  ---
+  duration_ms: 4.586166
+  type: 'test'
+  ...
+# Subtest: AC4: tampered and cross-owner cursors fail closed while the other owner cannot read changes
+ok 62 - AC4: tampered and cross-owner cursors fail closed while the other owner cannot read changes
+  ---
+  duration_ms: 0.833667
+  type: 'test'
+  ...
+# Subtest: AC4: non-monotonic store change sequences fail closed without issuing a regressed cursor
+ok 63 - AC4: non-monotonic store change sequences fail closed without issuing a regressed cursor
+  ---
+  duration_ms: 9.617708
+  type: 'test'
+  ...
+# Subtest: AC4: accountPurge prepare/confirm is short-lived, owner/device bound, replay-safe and isolated
+ok 64 - AC4: accountPurge prepare/confirm is short-lived, owner/device bound, replay-safe and isolated
+  ---
+  duration_ms: 1.903792
+  type: 'test'
+  ...
+# Subtest: AC4: expired or wrongly bound purge confirmation performs no deletion
+ok 65 - AC4: expired or wrongly bound purge confirmation performs no deletion
+  ---
+  duration_ms: 7.179333
+  type: 'test'
+  ...
+# Subtest: AC4: CloudBase purge receipts enforce device binding and exact-expiry semantics
+ok 66 - AC4: CloudBase purge receipts enforce device binding and exact-expiry semantics
+  ---
+  duration_ms: 0.829334
+  type: 'test'
+  ...
+# Subtest: QA: production CloudBase adapter preserves transactions, owner filters, tombstones and purge isolation
+ok 67 - QA: production CloudBase adapter preserves transactions, owner filters, tombstones and purge isolation
+  ---
+  duration_ms: 6.536
+  type: 'test'
+  ...
+# Subtest: AC1/AC5: all four public cloud entrypoints lazily obtain trusted runtime and expose only their named handler
+ok 68 - AC1/AC5: all four public cloud entrypoints lazily obtain trusted runtime and expose only their named handler
+  ---
+  duration_ms: 1.782708
+  type: 'test'
+  ...
+# Subtest: QA: public push, pull and purge handlers expose one auth failure shape without touching storage
+ok 69 - QA: public push, pull and purge handlers expose one auth failure shape without touching storage
+  ---
+  duration_ms: 2.36325
+  type: 'test'
+  ...
+# Subtest: AC5: materialized CloudBase function packages are self-contained and match canonical shared source
+ok 70 - AC5: materialized CloudBase function packages are self-contained and match canonical shared source
+  ---
+  duration_ms: 27.115542
+  type: 'test'
+  ...
+# Subtest: AC5: client source cannot bypass cloud functions with direct sensitive collection access
+ok 71 - AC5: client source cannot bypass cloud functions with direct sensitive collection access
+  ---
+  duration_ms: 50.452791
+  type: 'test'
+  ...
+# Subtest: AC5: database rules deny every sensitive collection and example env contains names without values
+ok 72 - AC5: database rules deny every sensitive collection and example env contains names without values
+  ---
+  duration_ms: 0.626917
+  type: 'test'
+  ...
+# Subtest: AC5: repository ignores local secrets/generated bundles and documents an auditable CloudBase deploy path
+ok 73 - AC5: repository ignores local secrets/generated bundles and documents an auditable CloudBase deploy path
+  ---
+  duration_ms: 0.373167
+  type: 'test'
+  ...
+# Subtest: QA: accepted upstream dependency exception is a stable, reviewable deployment contract
+ok 74 - QA: accepted upstream dependency exception is a stable, reviewable deployment contract
+  ---
+  duration_ms: 0.120333
+  type: 'test'
+  ...
+# Subtest: start creates a validated deep PlanSnapshot with stable origin and initial position
+ok 75 - start creates a validated deep PlanSnapshot with stable origin and initial position
+  ---
+  duration_ms: 15.225583
+  type: 'test'
+  ...
+# Subtest: start rejects rest_day, deleted plans and malformed identity input
+ok 76 - start rejects rest_day, deleted plans and malformed identity input
+  ---
+  duration_ms: 0.765292
+  type: 'test'
+  ...
+# Subtest: Session boundary rejects custom prototypes, descriptors, unknown and unsafe fields
+ok 77 - Session boundary rejects custom prototypes, descriptors, unknown and unsafe fields
+  ---
+  duration_ms: 5.728958
+  type: 'test'
+  ...
+# Subtest: timer identity must match both current step ID and supported step kind
+ok 78 - timer identity must match both current step ID and supported step kind
+  ---
+  duration_ms: 1.682667
+  type: 'test'
+  ...
+# Subtest: timed execution commands adjust the current timer with revisioned plus or minus 30 second intents
+ok 79 - timed execution commands adjust the current timer with revisioned plus or minus 30 second intents
+  ---
+  duration_ms: 2.987375
+  type: 'test'
+  ...
+# Subtest: skip and early complete advance a running timed step without pretending the timer expired
+ok 80 - skip and early complete advance a running timed step without pretending the timer expired
+  ---
+  duration_ms: 3.15275
+  type: 'test'
+  ...
+# Subtest: expired timed step rejects conflicting progression and only confirm_next may advance
+ok 81 - expired timed step rejects conflicting progression and only confirm_next may advance
+  ---
+  duration_ms: 3.670333
+  type: 'test'
+  ...
+# Subtest: expired interval step rejects ordinary completion and confirm_next owns the set boundary
+ok 82 - expired interval step rejects ordinary completion and confirm_next owns the set boundary
+  ---
+  duration_ms: 2.13725
+  type: 'test'
+  ...
+# Subtest: expired step rejects previous correction and preserves the current occurrence boundary
+ok 83 - expired step rejects previous correction and preserves the current occurrence boundary
+  ---
+  duration_ms: 4.682958
+  type: 'test'
+  ...
+# Subtest: expired strength rest requires explicit start_set before completing the next set
+ok 84 - expired strength rest requires explicit start_set before completing the next set
+  ---
+  duration_ms: 3.659042
+  type: 'test'
+  ...
+# Subtest: early completion requires a started non-expired timed occurrence
+ok 85 - early completion requires a started non-expired timed occurrence
+  ---
+  duration_ms: 0.490375
+  type: 'test'
+  ...
+# Subtest: previous step command reopens the prior timed result while retaining a revision audit record
+ok 86 - previous step command reopens the prior timed result while retaining a revision audit record
+  ---
+  duration_ms: 1.188125
+  type: 'test'
+  ...
+# Subtest: timer mode and duration must remain bound to the current PlanSnapshot step
+ok 87 - timer mode and duration must remain bound to the current PlanSnapshot step
+  ---
+  duration_ms: 4.544958
+  type: 'test'
+  ...
+# Subtest: Session status and timer status must form a valid lifecycle state
+ok 88 - Session status and timer status must form a valid lifecycle state
+  ---
+  duration_ms: 0.567167
+  type: 'test'
+  ...
+# Subtest: paused Sessions reject business progression until an explicit resume
+ok 89 - paused Sessions reject business progression until an explicit resume
+  ---
+  duration_ms: 2.37925
+  type: 'test'
+  ...
+# Subtest: Session checkpoints preserve TimerEngine rollback boundaries and fail closed without a timer
+ok 90 - Session checkpoints preserve TimerEngine rollback boundaries and fail closed without a timer
+  ---
+  duration_ms: 11.864292
+  type: 'test'
+  ...
+# Subtest: setResults must be contiguous and aligned with currentSet
+ok 91 - setResults must be contiguous and aligned with currentSet
+  ---
+  duration_ms: 0.658041
+  type: 'test'
+  ...
+# Subtest: set-tracking currentSet after one requires the current in-progress stepResult
+ok 92 - set-tracking currentSet after one requires the current in-progress stepResult
+  ---
+  duration_ms: 2.294167
+  type: 'test'
+  ...
+# Subtest: set-tracking steps cannot omit a required rest boundary after the first set
+ok 93 - set-tracking steps cannot omit a required rest boundary after the first set
+  ---
+  duration_ms: 5.525166
+  type: 'test'
+  ...
+# Subtest: terminal Sessions keep completed and aborted positions/results in canonical shapes
+ok 94 - terminal Sessions keep completed and aborted positions/results in canonical shapes
+  ---
+  duration_ms: 1.919167
+  type: 'test'
+  ...
+# Subtest: commands require revision and provide replay-safe idempotency without mutating input
+ok 95 - commands require revision and provide replay-safe idempotency without mutating input
+  ---
+  duration_ms: 2.99325
+  type: 'test'
+  ...
+# Subtest: checkpoint and step completion atomically advance revision, elapsed time and timer state
+ok 96 - checkpoint and step completion atomically advance revision, elapsed time and timer state
+  ---
+  duration_ms: 2.520375
+  type: 'test'
+  ...
+# Subtest: fractional checkpoints accumulate without dropping elapsed milliseconds
+ok 97 - fractional checkpoints accumulate without dropping elapsed milliseconds
+  ---
+  duration_ms: 0.711083
+  type: 'test'
+  ...
+# Subtest: interval rest expiry starts every next set and completes the full interval step
+ok 98 - interval rest expiry starts every next set and completes the full interval step
+  ---
+  duration_ms: 6.271208
+  type: 'test'
+  ...
+# Subtest: set completion rejects double transitions and keeps rest timer identity with next set
+ok 99 - set completion rejects double transitions and keeps rest timer identity with next set
+  ---
+  duration_ms: 0.516084
+  type: 'test'
+  ...
+# Subtest: strength set-count adjustments are revisioned and cannot remove the active or completed boundary
+ok 100 - strength set-count adjustments are revisioned and cannot remove the active or completed boundary
+  ---
+  duration_ms: 1.358042
+  type: 'test'
+  ...
+# Subtest: terminal Sessions reject new transitions while exact command replay remains safe
+ok 101 - terminal Sessions reject new transitions while exact command replay remains safe
+  ---
+  duration_ms: 0.5695
+  type: 'test'
+  ...
+# Subtest: pause freezes elapsed/timer progress, resume restarts it, and abort is replay-safe terminal
+ok 102 - pause freezes elapsed/timer progress, resume restarts it, and abort is replay-safe terminal
+  ---
+  duration_ms: 2.790916
+  type: 'test'
+  ...
+# Subtest: command boundary rejects custom prototypes, unknown fields and unsafe values
+ok 103 - command boundary rejects custom prototypes, unknown fields and unsafe values
+  ---
+  duration_ms: 1.581416
+  type: 'test'
+  ...
+# Subtest: anonymous builtin_v1 template covers 2026-08-03 through 2026-08-09 with the confirmed structure
+ok 104 - anonymous builtin_v1 template covers 2026-08-03 through 2026-08-09 with the confirmed structure
+  ---
+  duration_ms: 1.068
+  type: 'test'
+  ...
+# Subtest: default plan factory creates validated immutable-date plans with stable IDs and epoch timestamps
+ok 105 - default plan factory creates validated immutable-date plans with stable IDs and epoch timestamps
+  ---
+  duration_ms: 5.026125
+  type: 'test'
+  ...
+# Subtest: default plan factory strips unknown identity context before validation
+ok 106 - default plan factory strips unknown identity context before validation
+  ---
+  duration_ms: 0.52425
+  type: 'test'
+  ...
+# Subtest: application service validates and atomically persists all seven defaults through LocalDatabase
+ok 107 - application service validates and atomically persists all seven defaults through LocalDatabase
+  ---
+  duration_ms: 68.700792
+  type: 'test'
+  ...
+# Subtest: initializing the same templateVersion twice is an idempotent zero-write no-op
+ok 108 - initializing the same templateVersion twice is an idempotent zero-write no-op
+  ---
+  duration_ms: 27.785416
+  type: 'test'
+  ...
+# Subtest: an invalid default set fails before LocalDatabase writes any partial plan
+ok 109 - an invalid default set fails before LocalDatabase writes any partial plan
+  ---
+  duration_ms: 0.486542
+  type: 'test'
+  ...
+# Subtest: DefaultPlanFactory rejects non-finite targets before persistence without input mutation
+ok 110 - DefaultPlanFactory rejects non-finite targets before persistence without input mutation
+  ---
+  duration_ms: 0.543792
+  type: 'test'
+  ...
+# Subtest: DefaultPlanFactory continues to accept explicit null target bounds without mutating input
+ok 111 - DefaultPlanFactory continues to accept explicit null target bounds without mutating input
+  ---
+  duration_ms: 0.352292
+  type: 'test'
+  ...
+# Subtest: DefaultPlanFactory rejects explicit undefined target bounds before persistence without input mutation
+ok 112 - DefaultPlanFactory rejects explicit undefined target bounds before persistence without input mutation
+  ---
+  duration_ms: 0.465709
+  type: 'test'
+  ...
+# Subtest: a tombstoned builtin remains deleted and same-version initialization returns active plans only
+ok 113 - a tombstoned builtin remains deleted and same-version initialization returns active plans only
+  ---
+  duration_ms: 46.930333
+  type: 'test'
+  ...
+# Subtest: a truly missing builtin is repaired even when its date has only a historical tombstone
+ok 114 - a truly missing builtin is repaired even when its date has only a historical tombstone
+  ---
+  duration_ms: 58.822583
+  type: 'test'
+  ...
+# Subtest: same-version initialization preserves a structurally valid user edit without writing
+ok 115 - same-version initialization preserves a structurally valid user edit without writing
+  ---
+  duration_ms: 37.754167
+  type: 'test'
+  ...
+# Subtest: same-version initialization fails closed on duplicate builtin IDs without writing
+ok 116 - same-version initialization fails closed on duplicate builtin IDs without writing
+  ---
+  duration_ms: 47.020875
+  type: 'test'
+  ...
+# Subtest: same-version initialization fails closed on foreign-source duplicate builtin IDs regardless of record order
+ok 117 - same-version initialization fails closed on foreign-source duplicate builtin IDs regardless of record order
+  ---
+  duration_ms: 111.668334
+  type: 'test'
+  ...
+# Subtest: same-version initialization fails closed when a foreign active plan owns a builtin training date
+ok 118 - same-version initialization fails closed when a foreign active plan owns a builtin training date
+  ---
+  duration_ms: 116.625167
+  type: 'test'
+  ...
+# Subtest: same-version initialization fails closed on a structurally corrupt builtin without writing
+ok 119 - same-version initialization fails closed on a structurally corrupt builtin without writing
+  ---
+  duration_ms: 37.87625
+  type: 'test'
+  ...
+# Subtest: all five WorkoutStep kinds accept valid normalized shapes and only timer kinds can start timers
+ok 120 - all five WorkoutStep kinds accept valid normalized shapes and only timer kinds can start timers
+  ---
+  duration_ms: 2.399583
+  type: 'test'
+  ...
+# Subtest: kind-specific invalid fields produce structured validation errors
+ok 121 - kind-specific invalid fields produce structured validation errors
+  ---
+  duration_ms: 0.8465
+  type: 'test'
+  ...
+# Subtest: plan validation rejects duplicate step IDs, non-increasing order, invalid target ranges and mixed rest days
+ok 122 - plan validation rejects duplicate step IDs, non-increasing order, invalid target ranges and mixed rest days
+  ---
+  duration_ms: 0.383375
+  type: 'test'
+  ...
+# Subtest: PlanRepository finds active plans by ID/date/inclusive range and never exposes mutable storage references
+ok 123 - PlanRepository finds active plans by ID/date/inclusive range and never exposes mutable storage references
+  ---
+  duration_ms: 84.902458
+  type: 'test'
+  ...
+# Subtest: PlanRepository save creates with expected revision zero and updates with monotonic revision
+ok 124 - PlanRepository save creates with expected revision zero and updates with monotonic revision
+  ---
+  duration_ms: 5.806458
+  type: 'test'
+  ...
+# Subtest: PlanRepository save rejects non-finite targets before cloning without writes or input mutation
+ok 125 - PlanRepository save rejects non-finite targets before cloning without writes or input mutation
+  ---
+  duration_ms: 0.667708
+  type: 'test'
+  ...
+# Subtest: PlanRepository save continues to accept explicit null target bounds
+ok 126 - PlanRepository save continues to accept explicit null target bounds
+  ---
+  duration_ms: 3.905916
+  type: 'test'
+  ...
+# Subtest: PlanRepository save rejects explicit undefined target bounds without writes or input mutation
+ok 127 - PlanRepository save rejects explicit undefined target bounds without writes or input mutation
+  ---
+  duration_ms: 0.874417
+  type: 'test'
+  ...
+# Subtest: PlanRepository save and delete fail closed on duplicate persisted plan ID owners without writes
+ok 128 - PlanRepository save and delete fail closed on duplicate persisted plan ID owners without writes
+  ---
+  duration_ms: 4.695458
+  type: 'test'
+  ...
+# Subtest: PlanRepository save and delete re-check duplicate plan ID owners inside commit CAS
+ok 129 - PlanRepository save and delete re-check duplicate plan ID owners inside commit CAS
+  ---
+  duration_ms: 1.078375
+  type: 'test'
+  ...
+# Subtest: PlanRepository rejects stale revisions and duplicate dates without overwriting the winner
+ok 130 - PlanRepository rejects stale revisions and duplicate dates without overwriting the winner
+  ---
+  duration_ms: 6.512584
+  type: 'test'
+  ...
+# Subtest: PlanRepository delete writes a revisioned tombstone and hides it from active queries
+ok 131 - PlanRepository delete writes a revisioned tombstone and hides it from active queries
+  ---
+  duration_ms: 3.940875
+  type: 'test'
+  ...
+# Subtest: PlanRepository preserves a tombstone while allowing a new plan ID on the same date
+ok 132 - PlanRepository preserves a tombstone while allowing a new plan ID on the same date
+  ---
+  duration_ms: 6.658417
+  type: 'test'
+  ...
+# Subtest: PlanRepository commit re-check still rejects a newly active date owner after the pre-check
+ok 133 - PlanRepository commit re-check still rejects a newly active date owner after the pre-check
+  ---
+  duration_ms: 0.197
+  type: 'test'
+  ...
+# Subtest: PlanRepository commit re-check ignores a historical tombstone added after the pre-check
+ok 134 - PlanRepository commit re-check ignores a historical tombstone added after the pre-check
+  ---
+  duration_ms: 0.292291
+  type: 'test'
+  ...
+# Subtest: PlanCopyService deep-copies a plan with fresh plan/step IDs while preserving normalized values
+ok 135 - PlanCopyService deep-copies a plan with fresh plan/step IDs while preserving normalized values
+  ---
+  duration_ms: 0.496291
+  type: 'test'
+  ...
+# Subtest: PlanCopyService rejects ID factories that reuse source or duplicate step IDs
+ok 136 - PlanCopyService rejects ID factories that reuse source or duplicate step IDs
+  ---
+  duration_ms: 0.364875
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: default query order is deterministic by date, end time and id with fully deep-cloned results
+ok 137 - Attack Round 4: default query order is deterministic by date, end time and id with fully deep-cloned results
+  ---
+  duration_ms: 65.802292
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: exact date and immutable plan-kind filters compose honestly and empty results stay empty
+ok 138 - Attack Round 4: exact date and immutable plan-kind filters compose honestly and empty results stay empty
+  ---
+  duration_ms: 46.095083
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: list and findById share effective corrections while aborted skipped and unknown actuals remain honest
+ok 139 - Attack Round 4: list and findById share effective corrections while aborted skipped and unknown actuals remain honest
+  ---
+  duration_ms: 35.521083
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: tombstones disappear from normal list and find queries while durable identity remains reserved
+ok 140 - Attack Round 4: tombstones disappear from normal list and find queries while durable identity remains reserved
+  ---
+  duration_ms: 10.704208
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: every query validates the whole record set and rejects malformed records or non-inert filter input before filtering
+ok 141 - Attack Round 4: every query validates the whole record set and rejects malformed records or non-inert filter input before filtering
+  ---
+  duration_ms: 69.219833
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: query rejects malformed nested terminal facts before building an effective strength result
+ok 142 - Reviewer regression: query rejects malformed nested terminal facts before building an effective strength result
+  ---
+  duration_ms: 4.77
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: one successful correction atomically replaces the record and writes one outbox plus one statistics invalidation
+ok 143 - Attack Round 2: one successful correction atomically replaces the record and writes one outbox plus one statistics invalidation
+  ---
+  duration_ms: 44.580625
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: sync operation carries the complete corrected record while statistics invalidation stays minimal
+ok 144 - Attack Round 2: sync operation carries the complete corrected record while statistics invalidation stays minimal
+  ---
+  duration_ms: 21.95125
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: exact replay is a zero-write deep-copy while same command key with different intent is rejected
+ok 145 - Attack Round 2: exact replay is a zero-write deep-copy while same command key with different intent is rejected
+  ---
+  duration_ms: 22.201291
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: stale, unknown, canonical identity collisions and duplicate candidates reject with byte-equivalent storage
+ok 146 - Attack Round 2: stale, unknown, canonical identity collisions and duplicate candidates reject with byte-equivalent storage
+  ---
+  duration_ms: 21.18275
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: repository passes the loaded localRevision into commit so a racing baseline cannot be overwritten
+ok 147 - Attack Round 2: repository passes the loaded localRevision into commit so a racing baseline cannot be overwritten
+  ---
+  duration_ms: 8.770791
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: commit and storage failures expose no record-only or outbox-only state and keep command inputs inert
+ok 148 - Attack Round 2: commit and storage failures expose no record-only or outbox-only state and keep command inputs inert
+  ---
+  duration_ms: 13.4765
+  type: 'test'
+  ...
+# Subtest: Attack Round 5: repository late replay of correction A returns current B state with zero durable writes or duplicate intents
+ok 149 - Attack Round 5: repository late replay of correction A returns current B state with zero durable writes or duplicate intents
+  ---
+  duration_ms: 24.597833
+  type: 'test'
+  ...
+# Subtest: Independent review regression: lazy materialization correction keeps an exact receipt for immediate and late replay
+ok 150 - Independent review regression: lazy materialization correction keeps an exact receipt for immediate and late replay
+  ---
+  duration_ms: 21.94125
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: source terminal facts are immutable while corrections use a closed overlay and canonical feedback
+ok 151 - Attack Round 1: source terminal facts are immutable while corrections use a closed overlay and canonical feedback
+  ---
+  duration_ms: 25.540125
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: terminal-source matching rejects every malformed persisted strength set correction
+ok 152 - Reviewer regression: terminal-source matching rejects every malformed persisted strength set correction
+  ---
+  duration_ms: 7.63475
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: terminal-source matching rejects tombstones with extra deletion receipts
+ok 153 - Reviewer regression: terminal-source matching rejects tombstones with extra deletion receipts
+  ---
+  duration_ms: 6.568042
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: effective completed facts merge overlays without rewriting source results
+ok 154 - Attack Round 1: effective completed facts merge overlays without rewriting source results
+  ---
+  duration_ms: 15.021125
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: aborted views keep skipped and never-started plan steps honest instead of copying plan targets
+ok 155 - Attack Round 1: aborted views keep skipped and never-started plan steps honest instead of copying plan targets
+  ---
+  duration_ms: 9.815875
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: permitted nullable and numeric correction boundaries stay type-specific
+ok 156 - Attack Round 1: permitted nullable and numeric correction boundaries stay type-specific
+  ---
+  duration_ms: 11.250791
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: malicious correction structures and values cannot forge execution facts or expand the schema
+ok 157 - Attack Round 1: malicious correction structures and values cannot forge execution facts or expand the schema
+  ---
+  duration_ms: 55.025583
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: feedback enforces the existing private schema and strips derived safety advice
+ok 158 - Attack Round 1: feedback enforces the existing private schema and strips derived safety advice
+  ---
+  duration_ms: 17.67325
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: revision CAS and command keys reject stale or conflicting intent while exact replay is idempotent
+ok 159 - Attack Round 1: revision CAS and command keys reject stale or conflicting intent while exact replay is idempotent
+  ---
+  duration_ms: 11.486
+  type: 'test'
+  ...
+# Subtest: Attack Round 1: completed and aborted records share correction semantics without changing terminal identity
+ok 160 - Attack Round 1: completed and aborted records share correction semantics without changing terminal identity
+  ---
+  duration_ms: 10.343875
+  type: 'test'
+  ...
+# Subtest: Attack Round 5: a late exact replay of historical correction A returns current correction B state before stale revision or time checks
+ok 161 - Attack Round 5: a late exact replay of historical correction A returns current correction B state before stale revision or time checks
+  ---
+  duration_ms: 6.979042
+  type: 'test'
+  ...
+# Subtest: Attack Round 5: historical command keys reject any changed intent field while leaving current state untouched
+ok 162 - Attack Round 5: historical command keys reject any changed intent field while leaving current state untouched
+  ---
+  duration_ms: 5.895458
+  type: 'test'
+  ...
+# Subtest: AC5: local mapper strips remote identity/revision/secret fields before validating a plan payload
+ok 163 - AC5: local mapper strips remote identity/revision/secret fields before validating a plan payload
+  ---
+  duration_ms: 11.696792
+  type: 'test'
+  ...
+# Subtest: AC5: mapper enforces supported types, entity identity, action and payload size without mutating input
+ok 164 - AC5: mapper enforces supported types, entity identity, action and payload size without mutating input
+  ---
+  duration_ms: 27.170875
+  type: 'test'
+  ...
+# Subtest: AC5: payload JSON arrays must be dense inert data rather than sparse serialization aliases
+ok 165 - AC5: payload JSON arrays must be dense inert data rather than sparse serialization aliases
+  ---
+  duration_ms: 0.756333
+  type: 'test'
+  ...
+# Subtest: AC5: tombstones use a single null-payload contract for every supported entity type
+ok 166 - AC5: tombstones use a single null-payload contract for every supported entity type
+  ---
+  duration_ms: 0.425792
+  type: 'test'
+  ...
+# Subtest: AC5: remote mapper treats server fields as envelope facts and never leaks them into domain payload
+ok 167 - AC5: remote mapper treats server fields as envelope facts and never leaks them into domain payload
+  ---
+  duration_ms: 2.782125
+  type: 'test'
+  ...
+# Subtest: AC6: plan and record conflicts preserve local work plus sanitized remote facts as explicit unresolved state
+ok 168 - AC6: plan and record conflicts preserve local work plus sanitized remote facts as explicit unresolved state
+  ---
+  duration_ms: 13.056709
+  type: 'test'
+  ...
+# Subtest: AC6: settings rebase keeps local touched fields, applies untouched remote facts and records overlapping differences
+ok 169 - AC6: settings rebase keeps local touched fields, applies untouched remote facts and records overlapping differences
+  ---
+  duration_ms: 1.55575
+  type: 'test'
+  ...
+# Subtest: AC6: settings rebase rejects domain revision overflow before producing an invalid local snapshot
+ok 170 - AC6: settings rebase rejects domain revision overflow before producing an invalid local snapshot
+  ---
+  duration_ms: 0.144042
+  type: 'test'
+  ...
+# Subtest: AC6: remote record tombstone is an explicit deletion action, never an incomplete local record
+ok 171 - AC6: remote record tombstone is an explicit deletion action, never an incomplete local record
+  ---
+  duration_ms: 0.295083
+  type: 'test'
+  ...
+# Subtest: project.config.json declares a placeholder AppID, never a real one
+ok 172 - project.config.json declares a placeholder AppID, never a real one
+  ---
+  duration_ms: 0.755458
+  type: 'test'
+  ...
+# Subtest: app sitemap resolves inside miniprogramRoot and local DevTools config stays ignored
+ok 173 - app sitemap resolves inside miniprogramRoot and local DevTools config stays ignored
+  ---
+  duration_ms: 0.655542
+  type: 'test'
+  ...
+# Subtest: app.json registers every V1 page with a matching page directory and required files
+ok 174 - app.json registers every V1 page with a matching page directory and required files
+  ---
+  duration_ms: 18.034416
+  type: 'test'
+  ...
+# Subtest: tabBar exposes exactly the four V1 destinations required by AC1
+ok 175 - tabBar exposes exactly the four V1 destinations required by AC1
+  ---
+  duration_ms: 0.260292
+  type: 'test'
+  ...
+# Subtest: settings page golden path: load preferences section then read about/safety copy without touching storage directly
+ok 176 - settings page golden path: load preferences section then read about/safety copy without touching storage directly
+  ---
+  duration_ms: 4.512209
+  type: 'test'
+  ...
+# Subtest: settings page exposes editable time pickers for start and recommended end times
+ok 177 - settings page exposes editable time pickers for start and recommended end times
+  ---
+  duration_ms: 20.662042
+  type: 'test'
+  ...
+# Subtest: fixture leak guard catches common identity and health samples without flagging safety copy
+ok 178 - fixture leak guard catches common identity and health samples without flagging safety copy
+  ---
+  duration_ms: 12.755334
+  type: 'test'
+  ...
+# Subtest: no identity or health fixture data leaks into the repository (openId, real names, health metrics)
+ok 179 - no identity or health fixture data leaks into the repository (openId, real names, health metrics)
+  ---
+  duration_ms: 18.359709
+  type: 'test'
+  ...
+# Subtest: golden path: public cloud functions bootstrap, push, pull and purge one isolated account
+ok 180 - golden path: public cloud functions bootstrap, push, pull and purge one isolated account
+  ---
+  duration_ms: 6.20925
+  type: 'test'
+  ...
+# Subtest: golden path: settings page enables, retries, resolves a plan conflict and purges only cloud data
+ok 181 - golden path: settings page enables, retries, resolves a plan conflict and purges only cloud data
+  ---
+  duration_ms: 155.982375
+  type: 'test'
+  ...
+# Subtest: local clear through the real settings page/application path never purges or mutates remote copies
+ok 182 - local clear through the real settings page/application path never purges or mutates remote copies
+  ---
+  duration_ms: 51.967417
+  type: 'test'
+  ...
+# Subtest: cloud sync settings keeps enable and purge confirmations private while forwarding explicit commands
+ok 183 - cloud sync settings keeps enable and purge confirmations private while forwarding explicit commands
+  ---
+  duration_ms: 12.804125
+  type: 'test'
+  ...
+# Subtest: manual and automatic recovery use retry with distinct source labels and conflicts require a chosen action
+ok 184 - manual and automatic recovery use retry with distinct source labels and conflicts require a chosen action
+  ---
+  duration_ms: 0.332125
+  type: 'test'
+  ...
+# Subtest: an in-flight retry immediately renders the sanitized syncing state
+ok 185 - an in-flight retry immediately renders the sanitized syncing state
+  ---
+  duration_ms: 0.110375
+  type: 'test'
+  ...
+# Subtest: cloud sync renders only the closed status codes with Chinese labels and disable returns to 未启用
+ok 186 - cloud sync renders only the closed status codes with Chinese labels and disable returns to 未启用
+  ---
+  duration_ms: 0.3485
+  type: 'test'
+  ...
+# Subtest: developer fixtures are anonymous and develop-only while trial and release use production state
+ok 187 - developer fixtures are anonymous and develop-only while trial and release use production state
+  ---
+  duration_ms: 0.169084
+  type: 'test'
+  ...
+# Subtest: cloud sync surface declares sanitized status, explicit conflict choices and distinct cloud purge copy
+ok 188 - cloud sync surface declares sanitized status, explicit conflict choices and distinct cloud purge copy
+  ---
+  duration_ms: 2.037583
+  type: 'test'
+  ...
+# Subtest: editor loads a detached plan with future-session notice and kind-specific view state
+ok 189 - editor loads a detached plan with future-session notice and kind-specific view state
+  ---
+  duration_ms: 52.118833
+  type: 'test'
+  ...
+# Subtest: editor releases its application session on unload and cannot persist afterward
+ok 190 - editor releases its application session on unload and cannot persist afterward
+  ---
+  duration_ms: 34.61375
+  type: 'test'
+  ...
+# Subtest: editor changes fields, adds/deletes/reorders steps and surfaces validation without a partial save
+ok 191 - editor changes fields, adds/deletes/reorders steps and surfaces validation without a partial save
+  ---
+  duration_ms: 24.836125
+  type: 'test'
+  ...
+# Subtest: manual aggregate validation is visible on its step after clearing sets and reps
+ok 192 - manual aggregate validation is visible on its step after clearing sets and reps
+  ---
+  duration_ms: 31.884792
+  type: 'test'
+  ...
+# Subtest: mixed rest-day aggregate validation is visible at plan level after formal editor actions
+ok 193 - mixed rest-day aggregate validation is visible at plan level after formal editor actions
+  ---
+  duration_ms: 21.190791
+  type: 'test'
+  ...
+# Subtest: editor saves nested targets and supports empty-date creation
+ok 194 - editor saves nested targets and supports empty-date creation
+  ---
+  duration_ms: 43.512667
+  type: 'test'
+  ...
+# Subtest: copy-date requires visible confirmation for an existing plan and double confirmation stays single-write
+ok 195 - copy-date requires visible confirmation for an existing plan and double confirmation stays single-write
+  ---
+  duration_ms: 155.224041
+  type: 'test'
+  ...
+# Subtest: copy flow keeps one intent for confirmation retries and rotates after cancel
+ok 196 - copy flow keeps one intent for confirmation retries and rotates after cancel
+  ---
+  duration_ms: 108.210375
+  type: 'test'
+  ...
+# Subtest: a newly initiated empty-date copy succeeds after the previous copied plan becomes a tombstone
+ok 197 - a newly initiated empty-date copy succeeds after the previous copied plan becomes a tombstone
+  ---
+  duration_ms: 175.601459
+  type: 'test'
+  ...
+# Subtest: editor markup exposes reorder, delete, kind fields, alternatives, error and copy confirmation controls
+ok 198 - editor markup exposes reorder, delete, kind fields, alternatives, error and copy confirmation controls
+  ---
+  duration_ms: 0.366
+  type: 'test'
+  ...
+# Subtest: planning golden path initializes, copies, saves and restores an independent plan
+ok 199 - planning golden path initializes, copies, saves and restores an independent plan
+  ---
+  duration_ms: 93.143084
+  type: 'test'
+  ...
+# Subtest: record page loads list/detail, applies date and kind filters, and preserves selected record on show
+ok 200 - record page loads list/detail, applies date and kind filters, and preserves selected record on show
+  ---
+  duration_ms: 1.009708
+  type: 'test'
+  ...
+# Subtest: record page consumes a pending cross-tab record selection on first load and later onShow
+ok 201 - record page consumes a pending cross-tab record selection on first load and later onShow
+  ---
+  duration_ms: 0.211667
+  type: 'test'
+  ...
+# Subtest: record page consumes a pending cross-tab selection by closing preserved edit or delete state
+ok 202 - record page consumes a pending cross-tab selection by closing preserved edit or delete state
+  ---
+  duration_ms: 0.821542
+  type: 'test'
+  ...
+# Subtest: record page edits completed values and feedback, but does not expose inputs for skipped or unknown steps
+ok 203 - record page edits completed values and feedback, but does not expose inputs for skipped or unknown steps
+  ---
+  duration_ms: 1.173417
+  type: 'test'
+  ...
+# Subtest: record page binds an edit to the record that opened it and blocks selection drift
+ok 204 - record page binds an edit to the record that opened it and blocks selection drift
+  ---
+  duration_ms: 0.27075
+  type: 'test'
+  ...
+# Subtest: record page updates one strength set field without cloning the full edit draft
+ok 205 - record page updates one strength set field without cloning the full edit draft
+  ---
+  duration_ms: 0.219791
+  type: 'test'
+  ...
+# Subtest: record page requires an explicit in-page confirmation before deletion and refreshes to the honest empty state
+ok 206 - record page requires an explicit in-page confirmation before deletion and refreshes to the honest empty state
+  ---
+  duration_ms: 0.307083
+  type: 'test'
+  ...
+# Subtest: developer visual fixtures are develop-only, anonymous and can open list, edit and delete-confirm states
+ok 207 - developer visual fixtures are develop-only, anonymous and can open list, edit and delete-confirm states
+  ---
+  duration_ms: 0.324959
+  type: 'test'
+  ...
+# Subtest: record WXML binds filters, list/detail actual states, edit inputs and delete confirmation; shell copy is gone
+ok 208 - record WXML binds filters, list/detail actual states, edit inputs and delete confirmation; shell copy is gone
+  ---
+  duration_ms: 0.54175
+  type: 'test'
+  ...
+# Subtest: record page preserves a visible first-load error when repository view creation fails
+ok 209 - record page preserves a visible first-load error when repository view creation fails
+  ---
+  duration_ms: 0.298625
+  type: 'test'
+  ...
+# Subtest: golden path: start, checkpoint on unload, restart and recover the same workout position
+ok 210 - golden path: start, checkpoint on unload, restart and recover the same workout position
+  ---
+  duration_ms: 105.432584
+  type: 'test'
+  ...
+# Subtest: [C] Attack: application service 不得向返回值/日志泄露完整 JSON，复制必须二次动作且单次消费
+ok 211 - [C] Attack: application service 不得向返回值/日志泄露完整 JSON，复制必须二次动作且单次消费
+  ---
+  duration_ms: 14.255
+  type: 'test'
+  ...
+# Subtest: [F4] Attack: one-argument copy 必须复制 preview 同一份私有 JSON，禁止重新 export 后 digest 漂移
+ok 212 - [F4] Attack: one-argument copy 必须复制 preview 同一份私有 JSON，禁止重新 export 后 digest 漂移
+  ---
+  duration_ms: 2.975375
+  type: 'test'
+  ...
+# Subtest: [F5-registry] Attack: 新 export preview 必须立即撤销旧 confirmation 并只保留最新私密 JSON
+ok 213 - [F5-registry] Attack: 新 export preview 必须立即撤销旧 confirmation 并只保留最新私密 JSON
+  ---
+  duration_ms: 1.039666
+  type: 'test'
+  ...
+# Subtest: [F5-registry] Attack: expired export confirmation 首次访问即删除，时钟回拨也不得复活私密 JSON
+ok 214 - [F5-registry] Attack: expired export confirmation 首次访问即删除，时钟回拨也不得复活私密 JSON
+  ---
+  duration_ms: 0.755291
+  type: 'test'
+  ...
+# Subtest: [F6-copy-race] Attack: 同一 export confirmation 必须 single-flight，首笔未 settle 时第二笔立即拒绝
+ok 215 - [F6-copy-race] Attack: 同一 export confirmation 必须 single-flight，首笔未 settle 时第二笔立即拒绝
+  ---
+  duration_ms: 0.7185
+  type: 'test'
+  ...
+# Subtest: [F6-copy-race] Attack: clipboard 失败释放 single-flight 锁允许一次 retry，成功后 confirmation 删除
+ok 216 - [F6-copy-race] Attack: clipboard 失败释放 single-flight 锁允许一次 retry，成功后 confirmation 删除
+  ---
+  duration_ms: 0.721375
+  type: 'test'
+  ...
+# Subtest: [C] Attack: service import/clear 只传递私有 payload，不把内容塞进 preview，并保持本机/云端边界
+ok 217 - [C] Attack: service import/clear 只传递私有 payload，不把内容塞进 preview，并保持本机/云端边界
+  ---
+  duration_ms: 0.612208
+  type: 'test'
+  ...
+# Subtest: [C] Attack: settings data 页面必须展示隐私、preview、仅清除本机与不会删除云端的明确文案
+ok 218 - [C] Attack: settings data 页面必须展示隐私、preview、仅清除本机与不会删除云端的明确文案
+  ---
+  duration_ms: 1.101333
+  type: 'test'
+  ...
+# Subtest: [C] Attack: page 只能经 application service 操作数据，不得直接 storage/clipboard 或 console payload
+ok 219 - [C] Attack: page 只能经 application service 操作数据，不得直接 storage/clipboard 或 console payload
+  ---
+  duration_ms: 0.514209
+  type: 'test'
+  ...
+# Subtest: [C] Attack: page 的完整导入 JSON 只能短驻 controller 私有字段，绝不能进入可渲染 data
+ok 220 - [C] Attack: page 的完整导入 JSON 只能短驻 controller 私有字段，绝不能进入可渲染 data
+  ---
+  duration_ms: 5.079667
+  type: 'test'
+  ...
+# Subtest: [F5-unload] Attack: pending export/import 在 onUnload 必须撤销服务引用并清空 page 私有 token
+    # Subtest: service and page references are cleared
+    ok 1 - service and page references are cleared
+      ---
+      duration_ms: 0.061375
+      type: 'test'
+      ...
+    # Subtest: post-unload actions cannot forward old ids or private JSON
+    ok 2 - post-unload actions cannot forward old ids or private JSON
+      ---
+      duration_ms: 0.05325
+      type: 'test'
+      ...
+    1..2
+ok 221 - [F5-unload] Attack: pending export/import 在 onUnload 必须撤销服务引用并清空 page 私有 token
+  ---
+  duration_ms: 0.527042
+  type: 'test'
+  ...
+# Subtest: [F4] Attack: pending sync 的最终本机清除 modal 必须四字按钮并明确未同步变更会丢失
+    # Subtest: confirmText respects the four-character API limit
+    ok 1 - confirmText respects the four-character API limit
+      ---
+      duration_ms: 0.163333
+      type: 'test'
+      ...
+    # Subtest: final body repeats pending-sync loss and cloud boundary
+    ok 2 - final body repeats pending-sync loss and cloud boundary
+      ---
+      duration_ms: 0.154708
+      type: 'test'
+      ...
+    1..2
+ok 222 - [F4] Attack: pending sync 的最终本机清除 modal 必须四字按钮并明确未同步变更会丢失
+  ---
+  duration_ms: 1.467542
+  type: 'test'
+  ...
+# Subtest: [F6-page-race] Attack: preview Promise 在 onUnload 后 resolve 不得恢复 private ID、data/notice 或 payload
+    # Subtest: deferred export preview
+        # Subtest: releases service-held payload
+        ok 1 - releases service-held payload
+          ---
+          duration_ms: 0.104292
+          type: 'test'
+          ...
+        # Subtest: does not write renderable state or notice
+        ok 2 - does not write renderable state or notice
+          ---
+          duration_ms: 0.072792
+          type: 'test'
+          ...
+        # Subtest: does not restore private payload or confirmation id
+        ok 3 - does not restore private payload or confirmation id
+          ---
+          duration_ms: 0.07175
+          type: 'test'
+          ...
+        1..3
+    ok 1 - deferred export preview
+      ---
+      duration_ms: 1.173625
+      type: 'test'
+      ...
+    # Subtest: deferred import preview
+        # Subtest: does not write renderable state or notice
+        ok 1 - does not write renderable state or notice
+          ---
+          duration_ms: 0.057833
+          type: 'test'
+          ...
+        # Subtest: does not restore private payload or confirmation id
+        ok 2 - does not restore private payload or confirmation id
+          ---
+          duration_ms: 0.039333
+          type: 'test'
+          ...
+        1..2
+    ok 2 - deferred import preview
+      ---
+      duration_ms: 0.468083
+      type: 'test'
+      ...
+    1..2
+ok 223 - [F6-page-race] Attack: preview Promise 在 onUnload 后 resolve 不得恢复 private ID、data/notice 或 payload
+  ---
+  duration_ms: 2.043375
+  type: 'test'
+  ...
+# Subtest: [F6-modal-race] Attack: clear modal 打开后 unload，迟到 confirm/cancel/fail 均不得删除或回写页面
+    # Subtest: confirm
+        # Subtest: does not delete or forward stale confirmation
+        ok 1 - does not delete or forward stale confirmation
+          ---
+          duration_ms: 0.033875
+          type: 'test'
+          ...
+        # Subtest: does not write page data, notice, or error
+        ok 2 - does not write page data, notice, or error
+          ---
+          duration_ms: 0.027458
+          type: 'test'
+          ...
+        # Subtest: does not restore clear confirmation id
+        ok 3 - does not restore clear confirmation id
+          ---
+          duration_ms: 0.026958
+          type: 'test'
+          ...
+        1..3
+    ok 1 - confirm
+      ---
+      duration_ms: 0.410375
+      type: 'test'
+      ...
+    # Subtest: cancel
+        # Subtest: does not delete or forward stale confirmation
+        ok 1 - does not delete or forward stale confirmation
+          ---
+          duration_ms: 0.021667
+          type: 'test'
+          ...
+        # Subtest: does not write page data, notice, or error
+        ok 2 - does not write page data, notice, or error
+          ---
+          duration_ms: 0.020125
+          type: 'test'
+          ...
+        # Subtest: does not restore clear confirmation id
+        ok 3 - does not restore clear confirmation id
+          ---
+          duration_ms: 0.023834
+          type: 'test'
+          ...
+        1..3
+    ok 2 - cancel
+      ---
+      duration_ms: 0.31825
+      type: 'test'
+      ...
+    # Subtest: fail
+        # Subtest: does not delete or forward stale confirmation
+        ok 1 - does not delete or forward stale confirmation
+          ---
+          duration_ms: 0.019458
+          type: 'test'
+          ...
+        # Subtest: does not write page data, notice, or error
+        ok 2 - does not write page data, notice, or error
+          ---
+          duration_ms: 0.018458
+          type: 'test'
+          ...
+        # Subtest: does not restore clear confirmation id
+        ok 3 - does not restore clear confirmation id
+          ---
+          duration_ms: 0.020291
+          type: 'test'
+          ...
+        1..3
+    ok 3 - fail
+      ---
+      duration_ms: 0.264833
+      type: 'test'
+      ...
+    1..3
+ok 224 - [F6-modal-race] Attack: clear modal 打开后 unload，迟到 confirm/cancel/fail 均不得删除或回写页面
+  ---
+  duration_ms: 1.106084
+  type: 'test'
+  ...
+# Subtest: statistics application maps seconds and nullable facts into honest labels and CSS trend points
+ok 225 - statistics application maps seconds and nullable facts into honest labels and CSS trend points
+  ---
+  duration_ms: 5.792042
+  type: 'test'
+  ...
+# Subtest: zero planned workouts render an explicit empty state and never display a misleading 0%
+ok 226 - zero planned workouts render an explicit empty state and never display a misleading 0%
+  ---
+  duration_ms: 0.188834
+  type: 'test'
+  ...
+# Subtest: stats page only enables fixed developer fixtures in develop and refreshes production on later shows
+ok 227 - stats page only enables fixed developer fixtures in develop and refreshes production on later shows
+  ---
+  duration_ms: 0.288458
+  type: 'test'
+  ...
+# Subtest: developer fixture application exposes populated and empty real views without personal data
+ok 228 - developer fixture application exposes populated and empty real views without personal data
+  ---
+  duration_ms: 6.382167
+  type: 'test'
+  ...
+# Subtest: stats deliverable uses CSS-only lightweight charts with labels, units and non-diagnostic copy
+ok 229 - stats deliverable uses CSS-only lightweight charts with labels, units and non-diagnostic copy
+  ---
+  duration_ms: 0.407791
+  type: 'test'
+  ...
+# Subtest: golden path: developer worked sample runs, pauses, resumes and recovers without personal storage writes
+ok 230 - golden path: developer worked sample runs, pauses, resumes and recovers without personal storage writes
+  ---
+  duration_ms: 429.991542
+  type: 'test'
+  ...
+# Subtest: golden path: expired worked sample remains on the current step until explicit confirmation
+ok 231 - golden path: expired worked sample remains on the current step until explicit confirmation
+  ---
+  duration_ms: 283.052875
+  type: 'test'
+  ...
+# Subtest: golden path: develop strength mode renders active set, running rest and expired rest without personal storage
+ok 232 - golden path: develop strength mode renders active set, running rest and expired rest without personal storage
+  ---
+  duration_ms: 708.100292
+  type: 'test'
+  ...
+# Subtest: Today page renders repository-backed scheduled, completed, rest and empty fixtures
+ok 233 - Today page renders repository-backed scheduled, completed, rest and empty fixtures
+  ---
+  duration_ms: 202.964875
+  type: 'test'
+  ...
+# Subtest: Today page routes only the primary action supplied by TodayPlanView
+ok 234 - Today page routes only the primary action supplied by TodayPlanView
+  ---
+  duration_ms: 132.415875
+  type: 'test'
+  ...
+# Subtest: Today page keeps business and storage logic outside page.js
+ok 235 - Today page keeps business and storage logic outside page.js
+  ---
+  duration_ms: 0.257
+  type: 'test'
+  ...
+# Subtest: Today page declares workout and safety components with all visible states
+ok 236 - Today page declares workout and safety components with all visible states
+  ---
+  duration_ms: 0.188666
+  type: 'test'
+  ...
+# Subtest: Today primary action is thumb-reachable and reserves Android safe-area space
+ok 237 - Today primary action is thumb-reachable and reserves Android safe-area space
+  ---
+  duration_ms: 0.203792
+  type: 'test'
+  ...
+# Subtest: developer fixtures are anonymous, date-selectable read models and never persist test state
+ok 238 - developer fixtures are anonymous, date-selectable read models and never persist test state
+  ---
+  duration_ms: 0.099334
+  type: 'test'
+  ...
+# Subtest: release and trial ignore user-controlled date/fixture while develop accepts it
+ok 239 - release and trial ignore user-controlled date/fixture while develop accepts it
+  ---
+  duration_ms: 64.291792
+  type: 'test'
+  ...
+# Subtest: C1 anonymous offline first launch reaches one terminal record and weekly statistics
+ok 240 - C1 anonymous offline first launch reaches one terminal record and weekly statistics
+  ---
+  duration_ms: 1146.297833
+  type: 'test'
+  ...
+# Subtest: C2 lifecycle reconstruction emits one expiry boundary and terminal replay stays idempotent
+ok 241 - C2 lifecycle reconstruction emits one expiry boundary and terminal replay stays idempotent
+  ---
+  duration_ms: 810.69375
+  type: 'test'
+  ...
+# Subtest: C3 history, invalid import, cancel/confirm clear and Sunday rest share real local boundaries
+ok 242 - C3 history, invalid import, cancel/confirm clear and Sunday rest share real local boundaries
+  ---
+  duration_ms: 150.151
+  type: 'test'
+  ...
+# Subtest: C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries
+ok 243 - C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries
+  ---
+  duration_ms: 9678.0955
+  type: 'test'
+  ...
+# Subtest: plan page loads the confirmed seven-day week through the application service
+ok 244 - plan page loads the confirmed seven-day week through the application service
+  ---
+  duration_ms: 62.103334
+  type: 'test'
+  ...
+# Subtest: plan page refreshes record statuses on show without losing the selected day
+ok 245 - plan page refreshes record statuses on show without losing the selected day
+  ---
+  duration_ms: 99.064459
+  type: 'test'
+  ...
+# Subtest: plan page navigates to an empty adjacent week without cloning the initial plan
+ok 246 - plan page navigates to an empty adjacent week without cloning the initial plan
+  ---
+  duration_ms: 30.481458
+  type: 'test'
+  ...
+# Subtest: plan page exposes a create action for a missing date inside a partially planned week
+ok 247 - plan page exposes a create action for a missing date inside a partially planned week
+  ---
+  duration_ms: 75.649333
+  type: 'test'
+  ...
+# Subtest: plan page selects any day and exposes ordered kind-specific detail
+ok 248 - plan page selects any day and exposes ordered kind-specific detail
+  ---
+  duration_ms: 22.226792
+  type: 'test'
+  ...
+# Subtest: Sunday renders rest guidance and cannot launch a workout
+ok 249 - Sunday renders rest guidance and cannot launch a workout
+  ---
+  duration_ms: 24.118
+  type: 'test'
+  ...
+# Subtest: selected plan can navigate to its editor
+ok 250 - selected plan can navigate to its editor
+  ---
+  duration_ms: 21.061667
+  type: 'test'
+  ...
+# Subtest: plan WXML binds week navigation, seven-day selection, statuses, detail and conditional start action
+ok 251 - plan WXML binds week navigation, seven-day selection, statuses, detail and conditional start action
+  ---
+  duration_ms: 0.282
+  type: 'test'
+  ...
+# Subtest: golden path renders honest completed and aborted worked samples on the real summary route
+ok 252 - golden path renders honest completed and aborted worked samples on the real summary route
+  ---
+  duration_ms: 5.158333
+  type: 'test'
+  ...
+# Subtest: golden path redirects one terminal workout occurrence to summary without duplicate navigation
+ok 253 - golden path redirects one terminal workout occurrence to summary without duplicate navigation
+  ---
+  duration_ms: 4.320791
+  type: 'test'
+  ...
+# Subtest: getSettings returns schema defaults when no settings are persisted yet
+ok 254 - getSettings returns schema defaults when no settings are persisted yet
+  ---
+  duration_ms: 0.628875
+  type: 'test'
+  ...
+# Subtest: updateSettings persists a valid partial change and bumps revision
+ok 255 - updateSettings persists a valid partial change and bumps revision
+  ---
+  duration_ms: 0.17125
+  type: 'test'
+  ...
+# Subtest: updateSettings rejects defaultRestSeconds outside the allowed range
+ok 256 - updateSettings rejects defaultRestSeconds outside the allowed range
+  ---
+  duration_ms: 0.179375
+  type: 'test'
+  ...
+# Subtest: updateSettings rejects unknown fields so pages cannot smuggle arbitrary state
+ok 257 - updateSettings rejects unknown fields so pages cannot smuggle arbitrary state
+  ---
+  duration_ms: 0.055916
+  type: 'test'
+  ...
+# Subtest: updateSettings rejects non-boolean values for boolean fields
+ok 258 - updateSettings rejects non-boolean values for boolean fields
+  ---
+  duration_ms: 0.058041
+  type: 'test'
+  ...
+# Subtest: updateSettings rejects a stale expected revision without overwriting newer settings
+ok 259 - updateSettings rejects a stale expected revision without overwriting newer settings
+  ---
+  duration_ms: 0.101083
+  type: 'test'
+  ...
+# Subtest: updateSettings requires an integer expected revision
+ok 260 - updateSettings requires an integer expected revision
+  ---
+  duration_ms: 0.059709
+  type: 'test'
+  ...
+# Subtest: default audio service uses a packaged non-empty local AAC notification asset
+ok 261 - default audio service uses a packaged non-empty local AAC notification asset
+  ---
+  duration_ms: 2.312667
+  type: 'test'
+  ...
+# Subtest: AC1/AC5: CloudBase provider uses only callable functions and a server-issued purge confirmation
+ok 262 - AC1/AC5: CloudBase provider uses only callable functions and a server-issued purge confirmation
+  ---
+  duration_ms: 3.260333
+  type: 'test'
+  ...
+# Subtest: AC5: deterministic provider binds purge confirmation to the requesting device and replays one receipt
+ok 263 - AC5: deterministic provider binds purge confirmation to the requesting device and replays one receipt
+  ---
+  duration_ms: 0.856917
+  type: 'test'
+  ...
+# Subtest: P1: cloud purge atomically resets only the remote boundary and re-enable uploads every entity from base zero
+ok 264 - P1: cloud purge atomically resets only the remote boundary and re-enable uploads every entity from base zero
+  ---
+  duration_ms: 335.834292
+  type: 'test'
+  ...
+# Subtest: P1: purge provider failure leaves local domain and sync metadata unchanged and the same token retries
+ok 265 - P1: purge provider failure leaves local domain and sync metadata unchanged and the same token retries
+  ---
+  duration_ms: 46.883875
+  type: 'test'
+  ...
+# Subtest: AC1/AC2: enabling previews only upload counts and denied cloud becomes a recoverable sanitized state
+ok 266 - AC1/AC2: enabling previews only upload counts and denied cloud becomes a recoverable sanitized state
+  ---
+  duration_ms: 28.044417
+  type: 'test'
+  ...
+# Subtest: P1: every provider stage failure is sanitized, leaves local domains writable, and retries
+    # Subtest: bootstrap
+    ok 1 - bootstrap
+      ---
+      duration_ms: 216.171541
+      type: 'test'
+      ...
+    # Subtest: push
+    ok 2 - push
+      ---
+      duration_ms: 269.615625
+      type: 'test'
+      ...
+    # Subtest: pull
+    ok 3 - pull
+      ---
+      duration_ms: 184.367792
+      type: 'test'
+      ...
+    # Subtest: preparePurge
+    ok 4 - preparePurge
+      ---
+      duration_ms: 179.847958
+      type: 'test'
+      ...
+    # Subtest: purge
+    ok 5 - purge
+      ---
+      duration_ms: 107.222208
+      type: 'test'
+      ...
+    1..5
+ok 267 - P1: every provider stage failure is sanitized, leaves local domains writable, and retries
+  ---
+  duration_ms: 957.980166
+  type: 'test'
+  ...
+# Subtest: P1: empty outbox enable preview atomically enqueues every missing active local entity before sync
+ok 268 - P1: empty outbox enable preview atomically enqueues every missing active local entity before sync
+  ---
+  duration_ms: 57.864333
+  type: 'test'
+  ...
+# Subtest: P1: stale enable preview rejects with zero writes after the intervening local revision
+ok 269 - P1: stale enable preview rejects with zero writes after the intervening local revision
+  ---
+  duration_ms: 9.038583
+  type: 'test'
+  ...
+# Subtest: P1: enable bootstrap preserves exact queued work and skips an exact replica fact
+ok 270 - P1: enable bootstrap preserves exact queued work and skips an exact replica fact
+  ---
+  duration_ms: 26.109041
+  type: 'test'
+  ...
+# Subtest: AC1/AC3: manual and automatic retry share the same outbox and a lost response creates no remote duplicate
+ok 271 - AC1/AC3: manual and automatic retry share the same outbox and a lost response creates no remote duplicate
+  ---
+  duration_ms: 48.815292
+  type: 'test'
+  ...
+# Subtest: AC3: rejected operations stay visible and retain their exact pending identity
+ok 272 - AC3: rejected operations stay visible and retain their exact pending identity
+  ---
+  duration_ms: 26.100959
+  type: 'test'
+  ...
+# Subtest: AC3/AC4: one mixed push removes accepted work while rejected and conflict operations stay actionable
+ok 273 - AC3/AC4: one mixed push removes accepted work while rejected and conflict operations stay actionable
+  ---
+  duration_ms: 76.360042
+  type: 'test'
+  ...
+# Subtest: AC4: plan conflict remains visible until explicit keep-local-as-copy atomically preserves both sides
+ok 274 - AC4: plan conflict remains visible until explicit keep-local-as-copy atomically preserves both sides
+  ---
+  duration_ms: 31.689417
+  type: 'test'
+  ...
+# Subtest: P1: a same-entity successor makes the displayed conflict stale with zero resolution writes
+ok 275 - P1: a same-entity successor makes the displayed conflict stale with zero resolution writes
+  ---
+  duration_ms: 73.050041
+  type: 'test'
+  ...
+# Subtest: P1: a successor queued before conflict detection converges on retry without losing the latest entity fact
+ok 276 - P1: a successor queued before conflict detection converges on retry without losing the latest entity fact
+  ---
+  duration_ms: 66.521041
+  type: 'test'
+  ...
+# Subtest: P1: successor convergence preserves record facts, plan tombstones, settings patches, and fails closed on mismatch
+    # Subtest: record full payload
+    ok 1 - record full payload
+      ---
+      duration_ms: 128.797458
+      type: 'test'
+      ...
+    # Subtest: plan delete tombstone
+    ok 2 - plan delete tombstone
+      ---
+      duration_ms: 46.27275
+      type: 'test'
+      ...
+    # Subtest: settings successor patch merge
+    ok 3 - settings successor patch merge
+      ---
+      duration_ms: 40.589834
+      type: 'test'
+      ...
+    # Subtest: mismatched latest fact is zero-write fail closed
+    ok 4 - mismatched latest fact is zero-write fail closed
+      ---
+      duration_ms: 42.197958
+      type: 'test'
+      ...
+    1..4
+ok 277 - P1: successor convergence preserves record facts, plan tombstones, settings patches, and fails closed on mismatch
+  ---
+  duration_ms: 258.276417
+  type: 'test'
+  ...
+# Subtest: P1: successor normalization deduplicates only canonical remote facts and never arbitrates by order
+    # Subtest: identical highest-revision facts deduplicate
+    ok 1 - identical highest-revision facts deduplicate
+      ---
+      duration_ms: 35.71875
+      type: 'test'
+      ...
+    # Subtest: divergent facts at the same highest revision fail closed with zero effects
+    ok 2 - divergent facts at the same highest revision fail closed with zero effects
+      ---
+      duration_ms: 32.47225
+      type: 'test'
+      ...
+    # Subtest: one unique highest revision supersedes lower facts independent of order
+    ok 3 - one unique highest revision supersedes lower facts independent of order
+      ---
+      duration_ms: 75.140166
+      type: 'test'
+      ...
+    1..3
+ok 278 - P1: successor normalization deduplicates only canonical remote facts and never arbitrates by order
+  ---
+  duration_ms: 143.581208
+  type: 'test'
+  ...
+# Subtest: AC4: record copy and settings rebase stay explicit and preserve visible conflict state until chosen
+ok 279 - AC4: record copy and settings rebase stay explicit and preserve visible conflict state until chosen
+  ---
+  duration_ms: 104.134875
+  type: 'test'
+  ...
+# Subtest: P1: conflict action matrix consumes only the exact operation for plan, record and settings
+    # Subtest: plan keep_remote consumes the exact op and applies remote
+    ok 1 - plan keep_remote consumes the exact op and applies remote
+      ---
+      duration_ms: 24.214167
+      type: 'test'
+      ...
+    # Subtest: plan rebase preserves local and exact opId at the remote base
+    ok 2 - plan rebase preserves local and exact opId at the remote base
+      ---
+      duration_ms: 25.336167
+      type: 'test'
+      ...
+    # Subtest: record keep_remote consumes the exact op and applies remote
+    ok 3 - record keep_remote consumes the exact op and applies remote
+      ---
+      duration_ms: 63.071167
+      type: 'test'
+      ...
+    # Subtest: record rebase preserves local and exact opId at the remote base
+    ok 4 - record rebase preserves local and exact opId at the remote base
+      ---
+      duration_ms: 63.635625
+      type: 'test'
+      ...
+    # Subtest: settings keep_remote consumes the exact op and applies remote
+    ok 5 - settings keep_remote consumes the exact op and applies remote
+      ---
+      duration_ms: 23.439125
+      type: 'test'
+      ...
+    # Subtest: settings rebase preserves the local field on the exact op
+    ok 6 - settings rebase preserves the local field on the exact op
+      ---
+      duration_ms: 24.153958
+      type: 'test'
+      ...
+    1..6
+ok 280 - P1: conflict action matrix consumes only the exact operation for plan, record and settings
+  ---
+  duration_ms: 224.292708
+  type: 'test'
+  ...
+# Subtest: [A] Attack: export 必须是固定时钟下的 canonical JSON、稳定排序、有效版本与 checksum
+ok 281 - [A] Attack: export 必须是固定时钟下的 canonical JSON、稳定排序、有效版本与 checksum
+  ---
+  duration_ms: 57.196041
+  type: 'test'
+  ...
+# Subtest: [A] Attack: export 必须闭合且递归排除 identity、sync、server、install 与运行时字段
+ok 282 - [A] Attack: export 必须闭合且递归排除 identity、sync、server、install 与运行时字段
+  ---
+  duration_ms: 36.005583
+  type: 'test'
+  ...
+# Subtest: [A] Attack: 5 MiB 上限必须按 UTF-8 byte 精确判定，不能按 JS 字符数
+ok 283 - [A] Attack: 5 MiB 上限必须按 UTF-8 byte 精确判定，不能按 JS 字符数
+  ---
+  duration_ms: 37.273
+  type: 'test'
+  ...
+# Subtest: [A] Attack: 深度 64 与节点 100000 是闭合边界，超一必须零写拒绝
+ok 284 - [A] Attack: 深度 64 与节点 100000 是闭合边界，超一必须零写拒绝
+  ---
+  duration_ms: 94.075583
+  type: 'test'
+  ...
+# Subtest: [A] Attack: malformed、null/array root、未知字段、future version、checksum 损坏全部零写
+    # Subtest: malformed
+    ok 1 - malformed
+      ---
+      duration_ms: 0.22675
+      type: 'test'
+      ...
+    # Subtest: null root
+    ok 2 - null root
+      ---
+      duration_ms: 0.15225
+      type: 'test'
+      ...
+    # Subtest: array root
+    ok 3 - array root
+      ---
+      duration_ms: 0.093959
+      type: 'test'
+      ...
+    # Subtest: unknown root field
+    ok 4 - unknown root field
+      ---
+      duration_ms: 0.188541
+      type: 'test'
+      ...
+    # Subtest: future package
+    ok 5 - future package
+      ---
+      duration_ms: 0.58475
+      type: 'test'
+      ...
+    # Subtest: future app schema
+    ok 6 - future app schema
+      ---
+      duration_ms: 0.480459
+      type: 'test'
+      ...
+    # Subtest: checksum mismatch
+    ok 7 - checksum mismatch
+      ---
+      duration_ms: 0.375667
+      type: 'test'
+      ...
+    1..7
+ok 285 - [A] Attack: malformed、null/array root、未知字段、future version、checksum 损坏全部零写
+  ---
+  duration_ms: 7.434041
+  type: 'test'
+  ...
+# Subtest: [A] Attack: 任意层级大小写变体的 secret/prototype-pollution key 必须 fail closed 且不回显值
+    # Subtest: ownerId
+    ok 1 - ownerId
+      ---
+      duration_ms: 0.706459
+      type: 'test'
+      ...
+    # Subtest: OpenID
+    ok 2 - OpenID
+      ---
+      duration_ms: 0.553917
+      type: 'test'
+      ...
+    # Subtest: session_key
+    ok 3 - session_key
+      ---
+      duration_ms: 3.234791
+      type: 'test'
+      ...
+    # Subtest: authToken
+    ok 4 - authToken
+      ---
+      duration_ms: 1.05375
+      type: 'test'
+      ...
+    # Subtest: AppSecret
+    ok 5 - AppSecret
+      ---
+      duration_ms: 0.68
+      type: 'test'
+      ...
+    # Subtest: cursor
+    ok 6 - cursor
+      ---
+      duration_ms: 0.664375
+      type: 'test'
+      ...
+    # Subtest: outbox
+    ok 7 - outbox
+      ---
+      duration_ms: 0.462459
+      type: 'test'
+      ...
+    # Subtest: __proto__
+    ok 8 - __proto__
+      ---
+      duration_ms: 0.343125
+      type: 'test'
+      ...
+    # Subtest: constructor
+    ok 9 - constructor
+      ---
+      duration_ms: 0.332167
+      type: 'test'
+      ...
+    # Subtest: prototype
+    ok 10 - prototype
+      ---
+      duration_ms: 0.329625
+      type: 'test'
+      ...
+    1..10
+ok 286 - [A] Attack: 任意层级大小写变体的 secret/prototype-pollution key 必须 fail closed 且不回显值
+  ---
+  duration_ms: 14.891083
+  type: 'test'
+  ...
+# Subtest: [A] Attack: package migration 必须逐版，缺失、跳级或抛错均零写
+    # Subtest: missing migration
+    ok 1 - missing migration
+      ---
+      duration_ms: 0.455375
+      type: 'test'
+      ...
+    # Subtest: migration jumps a version
+    ok 2 - migration jumps a version
+      ---
+      duration_ms: 0.395042
+      type: 'test'
+      ...
+    # Subtest: migration throws
+    ok 3 - migration throws
+      ---
+      duration_ms: 0.349708
+      type: 'test'
+      ...
+    1..3
+ok 287 - [A] Attack: package migration 必须逐版，缺失、跳级或抛错均零写
+  ---
+  duration_ms: 5.488167
+  type: 'test'
+  ...
+# Subtest: [A] Attack: app schema migration 缺失、跳级或抛错同样必须零写
+    # Subtest: missing app migration
+    ok 1 - missing app migration
+      ---
+      duration_ms: 0.567292
+      type: 'test'
+      ...
+    # Subtest: app migration jumps a version
+    ok 2 - app migration jumps a version
+      ---
+      duration_ms: 0.408459
+      type: 'test'
+      ...
+    # Subtest: app migration throws
+    ok 3 - app migration throws
+      ---
+      duration_ms: 0.390291
+      type: 'test'
+      ...
+    1..3
+ok 288 - [A] Attack: app schema migration 缺失、跳级或抛错同样必须零写
+  ---
+  duration_ms: 5.48825
+  type: 'test'
+  ...
+# Subtest: [A] Attack: 重复 plan id、active date 与 step id 不得静默覆盖
+    # Subtest: plan id
+    ok 1 - plan id
+      ---
+      duration_ms: 0.872792
+      type: 'test'
+      ...
+    # Subtest: active date
+    ok 2 - active date
+      ---
+      duration_ms: 2.713833
+      type: 'test'
+      ...
+    # Subtest: step id
+    ok 3 - step id
+      ---
+      duration_ms: 0.79125
+      type: 'test'
+      ...
+    1..3
+ok 289 - [A] Attack: 重复 plan id、active date 与 step id 不得静默覆盖
+  ---
+  duration_ms: 9.000583
+  type: 'test'
+  ...
+# Subtest: [A] Attack: 重复 record id/sourceSessionId 与二者 identity mismatch 必须硬冲突
+    # Subtest: duplicate record id
+    ok 1 - duplicate record id
+      ---
+      duration_ms: 2.108042
+      type: 'test'
+      ...
+    # Subtest: duplicate sourceSessionId
+    ok 2 - duplicate sourceSessionId
+      ---
+      duration_ms: 0.907875
+      type: 'test'
+      ...
+    # Subtest: identity mismatch
+    ok 3 - identity mismatch
+      ---
+      duration_ms: 0.626834
+      type: 'test'
+      ...
+    1..3
+ok 290 - [A] Attack: 重复 record id/sourceSessionId 与二者 identity mismatch 必须硬冲突
+  ---
+  duration_ms: 7.441958
+  type: 'test'
+  ...
+# Subtest: [A] Attack: settings、plan、record/tombstone 必须复用严格 domain validator
+    # Subtest: settings range
+    ok 1 - settings range
+      ---
+      duration_ms: 0.70425
+      type: 'test'
+      ...
+    # Subtest: settings finite number
+    ok 2 - settings finite number
+      ---
+      duration_ms: 2.018916
+      type: 'test'
+      ...
+    # Subtest: plan closed schema
+    ok 3 - plan closed schema
+      ---
+      duration_ms: 1.433125
+      type: 'test'
+      ...
+    # Subtest: record immutable terminal source
+    ok 4 - record immutable terminal source
+      ---
+      duration_ms: 0.684208
+      type: 'test'
+      ...
+    # Subtest: record closed schema
+    ok 5 - record closed schema
+      ---
+      duration_ms: 0.63125
+      type: 'test'
+      ...
+    # Subtest: invalid tombstone
+    ok 6 - invalid tombstone
+      ---
+      duration_ms: 0.443333
+      type: 'test'
+      ...
+    1..6
+ok 291 - [A] Attack: settings、plan、record/tombstone 必须复用严格 domain validator
+  ---
+  duration_ms: 8.559166
+  type: 'test'
+  ...
+# Subtest: [A] Attack: preview 在 stale pointer 下仍必须严格零写，不能顺手修 pointer
+ok 292 - [A] Attack: preview 在 stale pointer 下仍必须严格零写，不能顺手修 pointer
+  ---
+  duration_ms: 8.227917
+  type: 'test'
+  ...
+# Subtest: [A] Attack: confirmation 必须绑定 normalized digest、baseline、TTL 与 single-use
+    # Subtest: semantic TOCTOU replacement
+    ok 1 - semantic TOCTOU replacement
+      ---
+      duration_ms: 3.540875
+      type: 'test'
+      ...
+    # Subtest: equivalent raw JSON normalizes to the same candidate
+    ok 2 - equivalent raw JSON normalizes to the same candidate
+      ---
+      duration_ms: 5.590458
+      type: 'test'
+      ...
+    # Subtest: baseline changes after preview
+    ok 3 - baseline changes after preview
+      ---
+      duration_ms: 8.819375
+      type: 'test'
+      ...
+    # Subtest: expired confirmation
+    ok 4 - expired confirmation
+      ---
+      duration_ms: 2.94125
+      type: 'test'
+      ...
+    # Subtest: single use
+    ok 5 - single use
+      ---
+      duration_ms: 6.158083
+      type: 'test'
+      ...
+    1..5
+ok 293 - [A] Attack: confirmation 必须绑定 normalized digest、baseline、TTL 与 single-use
+  ---
+  duration_ms: 29.783625
+  type: 'test'
+  ...
+# Subtest: [A] Attack: activeSession 必须在 preview 与 apply 两阶段阻断且零写
+    # Subtest: preview guard
+    ok 1 - preview guard
+      ---
+      duration_ms: 12.969417
+      type: 'test'
+      ...
+    # Subtest: apply guard
+    ok 2 - apply guard
+      ---
+      duration_ms: 8.173834
+      type: 'test'
+      ...
+    1..2
+ok 294 - [A] Attack: activeSession 必须在 preview 与 apply 两阶段阻断且零写
+  ---
+  duration_ms: 27.44175
+  type: 'test'
+  ...
+# Subtest: [B] Attack: apply 只允许一次 A/B candidate+pointer commit，并保留 install、重建运行元数据
+ok 295 - [B] Attack: apply 只允许一次 A/B candidate+pointer commit，并保留 install、重建运行元数据
+  ---
+  duration_ms: 8.733125
+  type: 'test'
+  ...
+# Subtest: [B] Attack: 相同 package 连续三次恢复时后两次 already_current、settings revision 稳定且零写
+ok 296 - [B] Attack: 相同 package 连续三次恢复时后两次 already_current、settings revision 稳定且零写
+  ---
+  duration_ms: 29.371292
+  type: 'test'
+  ...
+# Subtest: [B] Attack: 仅 plans/records 变化而 portable settings 相同时必须保留现有 settings revision
+ok 297 - [B] Attack: 仅 plans/records 变化而 portable settings 相同时必须保留现有 settings revision
+  ---
+  duration_ms: 8.114166
+  type: 'test'
+  ...
+# Subtest: [B] Attack: confirmation 同时绑定 packageDigest 与 candidateDigest，envelope metadata 替换也必须零写
+    # Subtest: exportedAt replacement
+    ok 1 - exportedAt replacement
+      ---
+      duration_ms: 8.489792
+      type: 'test'
+      ...
+    # Subtest: portable candidate replacement
+    ok 2 - portable candidate replacement
+      ---
+      duration_ms: 5.974083
+      type: 'test'
+      ...
+    # Subtest: raw checksum is revalidated at apply
+    ok 3 - raw checksum is revalidated at apply
+      ---
+      duration_ms: 3.482041
+      type: 'test'
+      ...
+    1..3
+ok 298 - [B] Attack: confirmation 同时绑定 packageDigest 与 candidateDigest，envelope metadata 替换也必须零写
+  ---
+  duration_ms: 20.614625
+  type: 'test'
+  ...
+# Subtest: [B] Attack: preview 面对旧 AppDatabase schema 只能内存迁移，不能落盘 migration/pointer/intent
+ok 299 - [B] Attack: preview 面对旧 AppDatabase schema 只能内存迁移，不能落盘 migration/pointer/intent
+  ---
+  duration_ms: 5.579291
+  type: 'test'
+  ...
+# Subtest: [B] Attack: storage-full、read-back 损坏/抛错、pointer write 失败必须保持旧 truth
+    # Subtest: storage full
+    ok 1 - storage full
+      ---
+      duration_ms: 7.060667
+      type: 'test'
+      ...
+    # Subtest: write then throw
+    ok 2 - write then throw
+      ---
+      duration_ms: 7.614166
+      type: 'test'
+      ...
+    # Subtest: read-back corrupt
+    ok 3 - read-back corrupt
+      ---
+      duration_ms: 8.7185
+      type: 'test'
+      ...
+    # Subtest: read-back throws
+    ok 4 - read-back throws
+      ---
+      duration_ms: 11.432958
+      type: 'test'
+      ...
+    # Subtest: pointer write
+    ok 5 - pointer write
+      ---
+      duration_ms: 6.567583
+      type: 'test'
+      ...
+    # Subtest: pointer write then throw
+    ok 6 - pointer write then throw
+      ---
+      duration_ms: 7.975958
+      type: 'test'
+      ...
+    1..6
+ok 300 - [B] Attack: storage-full、read-back 损坏/抛错、pointer write 失败必须保持旧 truth
+  ---
+  duration_ms: 51.957041
+  type: 'test'
+  ...
+# Subtest: [B] Attack: strict import intent 的每个持久化 crash prefix 重启后只能恢复 baseline，不得选 higher candidate
+ok 301 - [B] Attack: strict import intent 的每个持久化 crash prefix 重启后只能恢复 baseline，不得选 higher candidate
+  ---
+  duration_ms: 19.807334
+  type: 'test'
+  ...
+# Subtest: [B] Attack: 已存在的 import intent 若 unknown phase 或 identity 不完整必须 fail closed
+    # Subtest: unknown phase
+    ok 1 - unknown phase
+      ---
+      duration_ms: 0.493958
+      type: 'test'
+      ...
+    # Subtest: incomplete identity
+    ok 2 - incomplete identity
+      ---
+      duration_ms: 0.609709
+      type: 'test'
+      ...
+    1..2
+ok 302 - [B] Attack: 已存在的 import intent 若 unknown phase 或 identity 不完整必须 fail closed
+  ---
+  duration_ms: 16.753916
+  type: 'test'
+  ...
+# Subtest: [B] Attack: pending import intent 下 generic commit 必须阻断，不能掩盖未决 rollback
+ok 303 - [B] Attack: pending import intent 下 generic commit 必须阻断，不能掩盖未决 rollback
+  ---
+  duration_ms: 24.84525
+  type: 'test'
+  ...
+# Subtest: [B] Attack: local purge prepare 零写、双确认、active session 阻断、pending sync 警告且绝不调用云端
+    # Subtest: active session blocks both phases
+    ok 1 - active session blocks both phases
+      ---
+      duration_ms: 4.082958
+      type: 'test'
+      ...
+    # Subtest: active session appearing after preview blocks apply
+    ok 2 - active session appearing after preview blocks apply
+      ---
+      duration_ms: 3.410542
+      type: 'test'
+      ...
+    1..2
+ok 304 - [B] Attack: local purge prepare 零写、双确认、active session 阻断、pending sync 警告且绝不调用云端
+  ---
+  duration_ms: 9.21575
+  type: 'test'
+  ...
+# Subtest: [B] Attack: confirmed local purge 以 empty snapshot 为唯一 truth，保留 install、清空本机且不碰云端
+ok 305 - [B] Attack: confirmed local purge 以 empty snapshot 为唯一 truth，保留 install、清空本机且不碰云端
+  ---
+  duration_ms: 4.969583
+  type: 'test'
+  ...
+# Subtest: [B] Attack: old slot cleanup 失败必须保留非敏感 marker，重启重试且永不复活旧数据
+ok 306 - [B] Attack: old slot cleanup 失败必须保留非敏感 marker，重启重试且永不复活旧数据
+  ---
+  duration_ms: 2.631166
+  type: 'test'
+  ...
+# Subtest: [B] Attack: cleanup marker clear 失败必须幂等保留，重启清理不得 fallback 已删旧槽
+ok 307 - [B] Attack: cleanup marker clear 失败必须幂等保留，重启清理不得 fallback 已删旧槽
+  ---
+  duration_ms: 3.3115
+  type: 'test'
+  ...
+# Subtest: [B] Attack: pending cleanup 时 generic commit 必须先安全清理或明确阻断
+ok 308 - [B] Attack: pending cleanup 时 generic commit 必须先安全清理或明确阻断
+  ---
+  duration_ms: 3.044916
+  type: 'test'
+  ...
+# Subtest: [B] Attack: purge candidate/pointer/cleanup/remove 各 crash prefix 重启时只能 empty truth 或 fail closed
+ok 309 - [B] Attack: purge candidate/pointer/cleanup/remove 各 crash prefix 重启时只能 empty truth 或 fail closed
+  ---
+  duration_ms: 4.944667
+  type: 'test'
+  ...
+# Subtest: [B] Attack: cleanup marker 或 empty identity 损坏必须 fail closed，绝不 fallback 旧敏感槽
+    # Subtest: unknown cleanup phase
+    ok 1 - unknown cleanup phase
+      ---
+      duration_ms: 3.040041
+      type: 'test'
+      ...
+    # Subtest: empty snapshot checksum corruption
+    ok 2 - empty snapshot checksum corruption
+      ---
+      duration_ms: 2.813708
+      type: 'test'
+      ...
+    1..2
+ok 310 - [B] Attack: cleanup marker 或 empty identity 损坏必须 fail closed，绝不 fallback 旧敏感槽
+  ---
+  duration_ms: 6.01525
+  type: 'test'
+  ...
+# Subtest: [F1] Attack: real preview 必须准确给出双集合四桶变化、版本/baseline/counts、隐私安全 warning 且零写
+ok 311 - [F1] Attack: real preview 必须准确给出双集合四桶变化、版本/baseline/counts、隐私安全 warning 且零写
+  ---
+  duration_ms: 16.336917
+  type: 'test'
+  ...
+# Subtest: [F1] Attack: export→preview→apply→export 必须保留合法 tombstone 与 nested business order，仅排序实体集合
+ok 312 - [F1] Attack: export→preview→apply→export 必须保留合法 tombstone 与 nested business order，仅排序实体集合
+  ---
+  duration_ms: 28.596334
+  type: 'test'
+  ...
+# Subtest: [F1] Attack: portable plan 时间戳必须是非负 safe integer，非法值以精确 domain code 零写拒绝
+    # Subtest: negative createdAt
+    ok 1 - negative createdAt
+      ---
+      duration_ms: 0.701834
+      type: 'test'
+      ...
+    # Subtest: fractional updatedAt
+    ok 2 - fractional updatedAt
+      ---
+      duration_ms: 0.566667
+      type: 'test'
+      ...
+    # Subtest: negative deletedAt
+    ok 3 - negative deletedAt
+      ---
+      duration_ms: 0.575292
+      type: 'test'
+      ...
+    # Subtest: unsafe createdAt
+    ok 4 - unsafe createdAt
+      ---
+      duration_ms: 0.547208
+      type: 'test'
+      ...
+    # Subtest: updatedAt before createdAt
+    ok 5 - updatedAt before createdAt
+      ---
+      duration_ms: 0.555709
+      type: 'test'
+      ...
+    1..5
+ok 313 - [F1] Attack: portable plan 时间戳必须是非负 safe integer，非法值以精确 domain code 零写拒绝
+  ---
+  duration_ms: 7.697125
+  type: 'test'
+  ...
+# Subtest: [F2] Attack: purge confirmation 必须绑定 TTL、single-use、baseline、counts 与 action 并返回稳定 code
+    # Subtest: expiry
+    ok 1 - expiry
+      ---
+      duration_ms: 1.407833
+      type: 'test'
+      ...
+    # Subtest: single use
+    ok 2 - single use
+      ---
+      duration_ms: 6.264833
+      type: 'test'
+      ...
+    # Subtest: ordinary baseline change and count binding
+    ok 3 - ordinary baseline change and count binding
+      ---
+      duration_ms: 6.218
+      type: 'test'
+      ...
+    # Subtest: import/purge action confusion
+    ok 4 - import/purge action confusion
+      ---
+      duration_ms: 11.910583
+      type: 'test'
+      ...
+    1..4
+ok 314 - [F2] Attack: purge confirmation 必须绑定 TTL、single-use、baseline、counts 与 action 并返回稳定 code
+  ---
+  duration_ms: 26.025625
+  type: 'test'
+  ...
+# Subtest: [F2-marker] Attack: IMPORT_INTENT 初写/持久后抛错/read-back 抛错或损坏均不得继续 candidate/pointer
+    # Subtest: write before persist
+    ok 1 - write before persist
+      ---
+      duration_ms: 6.36125
+      type: 'test'
+      ...
+    # Subtest: persist then throw
+    ok 2 - persist then throw
+      ---
+      duration_ms: 9.343625
+      type: 'test'
+      ...
+    # Subtest: read-back throws
+    ok 3 - read-back throws
+      ---
+      duration_ms: 5.972209
+      type: 'test'
+      ...
+    # Subtest: read-back corrupt
+    ok 4 - read-back corrupt
+      ---
+      duration_ms: 8.611292
+      type: 'test'
+      ...
+    1..4
+ok 315 - [F2-marker] Attack: IMPORT_INTENT 初写/持久后抛错/read-back 抛错或损坏均不得继续 candidate/pointer
+  ---
+  duration_ms: 34.956042
+  type: 'test'
+  ...
+# Subtest: [F2-marker] Attack: CLEANUP marker 初写/read-back fault 重启后必须恢复 empty truth
+    # Subtest: write before persist
+    ok 1 - write before persist
+      ---
+      duration_ms: 4.734792
+      type: 'test'
+      ...
+    # Subtest: persist then throw
+    ok 2 - persist then throw
+      ---
+      duration_ms: 2.68275
+      type: 'test'
+      ...
+    # Subtest: read-back throws
+    ok 3 - read-back throws
+      ---
+      duration_ms: 2.594958
+      type: 'test'
+      ...
+    # Subtest: read-back corrupt
+    ok 4 - read-back corrupt
+      ---
+      duration_ms: 3.702292
+      type: 'test'
+      ...
+    1..4
+ok 316 - [F2-marker] Attack: CLEANUP marker 初写/read-back fault 重启后必须恢复 empty truth
+  ---
+  duration_ms: 13.934584
+  type: 'test'
+  ...
+# Subtest: [F2-marker] Attack: cleanup marker remove 前/后抛错都必须在重启后保持唯一 empty truth
+    # Subtest: throw before remove
+    ok 1 - throw before remove
+      ---
+      duration_ms: 5.570333
+      type: 'test'
+      ...
+    # Subtest: remove then throw
+    ok 2 - remove then throw
+      ---
+      duration_ms: 4.857709
+      type: 'test'
+      ...
+    1..2
+ok 317 - [F2-marker] Attack: cleanup marker remove 前/后抛错都必须在重启后保持唯一 empty truth
+  ---
+  duration_ms: 10.583792
+  type: 'test'
+  ...
+# Subtest: [F3-migration] Attack: legacy package 与 app schema 必须顺序迁移并可 preview/apply/re-export
+ok 318 - [F3-migration] Attack: legacy package 与 app schema 必须顺序迁移并可 preview/apply/re-export
+  ---
+  duration_ms: 15.013
+  type: 'test'
+  ...
+# Subtest: [F3-migration] Attack: portable import 失败分类必须暴露稳定且精确的 error.code
+    # Subtest: malformed JSON
+    ok 1 - malformed JSON
+      ---
+      duration_ms: 0.154459
+      type: 'test'
+      ...
+    # Subtest: oversize UTF-8
+    ok 2 - oversize UTF-8
+      ---
+      duration_ms: 10.342958
+      type: 'test'
+      ...
+    # Subtest: future schema
+    ok 3 - future schema
+      ---
+      duration_ms: 0.346708
+      type: 'test'
+      ...
+    # Subtest: checksum mismatch
+    ok 4 - checksum mismatch
+      ---
+      duration_ms: 0.294042
+      type: 'test'
+      ...
+    # Subtest: unknown field
+    ok 5 - unknown field
+      ---
+      duration_ms: 0.064208
+      type: 'test'
+      ...
+    # Subtest: forbidden field
+    ok 6 - forbidden field
+      ---
+      duration_ms: 0.060333
+      type: 'test'
+      ...
+    # Subtest: duplicate plan id
+    ok 7 - duplicate plan id
+      ---
+      duration_ms: 0.315709
+      type: 'test'
+      ...
+    # Subtest: duplicate plan date
+    ok 8 - duplicate plan date
+      ---
+      duration_ms: 0.299542
+      type: 'test'
+      ...
+    # Subtest: record identity conflict
+    ok 9 - record identity conflict
+      ---
+      duration_ms: 0.303917
+      type: 'test'
+      ...
+    # Subtest: domain invalid
+    ok 10 - domain invalid
+      ---
+      duration_ms: 0.295792
+      type: 'test'
+      ...
+    # Subtest: active session
+    ok 11 - active session
+      ---
+      duration_ms: 0.886541
+      type: 'test'
+      ...
+    1..11
+ok 319 - [F3-migration] Attack: portable import 失败分类必须暴露稳定且精确的 error.code
+  ---
+  duration_ms: 19.691792
+  type: 'test'
+  ...
+# Subtest: [F5-package] Attack: V1 shallow profile 与非法 envelope exportedAt 必须精确 domain code 零写拒绝
+    # Subtest: shallow non-null profile
+    ok 1 - shallow non-null profile
+      ---
+      duration_ms: 1.52425
+      type: 'test'
+      ...
+    # Subtest: negative exportedAt
+    ok 2 - negative exportedAt
+      ---
+      duration_ms: 0.435208
+      type: 'test'
+      ...
+    # Subtest: fractional exportedAt
+    ok 3 - fractional exportedAt
+      ---
+      duration_ms: 0.333959
+      type: 'test'
+      ...
+    # Subtest: unsafe exportedAt
+    ok 4 - unsafe exportedAt
+      ---
+      duration_ms: 0.310584
+      type: 'test'
+      ...
+    # Subtest: string exportedAt
+    ok 5 - string exportedAt
+      ---
+      duration_ms: 0.302459
+      type: 'test'
+      ...
+    1..5
+ok 320 - [F5-package] Attack: V1 shallow profile 与非法 envelope exportedAt 必须精确 domain code 零写拒绝
+  ---
+  duration_ms: 6.086792
+  type: 'test'
+  ...
+# Subtest: real record lifecycle materializes from terminal Session, edits through application/repository and deletes to a hidden tombstone
+ok 321 - real record lifecycle materializes from terminal Session, edits through application/repository and deletes to a hidden tombstone
+  ---
+  duration_ms: 115.365834
+  type: 'test'
+  ...
+# Subtest: real record lifecycle preserves null feedback during an actual-only correction
+ok 322 - real record lifecycle preserves null feedback during an actual-only correction
+  ---
+  duration_ms: 23.016083
+  type: 'test'
+  ...
+# Subtest: real record page drives the production application and repository through edit and confirmed delete
+ok 323 - real record page drives the production application and repository through edit and confirmed delete
+  ---
+  duration_ms: 40.486125
+  type: 'test'
+  ...
+# Subtest: start snapshots the plan in one A/B commit and rejects a second active Session
+ok 324 - start snapshots the plan in one A/B commit and rejects a second active Session
+  ---
+  duration_ms: 95.56525
+  type: 'test'
+  ...
+# Subtest: commands checkpoint exactly once while replay, stale revision and key collision perform zero writes
+ok 325 - commands checkpoint exactly once while replay, stale revision and key collision perform zero writes
+  ---
+  duration_ms: 48.050292
+  type: 'test'
+  ...
+# Subtest: expired interval ordinary completion performs zero writes and confirm_next persists one set boundary
+ok 326 - expired interval ordinary completion performs zero writes and confirm_next persists one set boundary
+  ---
+  duration_ms: 103.420875
+  type: 'test'
+  ...
+# Subtest: hide/unload and application rebuild restore the same checkpoint for the origin device
+ok 327 - hide/unload and application rebuild restore the same checkpoint for the origin device
+  ---
+  duration_ms: 112.693958
+  type: 'test'
+  ...
+# Subtest: sub-second elapsed remainder survives persistence and startup recovery
+ok 328 - sub-second elapsed remainder survives persistence and startup recovery
+  ---
+  duration_ms: 55.662
+  type: 'test'
+  ...
+# Subtest: paused business progression performs zero writes until resume
+ok 329 - paused business progression performs zero writes until resume
+  ---
+  duration_ms: 80.948167
+  type: 'test'
+  ...
+# Subtest: startup recovery persists TimerEngine rollback tolerance and clock anomaly boundaries
+ok 330 - startup recovery persists TimerEngine rollback tolerance and clock anomaly boundaries
+  ---
+  duration_ms: 247.037375
+  type: 'test'
+  ...
+# Subtest: non-origin device cannot continue and restore returns a recoverable error without writes
+ok 331 - non-origin device cannot continue and restore returns a recoverable error without writes
+  ---
+  duration_ms: 24.022916
+  type: 'test'
+  ...
+# Subtest: corrupt Session snapshots return recoverable state and preserve every stored byte
+ok 332 - corrupt Session snapshots return recoverable state and preserve every stored byte
+  ---
+  duration_ms: 78.659709
+  type: 'test'
+  ...
+# Subtest: checksum-valid impossible Session state fails load and startup recovery without rewriting data
+ok 333 - checksum-valid impossible Session state fails load and startup recovery without rewriting data
+  ---
+  duration_ms: 53.398
+  type: 'test'
+  ...
+# Subtest: checksum-valid missing current set history fails startup recovery without rewriting data
+ok 334 - checksum-valid missing current set history fails startup recovery without rewriting data
+  ---
+  duration_ms: 62.54525
+  type: 'test'
+  ...
+# Subtest: checksum-valid missing rest, forged duration and terminal shape fail recovery without writes
+ok 335 - checksum-valid missing rest, forged duration and terminal shape fail recovery without writes
+  ---
+  duration_ms: 185.077084
+  type: 'test'
+  ...
+# Subtest: application replaces completed and aborted Sessions while terminal commands remain rejected
+ok 336 - application replaces completed and aborted Sessions while terminal commands remain rejected
+  ---
+  duration_ms: 123.018709
+  type: 'test'
+  ...
+# Subtest: storage failure exposes the error and leaves the previously committed Session readable
+ok 337 - storage failure exposes the error and leaves the previously committed Session readable
+  ---
+  duration_ms: 24.891375
+  type: 'test'
+  ...
+# Subtest: Attack: settings 必须穿过 application service 与持久化 repository，重建全部对象后仍能恢复
+ok 338 - Attack: settings 必须穿过 application service 与持久化 repository，重建全部对象后仍能恢复
+  ---
+  duration_ms: 8.859875
+  type: 'test'
+  ...
+# Subtest: Attack: 两个并发 settings writer 使用同一 expected revision 时只能成功一个，失败者不得覆盖赢家
+ok 339 - Attack: 两个并发 settings writer 使用同一 expected revision 时只能成功一个，失败者不得覆盖赢家
+  ---
+  duration_ms: 3.091584
+  type: 'test'
+  ...
+# Subtest: Attack: page 不能继续使用 memory stub，重载页面后必须从持久化 repository 读取设置
+ok 340 - Attack: page 不能继续使用 memory stub，重载页面后必须从持久化 repository 读取设置
+  ---
+  duration_ms: 0.784917
+  type: 'test'
+  ...
+# Subtest: Attack: LocalDatabase 是唯一 storage 写边界，任何 page/domain/application 直接 wx.setStorage 都必须失败
+ok 341 - Attack: LocalDatabase 是唯一 storage 写边界，任何 page/domain/application 直接 wx.setStorage 都必须失败
+  ---
+  duration_ms: 3.172125
+  type: 'test'
+  ...
+# Subtest: Attack: train_flow:v1 storage key 只能出现在 LocalDatabase，不能泄漏到 page 或普通 service
+ok 342 - Attack: train_flow:v1 storage key 只能出现在 LocalDatabase，不能泄漏到 page 或普通 service
+  ---
+  duration_ms: 3.522375
+  type: 'test'
+  ...
+# Subtest: Attack: checksum 正确但 settings revision 类型损坏的高 revision 槽必须被隔离并回退到旧有效设置
+ok 343 - Attack: checksum 正确但 settings revision 类型损坏的高 revision 槽必须被隔离并回退到旧有效设置
+  ---
+  duration_ms: 4.456417
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: application/repository save 路径必须拒绝污染的完整 settings 对象且保持零写
+ok 344 - Reviewer regression: application/repository save 路径必须拒绝污染的完整 settings 对象且保持零写
+  ---
+  duration_ms: 0.68675
+  type: 'test'
+  ...
+# Subtest: local statistics refreshes dirty record changes and repairs a corrupted projection from current facts
+ok 345 - local statistics refreshes dirty record changes and repairs a corrupted projection from current facts
+  ---
+  duration_ms: 57.751375
+  type: 'test'
+  ...
+# Subtest: cache persistence failure does not hide a freshly rebuilt read-only statistics result
+ok 346 - cache persistence failure does not hide a freshly rebuilt read-only statistics result
+  ---
+  duration_ms: 1.021541
+  type: 'test'
+  ...
+# Subtest: real session create plus public record edit and delete invalidate, refresh and update statistics UI
+ok 347 - real session create plus public record edit and delete invalidate, refresh and update statistics UI
+  ---
+  duration_ms: 106.845042
+  type: 'test'
+  ...
+# Subtest: Attack: distinct-key double tap and concurrent rest expiry cannot bypass explicit start-set
+ok 348 - Attack: distinct-key double tap and concurrent rest expiry cannot bypass explicit start-set
+  ---
+  duration_ms: 11.3245
+  type: 'test'
+  ...
+# Subtest: Attack: generic timed-next cannot consume expired strength rest or erase remaining sets
+ok 349 - Attack: generic timed-next cannot consume expired strength rest or erase remaining sets
+  ---
+  duration_ms: 1.018792
+  type: 'test'
+  ...
+# Subtest: Attack: expired strength rest notifies once and generic next cannot complete the exercise
+ok 350 - Attack: expired strength rest notifies once and generic next cannot complete the exercise
+  ---
+  duration_ms: 215.788791
+  type: 'test'
+  ...
+# Subtest: Attack: strength view separates nullable actual inputs from immutable targets and exposes set-count controls
+ok 351 - Attack: strength view separates nullable actual inputs from immutable targets and exposes set-count controls
+  ---
+  duration_ms: 0.593917
+  type: 'test'
+  ...
+# Subtest: Attack: edited actual reps and nullable weight persist without overwriting plan targets
+ok 352 - Attack: edited actual reps and nullable weight persist without overwriting plan targets
+  ---
+  duration_ms: 62.888459
+  type: 'test'
+  ...
+# Subtest: Attack: actual weight with more than one decimal is rejected without Session mutation
+ok 353 - Attack: actual weight with more than one decimal is rejected without Session mutation
+  ---
+  duration_ms: 0.810417
+  type: 'test'
+  ...
+# Subtest: Attack: expired interval rest starts the next work set instead of completing it
+ok 354 - Attack: expired interval rest starts the next work set instead of completing it
+  ---
+  duration_ms: 1.148041
+  type: 'test'
+  ...
+# Subtest: Attack: manual exercise exposes a completion action without starting a timer
+ok 355 - Attack: manual exercise exposes a completion action without starting a timer
+  ---
+  duration_ms: 0.368708
+  type: 'test'
+  ...
+# Subtest: develop strength fixture derives active, running-rest and expired-rest views through the real runtime
+ok 356 - develop strength fixture derives active, running-rest and expired-rest views through the real runtime
+  ---
+  duration_ms: 611.230959
+  type: 'test'
+  ...
+# Subtest: Attack: previous correction keeps completed strength sets and appends an audit revision
+ok 357 - Attack: previous correction keeps completed strength sets and appends an audit revision
+  ---
+  duration_ms: 0.937834
+  type: 'test'
+  ...
+# Subtest: Attack: add/reduce set targets are execution overrides and never rewrite the immutable PlanSnapshot
+ok 358 - Attack: add/reduce set targets are execution overrides and never rewrite the immutable PlanSnapshot
+  ---
+  duration_ms: 1.072125
+  type: 'test'
+  ...
+# Subtest: Attack: skip remains an explicit escape during running or expired strength rest without losing completed sets
+ok 359 - Attack: skip remains an explicit escape during running or expired strength rest without losing completed sets
+  ---
+  duration_ms: 1.426625
+  type: 'test'
+  ...
+# Subtest: Attack: previous is safely blocked while the current strength step owns partial set/rest state
+ok 360 - Attack: previous is safely blocked while the current strength step owns partial set/rest state
+  ---
+  duration_ms: 1.077291
+  type: 'test'
+  ...
+# Subtest: Attack: reopened strength correction can replace actuals while retaining the prior command audit
+ok 361 - Attack: reopened strength correction can replace actuals while retaining the prior command audit
+  ---
+  duration_ms: 0.585458
+  type: 'test'
+  ...
+# Subtest: Attack: previous after a partially completed strength skip is explicitly unavailable and never crashes validation
+ok 362 - Attack: previous after a partially completed strength skip is explicitly unavailable and never crashes validation
+  ---
+  duration_ms: 0.604667
+  type: 'test'
+  ...
+# Subtest: Attack: restored Session rejects set-target overrides for future strength steps that no command could reach
+ok 363 - Attack: restored Session rejects set-target overrides for future strength steps that no command could reach
+  ---
+  duration_ms: 0.456
+  type: 'test'
+  ...
+# Subtest: Attack: restored current-step set override requires matching add/reduce command audit evidence
+ok 364 - Attack: restored current-step set override requires matching add/reduce command audit evidence
+  ---
+  duration_ms: 0.237334
+  type: 'test'
+  ...
+# Subtest: timed page runtime renders the confirmed workout facts and revisioned running controls
+ok 365 - timed page runtime renders the confirmed workout facts and revisioned running controls
+  ---
+  duration_ms: 163.604417
+  type: 'test'
+  ...
+# Subtest: 08:35 start, 08:37 hide and 08:41 show expires only the current step and notifies once
+ok 366 - 08:35 start, 08:37 hide and 08:41 show expires only the current step and notifies once
+  ---
+  duration_ms: 152.780417
+  type: 'test'
+  ...
+# Subtest: expired occurrence notification stays deduplicated after runtime and page reconstruction
+ok 367 - expired occurrence notification stays deduplicated after runtime and page reconstruction
+  ---
+  duration_ms: 159.142959
+  type: 'test'
+  ...
+# Subtest: notification claim pointer failure stays retryable and rebuild delivers the occurrence
+ok 368 - notification claim pointer failure stays retryable and rebuild delivers the occurrence
+  ---
+  duration_ms: 192.705042
+  type: 'test'
+  ...
+# Subtest: asynchronous notification API failure requeues the attempted delivery for rebuilt runtime retry
+ok 369 - asynchronous notification API failure requeues the attempted delivery for rebuilt runtime retry
+  ---
+  duration_ms: 167.053334
+  type: 'test'
+  ...
+# Subtest: reentrant runtime retries after the active notification attempt explicitly fails
+ok 370 - reentrant runtime retries after the active notification attempt explicitly fails
+  ---
+  duration_ms: 170.377042
+  type: 'test'
+  ...
+# Subtest: successful notification with delivered persistence failure leaves attempted state and never resends
+ok 371 - successful notification with delivered persistence failure leaves attempted state and never resends
+  ---
+  duration_ms: 120.573958
+  type: 'test'
+  ...
+# Subtest: reentrant runtimes produce at most one confirmed expiration delivery
+ok 372 - reentrant runtimes produce at most one confirmed expiration delivery
+  ---
+  duration_ms: 109.207333
+  type: 'test'
+  ...
+# Subtest: expired second step disables previous and rejects correction with zero persistence
+ok 373 - expired second step disables previous and rejects correction with zero persistence
+  ---
+  duration_ms: 90.306709
+  type: 'test'
+  ...
+# Subtest: skip, early complete and confirm next each persist one atomic revision with next timer started
+ok 374 - skip, early complete and confirm next each persist one atomic revision with next timer started
+  ---
+  duration_ms: 163.416375
+  type: 'test'
+  ...
+# Subtest: atomic next-step command leaves no half progression after back-half storage failure and retry
+ok 375 - atomic next-step command leaves no half progression after back-half storage failure and retry
+  ---
+  duration_ms: 55.930958
+  type: 'test'
+  ...
+# Subtest: clock rollback is visible, disables ordinary resume and requires explicit confirmation command
+ok 376 - clock rollback is visible, disables ordinary resume and requires explicit confirmation command
+  ---
+  duration_ms: 63.626375
+  type: 'test'
+  ...
+# Subtest: skip, previous, early complete and end workout preserve command revisions and valid states
+ok 377 - skip, previous, early complete and end workout preserve command revisions and valid states
+  ---
+  duration_ms: 92.90175
+  type: 'test'
+  ...
+# Subtest: unload and a new runtime restore the same timer while corruption stays recoverable
+ok 378 - unload and a new runtime restore the same timer while corruption stays recoverable
+  ---
+  duration_ms: 57.059084
+  type: 'test'
+  ...
+# Subtest: expiration adapter waits for callbacks and degrades vibration failure to visual feedback
+ok 379 - expiration adapter waits for callbacks and degrades vibration failure to visual feedback
+  ---
+  duration_ms: 2.026125
+  type: 'test'
+  ...
+# Subtest: page lifecycle delegates to the runtime while interval refresh never mutates Session state
+ok 380 - page lifecycle delegates to the runtime while interval refresh never mutates Session state
+  ---
+  duration_ms: 0.315917
+  type: 'test'
+  ...
+# Subtest: PR review: page unload destroys the runtime adapter once after checkpoint success or throw
+    # Subtest: success
+    ok 1 - success
+      ---
+      duration_ms: 41.183458
+      type: 'test'
+      ...
+    # Subtest: throw
+    ok 2 - throw
+      ---
+      duration_ms: 23.499667
+      type: 'test'
+      ...
+    1..2
+ok 381 - PR review: page unload destroys the runtime adapter once after checkpoint success or throw
+  ---
+  duration_ms: 64.876291
+  type: 'test'
+  ...
+# Subtest: PR review: repeated page unload destroys the real InnerAudioContext exactly once
+ok 382 - PR review: repeated page unload destroys the real InnerAudioContext exactly once
+  ---
+  duration_ms: 70.454333
+  type: 'test'
+  ...
+# Subtest: develop strength mode selects the deterministic fixture while release and planId navigation stay production-backed
+ok 383 - develop strength mode selects the deterministic fixture while release and planId navigation stay production-backed
+  ---
+  duration_ms: 0.346542
+  type: 'test'
+  ...
+# Subtest: destructive and irreversible page controls require explicit confirmation
+ok 384 - destructive and irreversible page controls require explicit confirmation
+  ---
+  duration_ms: 0.285833
+  type: 'test'
+  ...
+# Subtest: Attack: repeated Skip taps share one pending confirmation and cannot skip the following exercise
+ok 385 - Attack: repeated Skip taps share one pending confirmation and cannot skip the following exercise
+  ---
+  duration_ms: 0.090166
+  type: 'test'
+  ...
+# Subtest: Attack: an unloaded page invalidates pending Skip callbacks before they can mutate Session state
+ok 386 - Attack: an unloaded page invalidates pending Skip callbacks before they can mutate Session state
+  ---
+  duration_ms: 0.078125
+  type: 'test'
+  ...
+# Subtest: Attack: repeated zero-rest strength taps keep the original step, set and revision intent with zero second write
+ok 387 - Attack: repeated zero-rest strength taps keep the original step, set and revision intent with zero second write
+  ---
+  duration_ms: 56.767084
+  type: 'test'
+  ...
+# Subtest: Attack: repeated manual taps keep the original step and revision intent instead of completing the next action
+ok 388 - Attack: repeated manual taps keep the original step and revision intent instead of completing the next action
+  ---
+  duration_ms: 53.141625
+  type: 'test'
+  ...
+# Subtest: PR review: terminal keep-screen release settles before summary navigation
+    # Subtest: unsupported
+    ok 1 - unsupported
+      ---
+      duration_ms: 71.002292
+      type: 'test'
+      ...
+    # Subtest: reject
+    ok 2 - reject
+      ---
+      duration_ms: 70.483542
+      type: 'test'
+      ...
+    # Subtest: success
+    ok 3 - success
+      ---
+      duration_ms: 69.350041
+      type: 'test'
+      ...
+    1..3
+ok 389 - PR review: terminal keep-screen release settles before summary navigation
+  ---
+  duration_ms: 211.202333
+  type: 'test'
+  ...
+# Subtest: PR review: unavailable release modal requires an inline summary action
+    # Subtest: missing
+    ok 1 - missing
+      ---
+      duration_ms: 74.792917
+      type: 'test'
+      ...
+    # Subtest: throw
+    ok 2 - throw
+      ---
+      duration_ms: 73.37575
+      type: 'test'
+      ...
+    # Subtest: fail
+    ok 3 - fail
+      ---
+      duration_ms: 74.655959
+      type: 'test'
+      ...
+    1..3
+ok 390 - PR review: unavailable release modal requires an inline summary action
+  ---
+  duration_ms: 223.282416
+  type: 'test'
+  ...
+# Subtest: PR review r3: summary navigation failure stays actionable and retryable
+    # Subtest: redirectTo missing
+    ok 1 - redirectTo missing
+      ---
+      duration_ms: 69.710917
+      type: 'test'
+      ...
+    # Subtest: redirectTo synchronous throw remains retryable
+    ok 2 - redirectTo synchronous throw remains retryable
+      ---
+      duration_ms: 68.366541
+      type: 'test'
+      ...
+    # Subtest: fail callback supports repeated failure, successful retry and unload dedupe
+    ok 3 - fail callback supports repeated failure, successful retry and unload dedupe
+      ---
+      duration_ms: 79.152334
+      type: 'test'
+      ...
+    1..3
+ok 391 - PR review r3: summary navigation failure stays actionable and retryable
+  ---
+  duration_ms: 217.694334
+  type: 'test'
+  ...
+# Subtest: workout page declares native timer components, large timer states and thumb-safe controls
+ok 392 - workout page declares native timer components, large timer states and thumb-safe controls
+  ---
+  duration_ms: 0.327125
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: delete is one CAS commit producing a minimal private-free tombstone, sync tombstone and statistics invalidation
+ok 393 - Attack Round 3: delete is one CAS commit producing a minimal private-free tombstone, sync tombstone and statistics invalidation
+  ---
+  duration_ms: 71.154042
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: deleting a valid legacy record derives its missing source fingerprint before writing the tombstone
+ok 394 - Reviewer regression: deleting a valid legacy record derives its missing source fingerprint before writing the tombstone
+  ---
+  duration_ms: 34.963834
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: exact delete replay is a zero-write deep copy while conflicting, stale and correction-after-delete intents fail closed
+ok 395 - Attack Round 3: exact delete replay is a zero-write deep copy while conflicting, stale and correction-after-delete intents fail closed
+  ---
+  duration_ms: 37.710375
+  type: 'test'
+  ...
+# Subtest: Test adequacy: delete passes its loaded localRevision into commit so a racing baseline cannot be overwritten
+ok 396 - Test adequacy: delete passes its loaded localRevision into commit so a racing baseline cannot be overwritten
+  ---
+  duration_ms: 13.367167
+  type: 'test'
+  ...
+# Subtest: Test adequacy: injected storage failure leaves delete record, outbox and statistics byte-equivalent
+ok 397 - Test adequacy: injected storage failure leaves delete record, outbox and statistics byte-equivalent
+  ---
+  duration_ms: 13.629458
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: terminal materialization preserves a tombstone and never resurrects its baseline when a new Session starts
+ok 398 - Attack Round 3: terminal materialization preserves a tombstone and never resurrects its baseline when a new Session starts
+  ---
+  duration_ms: 38.67975
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: Workout Summary feedback updates preserve corrections and use the repository atomic outbox plus statistics boundary
+ok 399 - Attack Round 3: Workout Summary feedback updates preserve corrections and use the repository atomic outbox plus statistics boundary
+  ---
+  duration_ms: 33.62475
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: summary load and previously-bound save both reject active and historical tombstones without resurrection
+ok 400 - Attack Round 3: summary load and previously-bound save both reject active and historical tombstones without resurrection
+  ---
+  duration_ms: 53.385625
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: authorized corrected records pass terminal source validation while unknown fields or fingerprint tampering fail closed
+ok 401 - Attack Round 3: authorized corrected records pass terminal source validation while unknown fields or fingerprint tampering fail closed
+  ---
+  duration_ms: 82.675584
+  type: 'test'
+  ...
+# Subtest: active duration excludes paused wall-clock time and summary reports non-zero skipped count
+ok 402 - active duration excludes paused wall-clock time and summary reports non-zero skipped count
+  ---
+  duration_ms: 4.717833
+  type: 'test'
+  ...
+# Subtest: RPE is required at save boundary, accepts 1 and 10, while empty optional weight/note remain valid
+ok 403 - RPE is required at save boundary, accepts 1 and 10, while empty optional weight/note remain valid
+  ---
+  duration_ms: 0.621375
+  type: 'test'
+  ...
+# Subtest: summary runtime rejects missing RPE before any record write and saves both RPE boundaries
+ok 404 - summary runtime rejects missing RPE before any record write and saves both RPE boundaries
+  ---
+  duration_ms: 45.573208
+  type: 'test'
+  ...
+# Subtest: completed and aborted Sessions share one terminal guard for representative commands
+ok 405 - completed and aborted Sessions share one terminal guard for representative commands
+  ---
+  duration_ms: 1.608042
+  type: 'test'
+  ...
+# Subtest: every declared workout command is guarded for both terminal statuses
+ok 406 - every declared workout command is guarded for both terminal statuses
+  ---
+  duration_ms: 5.946208
+  type: 'test'
+  ...
+# Subtest: completed and aborted summary-to-record persistence is symmetric without event/status confusion
+ok 407 - completed and aborted summary-to-record persistence is symmetric without event/status confusion
+  ---
+  duration_ms: 25.191708
+  type: 'test'
+  ...
+# Subtest: completed and aborted persistence materializes exactly one record with symmetric statistics
+ok 408 - completed and aborted persistence materializes exactly one record with symmetric statistics
+  ---
+  duration_ms: 51.132375
+  type: 'test'
+  ...
+# Subtest: reloaded completed and aborted records persist symmetric terminal statistics and identity fields
+ok 409 - reloaded completed and aborted records persist symmetric terminal statistics and identity fields
+  ---
+  duration_ms: 34.694875
+  type: 'test'
+  ...
+# Subtest: legacy records without a stored fingerprint fail closed on conflict and upgrade in place on proof
+ok 410 - legacy records without a stored fingerprint fail closed on conflict and upgrade in place on proof
+  ---
+  duration_ms: 55.644542
+  type: 'test'
+  ...
+# Subtest: summary load proves every canonical record semantic and metadata field before exposing feedback
+ok 411 - summary load proves every canonical record semantic and metadata field before exposing feedback
+  ---
+  duration_ms: 272.149208
+  type: 'test'
+  ...
+# Subtest: keep-screen stays off before step start, follows settings after start, and releases on every exit
+ok 412 - keep-screen stays off before step start, follows settings after start, and releases on every exit
+  ---
+  duration_ms: 311.665167
+  type: 'test'
+  ...
+# Subtest: hide and unload release keep-screen even when their checkpoint throws synchronously
+ok 413 - hide and unload release keep-screen even when their checkpoint throws synchronously
+  ---
+  duration_ms: 91.20225
+  type: 'test'
+  ...
+# Subtest: keepScreenOn false never requests true even after load and actual workout start
+ok 414 - keepScreenOn false never requests true even after load and actual workout start
+  ---
+  duration_ms: 45.86225
+  type: 'test'
+  ...
+# Subtest: sync throw, Promise rejection and release failure never roll back terminal commits and stay visible
+ok 415 - sync throw, Promise rejection and release failure never roll back terminal commits and stay visible
+  ---
+  duration_ms: 149.365625
+  type: 'test'
+  ...
+# Subtest: release-only throw and rejection preserve terminal commit with a release-specific visible notice
+ok 416 - release-only throw and rejection preserve terminal commit with a release-specific visible notice
+  ---
+  duration_ms: 183.504208
+  type: 'test'
+  ...
+# Subtest: disabled device settings suppress vibration/sound/voice, while aborted never masquerades as completion
+ok 417 - disabled device settings suppress vibration/sound/voice, while aborted never masquerades as completion
+  ---
+  duration_ms: 24.123
+  type: 'test'
+  ...
+# Subtest: rest expiration occurrence is labeled correctly and stays deduplicated across runtime reconstruction
+ok 418 - rest expiration occurrence is labeled correctly and stays deduplicated across runtime reconstruction
+  ---
+  duration_ms: 170.949292
+  type: 'test'
+  ...
+# Subtest: privacy remains silent across normalize, fact, save/load and device failure paths
+ok 419 - privacy remains silent across normalize, fact, save/load and device failure paths
+  ---
+  duration_ms: 6.940541
+  type: 'test'
+  ...
+# Subtest: source privacy scan and all safety alarm flags lock positive non-diagnostic guidance
+ok 420 - source privacy scan and all safety alarm flags lock positive non-diagnostic guidance
+  ---
+  duration_ms: 4.405541
+  type: 'test'
+  ...
+# Subtest: real WXML binds both terminal summaries, all feedback controls and the safety disclaimer
+ok 421 - real WXML binds both terminal summaries, all feedback controls and the safety disclaimer
+  ---
+  duration_ms: 0.183584
+  type: 'test'
+  ...
+# Subtest: Attack: stale summary submit after active Session replacement — reject instead of attaching private feedback to another Session
+ok 422 - Attack: stale summary submit after active Session replacement — reject instead of attaching private feedback to another Session
+  ---
+  duration_ms: 19.6095
+  type: 'test'
+  ...
+# Subtest: Attack: terminal Session identity/revision ABA — reject same-id same-revision replacement with different terminal fact
+ok 423 - Attack: terminal Session identity/revision ABA — reject same-id same-revision replacement with different terminal fact
+  ---
+  duration_ms: 15.469542
+  type: 'test'
+  ...
+# Subtest: Attack: persisted record ABA on a fresh summary runtime — reject instead of exposing feedback from another terminal fact
+ok 424 - Attack: persisted record ABA on a fresh summary runtime — reject instead of exposing feedback from another terminal fact
+  ---
+  duration_ms: 26.450417
+  type: 'test'
+  ...
+# Subtest: Attack: tampered derived TrainingRecord semantics outside source fingerprint — reject forged event identity and counts
+ok 425 - Attack: tampered derived TrainingRecord semantics outside source fingerprint — reject forged event identity and counts
+  ---
+  duration_ms: 23.454334
+  type: 'test'
+  ...
+# Subtest: Attack: negative TrainingRecord metadata timestamps — reject impossible ordered values instead of treating them as valid
+ok 426 - Attack: negative TrainingRecord metadata timestamps — reject impossible ordered values instead of treating them as valid
+  ---
+  duration_ms: 23.457166
+  type: 'test'
+  ...
+# Subtest: Post-Spar hardening: same-status terminal ABA with changed facts rejects stale feedback save
+ok 427 - Post-Spar hardening: same-status terminal ABA with changed facts rejects stale feedback save
+  ---
+  duration_ms: 7.33575
+  type: 'test'
+  ...
+# Subtest: Test Adequacy Round 6: each isolated terminal fact replacement rejects stale feedback
+    # Subtest: only endedAt changes
+    ok 1 - only endedAt changes
+      ---
+      duration_ms: 8.645333
+      type: 'test'
+      ...
+    # Subtest: only planSnapshot changes
+    ok 2 - only planSnapshot changes
+      ---
+      duration_ms: 8.503584
+      type: 'test'
+      ...
+    # Subtest: only stepResults changes while counts stay unchanged
+    ok 3 - only stepResults changes while counts stay unchanged
+      ---
+      duration_ms: 5.713167
+      type: 'test'
+      ...
+    1..3
+ok 428 - Test Adequacy Round 6: each isolated terminal fact replacement rejects stale feedback
+  ---
+  duration_ms: 24.289958
+  type: 'test'
+  ...
+# Subtest: Post-Spar hardening: isolated persisted stepResults tamper fails closed with counts unchanged
+ok 429 - Post-Spar hardening: isolated persisted stepResults tamper fails closed with counts unchanged
+  ---
+  duration_ms: 20.274916
+  type: 'test'
+  ...
+# Subtest: completed and aborted summaries preserve honest status, active duration and step counts
+ok 430 - completed and aborted summaries preserve honest status, active duration and step counts
+  ---
+  duration_ms: 8.139416
+  type: 'test'
+  ...
+# Subtest: feedback requires RPE, accepts nullable optional values and rejects invalid health input
+ok 431 - feedback requires RPE, accepts nullable optional values and rejects invalid health input
+  ---
+  duration_ms: 1.124208
+  type: 'test'
+  ...
+# Subtest: completion facts distinguish event types, carry validated feedback and are stable by occurrence
+ok 432 - completion facts distinguish event types, carry validated feedback and are stable by occurrence
+  ---
+  duration_ms: 3.572209
+  type: 'test'
+  ...
+# Subtest: device notifications honor settings, deduplicate occurrences and degrade to visual feedback
+ok 433 - device notifications honor settings, deduplicate occurrences and degrade to visual feedback
+  ---
+  duration_ms: 0.742625
+  type: 'test'
+  ...
+# Subtest: alarm pain selection returns stop-and-seek-help guidance without diagnosis
+ok 434 - alarm pain selection returns stop-and-seek-help guidance without diagnosis
+  ---
+  duration_ms: 0.4335
+  type: 'test'
+  ...
+# Subtest: runtime honors keep-screen settings and releases on hide, terminal completion and unload
+ok 435 - runtime honors keep-screen settings and releases on hide, terminal completion and unload
+  ---
+  duration_ms: 262.916875
+  type: 'test'
+  ...
+# Subtest: summary runtime atomically saves one private completion fact without writing feedback to console
+ok 436 - summary runtime atomically saves one private completion fact without writing feedback to console
+  ---
+  duration_ms: 195.804542
+  type: 'test'
+  ...
+# Subtest: keep-screen API failure stays non-blocking and becomes an observable runtime notice
+ok 437 - keep-screen API failure stays non-blocking and becomes an observable runtime notice
+  ---
+  duration_ms: 26.715417
+  type: 'test'
+  ...
+# Subtest: summary page exposes completed/aborted facts, validated feedback controls and safety advice
+ok 438 - summary page exposes completed/aborted facts, validated feedback controls and safety advice
+  ---
+  duration_ms: 0.975041
+  type: 'test'
+  ...
+# Subtest: mini program registers the real summary route and renders privacy/safety copy
+ok 439 - mini program registers the real summary route and renders privacy/safety copy
+  ---
+  duration_ms: 0.415417
+  type: 'test'
+  ...
+# Subtest: production summary page passes the exact route sessionId and fails closed when missing
+ok 440 - production summary page passes the exact route sessionId and fails closed when missing
+  ---
+  duration_ms: 0.87875
+  type: 'test'
+  ...
+# Subtest: historical A route loads and saves A from its baseline record while active terminal Session is B
+ok 441 - historical A route loads and saves A from its baseline record while active terminal Session is B
+  ---
+  duration_ms: 82.341625
+  type: 'test'
+  ...
+# Subtest: missing, conflicting or tampered historical sessionId fails closed without falling back to active B
+    # Subtest: missing
+    ok 1 - missing
+      ---
+      duration_ms: 35.327709
+      type: 'test'
+      ...
+    # Subtest: conflict
+    ok 2 - conflict
+      ---
+      duration_ms: 26.183208
+      type: 'test'
+      ...
+    # Subtest: tamper
+    ok 3 - tamper
+      ---
+      duration_ms: 40.399333
+      type: 'test'
+      ...
+    1..3
+ok 442 - missing, conflicting or tampered historical sessionId fails closed without falling back to active B
+  ---
+  duration_ms: 102.442417
+  type: 'test'
+  ...
+# Subtest: terminal command atomically creates exactly one canonical pending TrainingRecord
+ok 443 - terminal command atomically creates exactly one canonical pending TrainingRecord
+  ---
+  duration_ms: 34.179542
+  type: 'test'
+  ...
+# Subtest: starting a new Session preserves the previous terminal baseline record
+ok 444 - starting a new Session preserves the previous terminal baseline record
+  ---
+  duration_ms: 16.17775
+  type: 'test'
+  ...
+# Subtest: completed and aborted historical records reserve their Session IDs before replacement start
+ok 445 - completed and aborted historical records reserve their Session IDs before replacement start
+  ---
+  duration_ms: 36.512333
+  type: 'test'
+  ...
+# Subtest: record identity collisions, duplicates and tampered candidates reserve a future Session ID
+    # Subtest: canonical record id
+    ok 1 - canonical record id
+      ---
+      duration_ms: 23.2525
+      type: 'test'
+      ...
+    # Subtest: source Session id
+    ok 2 - source Session id
+      ---
+      duration_ms: 16.063917
+      type: 'test'
+      ...
+    # Subtest: duplicate candidates
+    ok 3 - duplicate candidates
+      ---
+      duration_ms: 17.236875
+      type: 'test'
+      ...
+    # Subtest: tampered candidate
+    ok 4 - tampered candidate
+      ---
+      duration_ms: 17.365292
+      type: 'test'
+      ...
+    1..4
+ok 446 - record identity collisions, duplicates and tampered candidates reserve a future Session ID
+  ---
+  duration_ms: 74.638833
+  type: 'test'
+  ...
+# Subtest: Attack: 对象 key 插入顺序和 checksum 自身变化不得改变 canonical checksum，数组顺序必须参与校验
+ok 447 - Attack: 对象 key 插入顺序和 checksum 自身变化不得改变 canonical checksum，数组顺序必须参与校验
+  ---
+  duration_ms: 1.581167
+  type: 'test'
+  ...
+# Subtest: Attack: A/B commit 必须先写非活动槽、读回验证，再切 pointer，并把领域数据与 outbox 放进同一快照
+ok 448 - Attack: A/B commit 必须先写非活动槽、读回验证，再切 pointer，并把领域数据与 outbox 放进同一快照
+  ---
+  duration_ms: 11.794625
+  type: 'test'
+  ...
+# Subtest: Attack: repeated commits 必须严格交替 A/B 槽并保持单调 localRevision 与业务数组顺序
+ok 449 - Attack: repeated commits 必须严格交替 A/B 槽并保持单调 localRevision 与业务数组顺序
+  ---
+  duration_ms: 5.381417
+  type: 'test'
+  ...
+# Subtest: Attack: pointer 为垃圾值时 startup 必须选择最高 revision 的有效槽，并且只修 pointer
+ok 450 - Attack: pointer 为垃圾值时 startup 必须选择最高 revision 的有效槽，并且只修 pointer
+  ---
+  duration_ms: 1.757583
+  type: 'test'
+  ...
+# Subtest: Attack: pointer 指向较旧但有效的槽时也不能相信 pointer，必须提升到最高有效 revision
+ok 451 - Attack: pointer 指向较旧但有效的槽时也不能相信 pointer，必须提升到最高有效 revision
+  ---
+  duration_ms: 1.185208
+  type: 'test'
+  ...
+# Subtest: Attack: active slot checksum 被篡改时必须回退到另一有效槽，不能覆盖幸存快照
+ok 452 - Attack: active slot checksum 被篡改时必须回退到另一有效槽，不能覆盖幸存快照
+  ---
+  duration_ms: 1.094709
+  type: 'test'
+  ...
+# Subtest: Attack: active slot 是截断 JSON 或不可解析垃圾时必须隔离坏槽并恢复另一有效快照
+ok 453 - Attack: active slot 是截断 JSON 或不可解析垃圾时必须隔离坏槽并恢复另一有效快照
+  ---
+  duration_ms: 0.510708
+  type: 'test'
+  ...
+# Subtest: Attack: mutator 在内存阶段抛错时不得产生任何 slot 或 pointer 写入
+ok 454 - Attack: mutator 在内存阶段抛错时不得产生任何 slot 或 pointer 写入
+  ---
+  duration_ms: 1.359
+  type: 'test'
+  ...
+# Subtest: Attack: storage-full 写非活动槽失败时，旧 pointer 与旧快照必须保持可读且完全不变
+ok 455 - Attack: storage-full 写非活动槽失败时，旧 pointer 与旧快照必须保持可读且完全不变
+  ---
+  duration_ms: 2.686208
+  type: 'test'
+  ...
+# Subtest: Attack: 写入后读回内容静默损坏时必须拒绝切 pointer，并从旧槽恢复
+ok 456 - Attack: 写入后读回内容静默损坏时必须拒绝切 pointer，并从旧槽恢复
+  ---
+  duration_ms: 2.9615
+  type: 'test'
+  ...
+# Subtest: Attack: 写入成功但 read-back API 抛错时不得切 pointer，旧快照仍须原样保留
+ok 457 - Attack: 写入成功但 read-back API 抛错时不得切 pointer，旧快照仍须原样保留
+  ---
+  duration_ms: 0.793875
+  type: 'test'
+  ...
+# Subtest: Attack: future schema 必须明确拒绝，不能降级、迁移或写坏任何槽位
+ok 458 - Attack: future schema 必须明确拒绝，不能降级、迁移或写坏任何槽位
+  ---
+  duration_ms: 0.367833
+  type: 'test'
+  ...
+# Subtest: Attack: migration 必须逐版本执行且成功后只提交一次；再次启动不得重复迁移
+ok 459 - Attack: migration 必须逐版本执行且成功后只提交一次；再次启动不得重复迁移
+  ---
+  duration_ms: 0.806125
+  type: 'test'
+  ...
+# Subtest: Attack: 中间版本 migration 抛错时必须回滚 pointer 并保留旧有效槽，不得返回半迁移数据
+ok 460 - Attack: 中间版本 migration 抛错时必须回滚 pointer 并保留旧有效槽，不得返回半迁移数据
+  ---
+  duration_ms: 1.64275
+  type: 'test'
+  ...
+# Subtest: Attack: 未先调用 load() 就在旧 schema 上 commit 时，也必须先完成逐版本迁移再应用业务 mutator
+ok 461 - Attack: 未先调用 load() 就在旧 schema 上 commit 时，也必须先完成逐版本迁移再应用业务 mutator
+  ---
+  duration_ms: 1.809959
+  type: 'test'
+  ...
+# Subtest: Attack: 两个 slot 的 storage read 同时抛错时必须中止启动，不能把暂时不可读误判为全新数据库
+ok 462 - Attack: 两个 slot 的 storage read 同时抛错时必须中止启动，不能把暂时不可读误判为全新数据库
+  ---
+  duration_ms: 0.311334
+  type: 'test'
+  ...
+# Subtest: Attack: localRevision 到达 MAX_SAFE_INTEGER 时必须拒绝继续提交，不能产生无法单调递增的 revision
+ok 463 - Attack: localRevision 到达 MAX_SAFE_INTEGER 时必须拒绝继续提交，不能产生无法单调递增的 revision
+  ---
+  duration_ms: 0.443458
+  type: 'test'
+  ...
+# Subtest: Attack: 最终 pointer 写失败时旧快照必须保留；重启后应按最高有效 revision 接管已校验候选槽
+ok 464 - Attack: 最终 pointer 写失败时旧快照必须保留；重启后应按最高有效 revision 接管已校验候选槽
+  ---
+  duration_ms: 1.534583
+  type: 'test'
+  ...
+# Subtest: Attack: mutator 写入 undefined 时必须拒绝提交，不能经 JSON clone 静默变成 null
+ok 465 - Attack: mutator 写入 undefined 时必须拒绝提交，不能经 JSON clone 静默变成 null
+  ---
+  duration_ms: 0.44775
+  type: 'test'
+  ...
+# Subtest: Attack: 两实例在 mutator 内交错提交时 expectedRevision 必须在最终落盘前再次校验，不能覆盖已成功提交者
+ok 466 - Attack: 两实例在 mutator 内交错提交时 expectedRevision 必须在最终落盘前再次校验，不能覆盖已成功提交者
+  ---
+  duration_ms: 1.07525
+  type: 'test'
+  ...
+# Subtest: Attack: 空数据库初始化时 now() 返回非有限值必须失败，不能暴露 committedAt=null 的伪快照
+ok 467 - Attack: 空数据库初始化时 now() 返回非有限值必须失败，不能暴露 committedAt=null 的伪快照
+  ---
+  duration_ms: 0.149625
+  type: 'test'
+  ...
+# Subtest: Attack: storage 返回内部引用时，调用者修改 load/commit 返回对象也不得篡改持久快照
+ok 468 - Attack: storage 返回内部引用时，调用者修改 load/commit 返回对象也不得篡改持久快照
+  ---
+  duration_ms: 1.917458
+  type: 'test'
+  ...
+# Subtest: Attack: load 修复 stale pointer 的 setStorageSync 失败时不得改槽；重试后仍能选择最高 revision 并完成修复
+ok 469 - Attack: load 修复 stale pointer 的 setStorageSync 失败时不得改槽；重试后仍能选择最高 revision 并完成修复
+  ---
+  duration_ms: 1.432708
+  type: 'test'
+  ...
+# Subtest: Attack: second CAS read 两槽都抛错时必须在任何写入前中止 commit
+ok 470 - Attack: second CAS read 两槽都抛错时必须在任何写入前中止 commit
+  ---
+  duration_ms: 0.498666
+  type: 'test'
+  ...
+# Subtest: Attack: second CAS 遇到同 revision 但不同 checksum/payload 时必须识别 ABA，不能只比较 revision
+ok 471 - Attack: second CAS 遇到同 revision 但不同 checksum/payload 时必须识别 ABA，不能只比较 revision
+  ---
+  duration_ms: 1.251625
+  type: 'test'
+  ...
+# Subtest: Attack: slot key 已存在但值为 JSON null 时属于损坏，不得伪装成首次安装并返回空数据库
+ok 472 - Attack: slot key 已存在但值为 JSON null 时属于损坏，不得伪装成首次安装并返回空数据库
+  ---
+  duration_ms: 0.230333
+  type: 'test'
+  ...
+# Subtest: Attack: 显式传入空 expectedRevision options 必须拒绝，不能静默降级为无 CAS commit
+ok 473 - Attack: 显式传入空 expectedRevision options 必须拒绝，不能静默降级为无 CAS commit
+  ---
+  duration_ms: 0.833417
+  type: 'test'
+  ...
+# Subtest: Attack: migration map 只能使用自身版本 key，不能执行 prototype 继承的 migration
+ok 474 - Attack: migration map 只能使用自身版本 key，不能执行 prototype 继承的 migration
+  ---
+  duration_ms: 1.19825
+  type: 'test'
+  ...
+# Subtest: Attack: install metadata key 存在但 JSON 损坏时必须失败关闭，不能静默丢弃 device identity
+ok 475 - Attack: install metadata key 存在但 JSON 损坏时必须失败关闭，不能静默丢弃 device identity
+  ---
+  duration_ms: 0.252042
+  type: 'test'
+  ...
+# Subtest: Attack: migration 生成非法 settings 时间与休息上限时必须整体回滚，不能只校验字段类型
+ok 476 - Attack: migration 生成非法 settings 时间与休息上限时必须整体回滚，不能只校验字段类型
+  ---
+  duration_ms: 0.537416
+  type: 'test'
+  ...
+# Subtest: Attack: 两槽保存完全相同快照且 pointer 非法时必须无损选定一个槽，只修 pointer
+ok 477 - Attack: 两槽保存完全相同快照且 pointer 非法时必须无损选定一个槽，只修 pointer
+  ---
+  duration_ms: 6.621792
+  type: 'test'
+  ...
+# Subtest: Attack: mutator 删除必需顶层字段或把 outbox 改成非数组时必须在写槽前拒绝
+ok 478 - Attack: mutator 删除必需顶层字段或把 outbox 改成非数组时必须在写槽前拒绝
+  ---
+  duration_ms: 2.245
+  type: 'test'
+  ...
+# Subtest: Attack: canonical checksum 必须与标准 SHA-256 在 Unicode、长字符串和 key 重排下完全一致
+ok 479 - Attack: canonical checksum 必须与标准 SHA-256 在 Unicode、长字符串和 key 重排下完全一致
+  ---
+  duration_ms: 12.615333
+  type: 'test'
+  ...
+# Subtest: Attack: storage 仅实现 get/set 而没有 remove/clear 时仍必须能完成原子 commit
+ok 480 - Attack: storage 仅实现 get/set 而没有 remove/clear 时仍必须能完成原子 commit
+  ---
+  duration_ms: 1.433875
+  type: 'test'
+  ...
+# Subtest: Peer regression: 任一槽暂时不可读时 load 只能只读回退，commit 必须失败关闭且不得覆盖潜在较新槽
+ok 481 - Peer regression: 任一槽暂时不可读时 load 只能只读回退，commit 必须失败关闭且不得覆盖潜在较新槽
+  ---
+  duration_ms: 1.993875
+  type: 'test'
+  ...
+# Subtest: Peer regression: 同一最高 revision 的不同有效快照属于 split brain，load 与 commit 都必须失败关闭
+ok 482 - Peer regression: 同一最高 revision 的不同有效快照属于 split brain，load 与 commit 都必须失败关闭
+  ---
+  duration_ms: 0.70725
+  type: 'test'
+  ...
+# Subtest: Peer regression: install 必须是 closed schema，身份凭据与任意额外字段不得进入 A/B 快照
+ok 483 - Peer regression: install 必须是 closed schema，身份凭据与任意额外字段不得进入 A/B 快照
+  ---
+  duration_ms: 0.892834
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: direct commit 必须拒绝 settings 任意额外字段且保持零写
+ok 484 - Reviewer regression: direct commit 必须拒绝 settings 任意额外字段且保持零写
+  ---
+  duration_ms: 2.18575
+  type: 'test'
+  ...
+# Subtest: Reviewer regression: checksum-valid 恶意 settings 槽必须让 load 与 commit 失败关闭
+ok 485 - Reviewer regression: checksum-valid 恶意 settings 槽必须让 load 与 commit 失败关闭
+  ---
+  duration_ms: 4.127542
+  type: 'test'
+  ...
+# Subtest: Reviewer round 2 regression: checksum mismatch 必须先按普通损坏隔离，只有 checksum-valid 未知字段才 fail closed
+ok 486 - Reviewer round 2 regression: checksum mismatch 必须先按普通损坏隔离，只有 checksum-valid 未知字段才 fail closed
+  ---
+  duration_ms: 2.153
+  type: 'test'
+  ...
+# Subtest: rebuild computes trustworthy weekly totals and recent trends from normalized trainingDate facts
+ok 487 - rebuild computes trustworthy weekly totals and recent trends from normalized trainingDate facts
+  ---
+  duration_ms: 10.658458
+  type: 'test'
+  ...
+# Subtest: rebuild excludes rest days and preserves unknown completion, weight and RPE as null
+ok 488 - rebuild excludes rest days and preserves unknown completion, weight and RPE as null
+  ---
+  duration_ms: 0.181958
+  type: 'test'
+  ...
+# Subtest: completed target fallback is marked as estimated and streak de-duplicates same-day records
+ok 489 - completed target fallback is marked as estimated and streak de-duplicates same-day records
+  ---
+  duration_ms: 0.194458
+  type: 'test'
+  ...
+# Subtest: weekly totals include both legal boundaries, exclude adjacent weeks and reset streak at a date gap
+ok 490 - weekly totals include both legal boundaries, exclude adjacent weeks and reset streak at a date gap
+  ---
+  duration_ms: 0.311292
+  type: 'test'
+  ...
+# Subtest: planning and classification use scheduled facts and structured targets before controlled name fallback
+ok 491 - planning and classification use scheduled facts and structured targets before controlled name fallback
+  ---
+  duration_ms: 0.167375
+  type: 'test'
+  ...
+# Subtest: aborted work contributes real completed activity but not completion rate or streak
+ok 492 - aborted work contributes real completed activity but not completion rate or streak
+  ---
+  duration_ms: 0.154667
+  type: 'test'
+  ...
+# Subtest: last known strength and body weights survive seven newer records with explicit unknown values
+ok 493 - last known strength and body weights survive seven newer records with explicit unknown values
+  ---
+  duration_ms: 0.221167
+  type: 'test'
+  ...
+# Subtest: latest known facts win by normalized date from unordered input and every trend keeps exactly seven nullable points
+ok 494 - latest known facts win by normalized date from unordered input and every trend keeps exactly seven nullable points
+  ---
+  duration_ms: 1.090166
+  type: 'test'
+  ...
+# Subtest: an unplanned completed workout keeps completion unknown while retaining actual activity
+ok 495 - an unplanned completed workout keeps completion unknown while retaining actual activity
+  ---
+  duration_ms: 1.213208
+  type: 'test'
+  ...
+# Subtest: record create, edit and delete incremental updates remain identical to authoritative rebuilds
+ok 496 - record create, edit and delete incremental updates remain identical to authoritative rebuilds
+  ---
+  duration_ms: 2.515625
+  type: 'test'
+  ...
+# Subtest: date boundaries reject impossible or inverted ranges instead of reinterpreting UTC timestamps
+ok 497 - date boundaries reject impossible or inverted ranges instead of reinterpreting UTC timestamps
+  ---
+  duration_ms: 0.28525
+  type: 'test'
+  ...
+# Subtest: AC1: append creates one closed schema-valid operation and install identity inside the same draft
+ok 498 - AC1: append creates one closed schema-valid operation and install identity inside the same draft
+  ---
+  duration_ms: 11.652917
+  type: 'test'
+  ...
+# Subtest: AC1: same persisted intent keeps a stable opId and cannot append a duplicate operation
+ok 499 - AC1: same persisted intent keeps a stable opId and cannot append a duplicate operation
+  ---
+  duration_ms: 3.409459
+  type: 'test'
+  ...
+# Subtest: AC1: fresh installations use distinct stable device identities instead of command-derived shared IDs
+ok 500 - AC1: fresh installations use distinct stable device identities instead of command-derived shared IDs
+  ---
+  duration_ms: 19.893459
+  type: 'test'
+  ...
+# Subtest: AC1: operation baseServerRevision comes from strict replica metadata rather than domain revision or device time
+ok 501 - AC1: operation baseServerRevision comes from strict replica metadata rather than domain revision or device time
+  ---
+  duration_ms: 1.672208
+  type: 'test'
+  ...
+# Subtest: AC3: only the head operation per entity is pushable while independent entities can progress together
+ok 502 - AC3: only the head operation per entity is pushable while independent entities can progress together
+  ---
+  duration_ms: 3.437875
+  type: 'test'
+  ...
+# Subtest: AC3: legacy descriptor stays durable, blocks only its own entity queue and never enters provider payload
+ok 503 - AC3: legacy descriptor stays durable, blocks only its own entity queue and never enters provider payload
+  ---
+  duration_ms: 0.39575
+  type: 'test'
+  ...
+# Subtest: AC3: accepted receipt removes only its exact operation, records replica revision and rebases next op without changing opId
+ok 504 - AC3: accepted receipt removes only its exact operation, records replica revision and rebases next op without changing opId
+  ---
+  duration_ms: 4.90475
+  type: 'test'
+  ...
+# Subtest: AC3: a legacy predecessor prevents a forged accepted receipt from skipping the quarantined entity head
+ok 505 - AC3: a legacy predecessor prevents a forged accepted receipt from skipping the quarantined entity head
+  ---
+  duration_ms: 1.004375
+  type: 'test'
+  ...
+# Subtest: AC3: accepted server revision must advance beyond the operation base revision
+ok 506 - AC3: accepted server revision must advance beyond the operation base revision
+  ---
+  duration_ms: 4.545834
+  type: 'test'
+  ...
+# Subtest: AC1: plan save persists the aggregate and complete SyncOperation in the same A/B commit
+ok 507 - AC1: plan save persists the aggregate and complete SyncOperation in the same A/B commit
+  ---
+  duration_ms: 7.331417
+  type: 'test'
+  ...
+# Subtest: AC1: plan delete persists its domain tombstone and null-payload sync tombstone in one A/B commit
+ok 508 - AC1: plan delete persists its domain tombstone and null-payload sync tombstone in one A/B commit
+  ---
+  duration_ms: 12.243709
+  type: 'test'
+  ...
+# Subtest: AC1: settings update queues only changed fields with the settings revision in the same A/B commit
+ok 509 - AC1: settings update queues only changed fields with the settings revision in the same A/B commit
+  ---
+  duration_ms: 3.316834
+  type: 'test'
+  ...
+# Subtest: AC1/AC6: active Session stays local, while terminal record creation queues one full record operation atomically
+ok 510 - AC1/AC6: active Session stays local, while terminal record creation queues one full record operation atomically
+  ---
+  duration_ms: 17.203
+  type: 'test'
+  ...
+# Subtest: AC1: record correction and delete replace legacy descriptors with complete operations in their own atomic commits
+ok 511 - AC1: record correction and delete replace legacy descriptors with complete operations in their own atomic commits
+  ---
+  duration_ms: 28.033792
+  type: 'test'
+  ...
+# Subtest: Attack: repository retry after a failed atomic write keeps one stable command opId and leaves no half-state
+ok 512 - Attack: repository retry after a failed atomic write keeps one stable command opId and leaves no half-state
+  ---
+  duration_ms: 4.419208
+  type: 'test'
+  ...
+# Subtest: Attack: local clear gives rebuilt plan, settings and record commands fresh opIds
+    # Subtest: plan
+    ok 1 - plan
+      ---
+      duration_ms: 9.954292
+      type: 'test'
+      ...
+    # Subtest: settings
+    ok 2 - settings
+      ---
+      duration_ms: 3.105625
+      type: 'test'
+      ...
+    # Subtest: terminal record
+    ok 3 - terminal record
+      ---
+      duration_ms: 21.660625
+      type: 'test'
+      ...
+    1..3
+ok 513 - Attack: local clear gives rebuilt plan, settings and record commands fresh opIds
+  ---
+  duration_ms: 34.98575
+  type: 'test'
+  ...
+# Subtest: Attack: replaying the terminal command is a zero-write no-op and never queues a second record operation
+ok 514 - Attack: replaying the terminal command is a zero-write no-op and never queues a second record operation
+  ---
+  duration_ms: 8.025375
+  type: 'test'
+  ...
+# Subtest: AC2: RemoteSyncProvider contract is closed and requires bootstrap, push, pull, preparePurge and purge
+ok 515 - AC2: RemoteSyncProvider contract is closed and requires bootstrap, push, pull, preparePurge and purge
+  ---
+  duration_ms: 0.227667
+  type: 'test'
+  ...
+# Subtest: AC2/AC3: deterministic fake provider supports idempotent push, cursor pull and purge without network
+ok 516 - AC2/AC3: deterministic fake provider supports idempotent push, cursor pull and purge without network
+  ---
+  duration_ms: 2.486292
+  type: 'test'
+  ...
+# Subtest: AC2/AC3: settings patch push materializes one canonical remote entity and same-revision pull replays its hash
+ok 517 - AC2/AC3: settings patch push materializes one canonical remote entity and same-revision pull replays its hash
+  ---
+  duration_ms: 5.494
+  type: 'test'
+  ...
+# Subtest: AC2/AC4: fake provider coalesces repeated entity revisions inside one raw page while cursor consumes the full log
+ok 518 - AC2/AC4: fake provider coalesces repeated entity revisions inside one raw page while cursor consumes the full log
+  ---
+  duration_ms: 6.681834
+  type: 'test'
+  ...
+# Subtest: AC3/AC6: push removes only exact accepted operations and preserves rejected, conflict and unlisted operations
+ok 519 - AC3/AC6: push removes only exact accepted operations and preserves rejected, conflict and unlisted operations
+  ---
+  duration_ms: 74.92275
+  type: 'test'
+  ...
+# Subtest: AC3: duplicate accepted receipts fail closed without replica write or partial outbox removal
+ok 520 - AC3: duplicate accepted receipts fail closed without replica write or partial outbox removal
+  ---
+  duration_ms: 7.883666
+  type: 'test'
+  ...
+# Subtest: AC3: lost push response keeps semantic operation facts and retries the same opId until the exact receipt commits
+ok 521 - AC3: lost push response keeps semantic operation facts and retries the same opId until the exact receipt commits
+  ---
+  duration_ms: 18.021083
+  type: 'test'
+  ...
+# Subtest: AC3: accepted head rebases the next same-entity operation without changing its opId
+ok 522 - AC3: accepted head rebases the next same-entity operation without changing its opId
+  ---
+  duration_ms: 21.415291
+  type: 'test'
+  ...
+# Subtest: Attack: push response cannot accept an outbox operation that was not in the attempted request
+ok 523 - Attack: push response cannot accept an outbox operation that was not in the attempted request
+  ---
+  duration_ms: 17.801958
+  type: 'test'
+  ...
+# Subtest: AC4: pull applies a fully validated page, replicas and opaque nextCursor in one A/B commit
+ok 524 - AC4: pull applies a fully validated page, replicas and opaque nextCursor in one A/B commit
+  ---
+  duration_ms: 5.7295
+  type: 'test'
+  ...
+# Subtest: AC4/AC6: invalid, duplicate, stale or active-session pull changes fail before any write or cursor advance
+    # Subtest: invalid second change
+    ok 1 - invalid second change
+      ---
+      duration_ms: 0.904583
+      type: 'test'
+      ...
+    # Subtest: duplicate entity in one page
+    ok 2 - duplicate entity in one page
+      ---
+      duration_ms: 2.052834
+      type: 'test'
+      ...
+    # Subtest: active Session entity
+    ok 3 - active Session entity
+      ---
+      duration_ms: 0.612958
+      type: 'test'
+      ...
+    # Subtest: invalid tombstone timestamp
+    ok 4 - invalid tombstone timestamp
+      ---
+      duration_ms: 0.574792
+      type: 'test'
+      ...
+    # Subtest: missing trusted owner envelope fact
+    ok 5 - missing trusted owner envelope fact
+      ---
+      duration_ms: 0.471417
+      type: 'test'
+      ...
+    # Subtest: stale server revision
+    ok 6 - stale server revision
+      ---
+      duration_ms: 1.8925
+      type: 'test'
+      ...
+    1..6
+ok 525 - AC4/AC6: invalid, duplicate, stale or active-session pull changes fail before any write or cursor advance
+  ---
+  duration_ms: 7.25325
+  type: 'test'
+  ...
+# Subtest: AC4: pull storage failure and exact page replay preserve the committed cursor boundary
+ok 526 - AC4: pull storage failure and exact page replay preserve the committed cursor boundary
+  ---
+  duration_ms: 5.576042
+  type: 'test'
+  ...
+# Subtest: AC4/AC6: pull rebases settings fields explicitly while preserving the local opId and remote replica fact
+ok 527 - AC4/AC6: pull rebases settings fields explicitly while preserving the local opId and remote replica fact
+  ---
+  duration_ms: 2.498
+  type: 'test'
+  ...
+# Subtest: AC2/AC4: application bootstrap and purge are reachable without letting bootstrap advance the pull cursor
+ok 528 - AC2/AC4: application bootstrap and purge are reachable without letting bootstrap advance the pull cursor
+  ---
+  duration_ms: 2.3945
+  type: 'test'
+  ...
+# Subtest: AC2/AC4: application synchronizeOnce pushes then drains opaque pull pages through SyncService only
+ok 529 - AC2/AC4: application synchronizeOnce pushes then drains opaque pull pages through SyncService only
+  ---
+  duration_ms: 9.559291
+  type: 'test'
+  ...
+# Subtest: AC6: push settings conflict uses field rebase instead of a generic unresolved conflict
+ok 530 - AC6: push settings conflict uses field rebase instead of a generic unresolved conflict
+  ---
+  duration_ms: 3.622917
+  type: 'test'
+  ...
+# Subtest: AC2/AC4: provider throws and invalid bootstrap, pull or purge responses leave local storage untouched
+    # Subtest: bootstrap throws
+    ok 1 - bootstrap throws
+      ---
+      duration_ms: 0.553375
+      type: 'test'
+      ...
+    # Subtest: bootstrap returns an invalid closed response
+    ok 2 - bootstrap returns an invalid closed response
+      ---
+      duration_ms: 0.535416
+      type: 'test'
+      ...
+    # Subtest: pull throws
+    ok 3 - pull throws
+      ---
+      duration_ms: 0.476166
+      type: 'test'
+      ...
+    # Subtest: pull returns an invalid closed response
+    ok 4 - pull returns an invalid closed response
+      ---
+      duration_ms: 0.444459
+      type: 'test'
+      ...
+    # Subtest: purge throws
+    ok 5 - purge throws
+      ---
+      duration_ms: 0.435708
+      type: 'test'
+      ...
+    # Subtest: purge returns an invalid closed response
+    ok 6 - purge returns an invalid closed response
+      ---
+      duration_ms: 0.43575
+      type: 'test'
+      ...
+    1..6
+ok 531 - AC2/AC4: provider throws and invalid bootstrap, pull or purge responses leave local storage untouched
+  ---
+  duration_ms: 3.078917
+  type: 'test'
+  ...
+# Subtest: AC2: application commands use closed schemas before invoking SyncService
+ok 532 - AC2: application commands use closed schemas before invoking SyncService
+  ---
+  duration_ms: 0.207542
+  type: 'test'
+  ...
+# Subtest: AC2: application facade rejects overlapping remote commands and releases its instance lock
+ok 533 - AC2: application facade rejects overlapping remote commands and releases its instance lock
+  ---
+  duration_ms: 0.10075
+  type: 'test'
+  ...
+# Subtest: Attack: start 必须只使用显式 nowMs 建立绝对 deadline，不能读取 Date.now 或依赖 interval
+ok 534 - Attack: start 必须只使用显式 nowMs 建立绝对 deadline，不能读取 Date.now 或依赖 interval
+  ---
+  duration_ms: 1.552292
+  type: 'test'
+  ...
+# Subtest: Attack: running remaining 必须使用 ceil 并在 exact boundary 与超时后 clamp 到零
+ok 535 - Attack: running remaining 必须使用 ceil 并在 exact boundary 与超时后 clamp 到零
+  ---
+  duration_ms: 0.365167
+  type: 'test'
+  ...
+# Subtest: Attack: pause 必须冻结 ceil 后的剩余秒数并清空 deadline；resume 从显式 nowMs 重建 deadline
+ok 536 - Attack: pause 必须冻结 ceil 后的剩余秒数并清空 deadline；resume 从显式 nowMs 重建 deadline
+  ---
+  duration_ms: 0.4845
+  type: 'test'
+  ...
+# Subtest: Attack: ±30 adjustment 必须移动绝对 deadline、累计 adjustmentSeconds，并在减过头时 clamp 为零
+ok 537 - Attack: ±30 adjustment 必须移动绝对 deadline、累计 adjustmentSeconds，并在减过头时 clamp 为零
+  ---
+  duration_ms: 0.216458
+  type: 'test'
+  ...
+# Subtest: Attack: exact boundary expire 必须生成稳定 occurrence ID，重复 expire 不得改变 expiredAt 或重复边界
+ok 538 - Attack: exact boundary expire 必须生成稳定 occurrence ID，重复 expire 不得改变 expiredAt 或重复边界
+  ---
+  duration_ms: 0.184542
+  type: 'test'
+  ...
+# Subtest: Attack: 08:41 long-background restore 只能 expire 当前 08:35 timer 一次，不能隐式推进 step/set
+ok 539 - Attack: 08:41 long-background restore 只能 expire 当前 08:35 timer 一次，不能隐式推进 step/set
+  ---
+  duration_ms: 0.911584
+  type: 'test'
+  ...
+# Subtest: Attack: backward clock jump 超过 5 秒必须暂停并要求确认；恰好 5 秒仍按 running 计算
+ok 540 - Attack: backward clock jump 超过 5 秒必须暂停并要求确认；恰好 5 秒仍按 running 计算
+  ---
+  duration_ms: 0.177292
+  type: 'test'
+  ...
+# Subtest: Attack: paused snapshot 经 JSON serialize/parse 后 restore 必须保持 paused 与冻结剩余值
+ok 541 - Attack: paused snapshot 经 JSON serialize/parse 后 restore 必须保持 paused 与冻结剩余值
+  ---
+  duration_ms: 0.14625
+  type: 'test'
+  ...
+# Subtest: Attack: step/rest 的 expiration occurrence ID 必须稳定且按 timer identity 区分
+ok 542 - Attack: step/rest 的 expiration occurrence ID 必须稳定且按 timer identity 区分
+  ---
+  duration_ms: 0.252458
+  type: 'test'
+  ...
+# Subtest: Attack: malformed start 参数与非有限 nowMs 必须 fail closed
+ok 543 - Attack: malformed start 参数与非有限 nowMs 必须 fail closed
+  ---
+  duration_ms: 0.566417
+  type: 'test'
+  ...
+# Subtest: Attack: restore 必须拒绝 null、数组、未知 status/mode 与非法 deadline 的 future/malformed snapshot
+ok 544 - Attack: restore 必须拒绝 null、数组、未知 status/mode 与非法 deadline 的 future/malformed snapshot
+  ---
+  duration_ms: 0.254625
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: 非整秒 absolute deadline 的 ±30 调整必须精确平移毫秒值且不修改输入
+ok 545 - Attack Round 2: 非整秒 absolute deadline 的 ±30 调整必须精确平移毫秒值且不修改输入
+  ---
+  duration_ms: 0.080209
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: unsafe/non-finite 数值必须在所有入口 fail closed 且不产生半状态
+ok 546 - Attack Round 2: unsafe/non-finite 数值必须在所有入口 fail closed 且不产生半状态
+  ---
+  duration_ms: 0.308375
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: 非法状态命令必须拒绝，重复合法命令必须返回独立快照且不修改输入
+ok 547 - Attack Round 2: 非法状态命令必须拒绝，重复合法命令必须返回独立快照且不修改输入
+  ---
+  duration_ms: 0.298
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: occurrence ID 必须抵抗分隔符碰撞并在 JSON round-trip 后保持确定性
+ok 548 - Attack Round 2: occurrence ID 必须抵抗分隔符碰撞并在 JSON round-trip 后保持确定性
+  ---
+  duration_ms: 0.096041
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: 连续容差内回拨不得通过 checkpointAt 后退累积绕过 5 秒异常阈值
+ok 549 - Attack Round 2: 连续容差内回拨不得通过 checkpointAt 后退累积绕过 5 秒异常阈值
+  ---
+  duration_ms: 0.202958
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: restore 只能接受 JSON plain TimerSnapshot，不能接受 prototype-backed 对象
+ok 550 - Attack Round 2: restore 只能接受 JSON plain TimerSnapshot，不能接受 prototype-backed 对象
+  ---
+  duration_ms: 0.124042
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: TimerSnapshot 必须是 closed JSON schema，不能携带业务 index 或 prototype key
+ok 551 - Attack Round 2: TimerSnapshot 必须是 closed JSON schema，不能携带业务 index 或 prototype key
+  ---
+  duration_ms: 0.184584
+  type: 'test'
+  ...
+# Subtest: Attack Round 2: expired 是终态边界，重复 restore/expire 与失败命令均不得改写 occurrence 或输入
+ok 552 - Attack Round 2: expired 是终态边界，重复 restore/expire 与失败命令均不得改写 occurrence 或输入
+  ---
+  duration_ms: 3.522083
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: snapshot descriptor 边界必须拒绝 accessor/non-enumerable/null-prototype，同时接受 frozen JSON data
+ok 553 - Attack Round 3: snapshot descriptor 边界必须拒绝 accessor/non-enumerable/null-prototype，同时接受 frozen JSON data
+  ---
+  duration_ms: 0.227583
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: start input 也必须是 inert JSON data，不能执行 accessor getter
+ok 554 - Attack Round 3: start input 也必须是 inert JSON data，不能执行 accessor getter
+  ---
+  duration_ms: 0.078334
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: expired occurrence ID 必须由 timer identity 重算校验，不能替换为另一 timer 的合法 ID
+ok 555 - Attack Round 3: expired occurrence ID 必须由 timer identity 重算校验，不能替换为另一 timer 的合法 ID
+  ---
+  duration_ms: 0.110458
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: v1 snapshot 必须拒绝无法由合法转换产生的时间顺序组合
+ok 556 - Attack Round 3: v1 snapshot 必须拒绝无法由合法转换产生的时间顺序组合
+  ---
+  duration_ms: 0.128709
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: 删除 anomaly 标记不得把待确认回拨伪装成普通 paused 后直接 resume
+ok 557 - Attack Round 3: 删除 anomaly 标记不得把待确认回拨伪装成普通 paused 后直接 resume
+  ---
+  duration_ms: 0.088
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: state-changing command 观察到 anchor 回拨超过 5 秒时不得返回普通 pause/adjust 状态
+ok 558 - Attack Round 3: state-changing command 观察到 anchor 回拨超过 5 秒时不得返回普通 pause/adjust 状态
+  ---
+  duration_ms: 0.067292
+  type: 'test'
+  ...
+# Subtest: Attack Round 3: safe-integer 上界与同一 nowMs 重放必须分别 fail closed 和完全确定
+ok 559 - Attack Round 3: safe-integer 上界与同一 nowMs 重放必须分别 fail closed 和完全确定
+  ---
+  duration_ms: 0.187958
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: clock guard 必须在 exact 5000ms 容差与 5001ms 异常边界保持一致
+ok 560 - Attack Round 4: clock guard 必须在 exact 5000ms 容差与 5001ms 异常边界保持一致
+  ---
+  duration_ms: 0.13375
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: 普通 paused timer 遇到回拨必须存在进入 anomaly 并确认恢复的闭环
+ok 561 - Attack Round 4: 普通 paused timer 遇到回拨必须存在进入 anomaly 并确认恢复的闭环
+  ---
+  duration_ms: 0.143875
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: paused adjust 的返回值必须继续满足 pausedAt/checkpointAt invariant 并可再次使用
+ok 562 - Attack Round 4: paused adjust 的返回值必须继续满足 pausedAt/checkpointAt invariant 并可再次使用
+  ---
+  duration_ms: 0.071584
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: v1 canonical numbers 必须拒绝或规范化 -0，并拒绝无法由 start 产生的 MAX_SAFE duration snapshot
+ok 563 - Attack Round 4: v1 canonical numbers 必须拒绝或规范化 -0，并拒绝无法由 start 产生的 MAX_SAFE duration snapshot
+  ---
+  duration_ms: 0.058458
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: repeated -30 调整不得让 running deadline 越过 nowMs 或 startedAt
+ok 564 - Attack Round 4: repeated -30 调整不得让 running deadline 越过 nowMs 或 startedAt
+  ---
+  duration_ms: 0.082541
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: Unicode/分隔符 occurrence ID 必须 canonical、无碰撞且 JSON round-trip 稳定
+ok 565 - Attack Round 4: Unicode/分隔符 occurrence ID 必须 canonical、无碰撞且 JSON round-trip 稳定
+  ---
+  duration_ms: 0.230416
+  type: 'test'
+  ...
+# Subtest: Attack Round 4: 输出 mutation 与非法命令均不得反向污染输入或其他确定性结果
+ok 566 - Attack Round 4: 输出 mutation 与非法命令均不得反向污染输入或其他确定性结果
+  ---
+  duration_ms: 0.366625
+  type: 'test'
+  ...
+# Subtest: Attack Round 5: factory TimerEngine 必须暴露 canonical remaining alias 并在全状态下与 getRemaining 一致
+ok 567 - Attack Round 5: factory TimerEngine 必须暴露 canonical remaining alias 并在全状态下与 getRemaining 一致
+  ---
+  duration_ms: 0.743
+  type: 'test'
+  ...
+# Subtest: Peer regression: running deadline 到达或跨越时所有状态命令必须先物化同一个 expired 边界
+ok 568 - Peer regression: running deadline 到达或跨越时所有状态命令必须先物化同一个 expired 边界
+  ---
+  duration_ms: 1.384625
+  type: 'test'
+  ...
+1..568
+# tests 737
+# suites 0
+# pass 737
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 12216.561541
+exit-code: 0
