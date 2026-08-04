@@ -1,0 +1,38 @@
+command: node --test tests/e2e/train-flow-critical.e2e.test.js
+source-head: 7b9cf1731fb8a5d0d831ab90e6d42aa34ffc4f4e
+source-tree: 081e7b1f65069e529a70fc16799b30461997a737
+TAP version 13
+# Subtest: C1 anonymous offline first launch reaches one terminal record and weekly statistics
+ok 1 - C1 anonymous offline first launch reaches one terminal record and weekly statistics
+  ---
+  duration_ms: 663.088291
+  type: 'test'
+  ...
+# Subtest: C2 lifecycle reconstruction emits one expiry boundary and terminal replay stays idempotent
+ok 2 - C2 lifecycle reconstruction emits one expiry boundary and terminal replay stays idempotent
+  ---
+  duration_ms: 756.547583
+  type: 'test'
+  ...
+# Subtest: C3 history, invalid import, cancel/confirm clear and Sunday rest share real local boundaries
+ok 3 - C3 history, invalid import, cancel/confirm clear and Sunday rest share real local boundaries
+  ---
+  duration_ms: 153.545833
+  type: 'test'
+  ...
+# Subtest: C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries
+ok 4 - C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries
+  ---
+  duration_ms: 9337.01375
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10963.830875
+exit-code: 0
