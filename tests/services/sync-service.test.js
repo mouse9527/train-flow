@@ -19,6 +19,13 @@ const { createLocalDatabase } = require('../../miniprogram/services/local-databa
 const { computeChecksum } = require('../../miniprogram/utils/checksum');
 const { StorageDouble, clone } = require('../helpers/storage-double');
 const {
+  assertBootstrapResult,
+  assertPullResult,
+  assertPushResult,
+  assertRemoteSyncProvider,
+  createDeterministicRemoteSyncProvider
+} = require('../../miniprogram/services/remote-sync-provider');
+const {
   appendSyncOperation,
   applyAcceptedOperations,
   assertSyncOperation,
@@ -582,5 +589,62 @@ test('Attack: replaying the terminal command is a zero-write no-op and never que
     storage.operations.filter(({ type }) => type === 'write'),
     [],
     'idempotent replay must not write a second domain state or operation'
+  );
+});
+
+test('AC2: RemoteSyncProvider contract is closed and requires bootstrap, push, pull and purge', () => {
+  assert.throws(
+    () => assertRemoteSyncProvider({ bootstrap() {}, push() {}, pull() {} }),
+    (error) => error && error.code === 'REMOTE_SYNC_PROVIDER_INVALID'
+  );
+  assert.throws(
+    () => assertBootstrapResult({ cursor: null, serverTime: NOW, ownerId: 'must-not-leak' }),
+    (error) => error && error.code === 'REMOTE_SYNC_RESPONSE_INVALID'
+  );
+  assert.throws(
+    () => assertPushResult({ accepted: [], rejected: [], conflicts: [], implicitAccepted: true }),
+    (error) => error && error.code === 'REMOTE_SYNC_RESPONSE_INVALID'
+  );
+  assert.throws(
+    () => assertPullResult({ changes: [], nextCursor: null, hasMore: false, extra: true }),
+    (error) => error && error.code === 'REMOTE_SYNC_RESPONSE_INVALID'
+  );
+});
+
+test('AC2/AC3: deterministic fake provider supports idempotent push, cursor pull and purge without network', async () => {
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  assertRemoteSyncProvider(provider);
+  const bootstrap = await provider.bootstrap({ deviceId: 'device_sync_test' });
+  assertBootstrapResult(bootstrap);
+  assert.deepEqual(bootstrap, { cursor: null, serverTime: NOW });
+
+  const draft = newDraft();
+  const operation = queuePlan(draft, { intentKey: 'provider-idempotent' });
+  const firstPush = await provider.push({ operations: [operation] });
+  assertPushResult(firstPush);
+  assert.equal(firstPush.accepted.length, 1);
+  assert.deepEqual(firstPush.rejected, []);
+  assert.deepEqual(firstPush.conflicts, []);
+
+  const retry = {
+    ...clone(operation),
+    attemptCount: 2,
+    lastAttemptAt: NOW + 2_000
+  };
+  const retryPush = await provider.push({ operations: [retry] });
+  assert.deepEqual(retryPush, firstPush, 'same opId retry must reuse the exact receipt');
+
+  const firstPage = await provider.pull({ cursor: null, limit: 1 });
+  assertPullResult(firstPage);
+  assert.equal(firstPage.changes.length, 1);
+  assert.equal(firstPage.changes[0].entityId, operation.entityId);
+  assert.equal(firstPage.hasMore, false);
+  assert.equal(typeof firstPage.nextCursor, 'string');
+
+  const purged = await provider.purge({ confirmationToken: 'confirm_fake_purge' });
+  assert.deepEqual(purged, { purgedAt: NOW });
+  assert.deepEqual(
+    await provider.pull({ cursor: null, limit: 10 }),
+    { changes: [], nextCursor: null, hasMore: false }
   );
 });
