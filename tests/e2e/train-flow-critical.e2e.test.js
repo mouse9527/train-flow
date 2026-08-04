@@ -9,6 +9,12 @@ const {
   createPlanApplicationService
 } = require('../../miniprogram/application/plan-application-service');
 const {
+  createRecordApplicationService
+} = require('../../miniprogram/application/record-application-service');
+const {
+  createSettingsDataApplicationService
+} = require('../../miniprogram/application/settings-application-service');
+const {
   createStatisticsApplicationService
 } = require('../../miniprogram/application/statistics-application-service');
 const {
@@ -23,6 +29,9 @@ const {
 const {
   createTrainingRecordRepository
 } = require('../../miniprogram/domain/records/training-record-repository');
+const {
+  createSettingsRepository
+} = require('../../miniprogram/domain/identity-settings/settings-repository');
 const {
   createSessionRepository
 } = require('../../miniprogram/domain/execution/session-repository');
@@ -189,4 +198,89 @@ test('C2 lifecycle reconstruction emits one expiry boundary and terminal replay 
   assert.equal(records.length, 1);
   assert.equal(records[0].sourceSessionId, active.id);
   assert.equal(adapter.networkAttempts(), 0);
+});
+
+test('C3 history, invalid import, cancel/confirm clear and Sunday rest share real local boundaries', () => {
+  const adapter = createAnonymousOfflineAdapter();
+  let nowMs = FIXED_CLOCK.startAt;
+  const database = createLocalDatabase({ storage: adapter, now: () => nowMs });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'anonymous_device_data', createdAt: nowMs };
+  });
+  const planRepository = createPlanRepository({ database, now: () => nowMs });
+  const planApplication = createPlanApplicationService({ repository: planRepository });
+  planApplication.initializeDefaultPlans();
+
+  const sessionRepository = createSessionRepository({ database });
+  const workout = createWorkoutApplicationService({
+    planRepository,
+    sessionRepository,
+    deviceId: 'anonymous_device_data',
+    idFactory: () => 'session_critical_data',
+    now: () => nowMs
+  });
+  const active = workout.startSession({
+    planId: 'plan_20260803_builtin',
+    commandKey: 'critical:data:start',
+    nowMs
+  });
+  nowMs += 60_000;
+  workout.execute({
+    type: 'abort',
+    expectedSessionRevision: active.sessionRevision,
+    commandKey: 'critical:data:abort',
+    nowMs,
+    payload: { reason: 'acceptance-history' }
+  });
+
+  const recordRepository = createTrainingRecordRepository({ database });
+  const history = createRecordApplicationService({ repository: recordRepository });
+  const historyView = history.getView();
+  const selected = historyView.selectedRecord;
+  assert.equal(historyView.records.length, 1);
+  assert.equal(selected.status, 'aborted');
+  history.deleteRecord({
+    recordId: selected.id,
+    expectedRevision: selected.revision,
+    commandKey: 'critical:data:delete',
+    nowMs: nowMs + 1
+  });
+  assert.equal(history.getView().records.length, 0);
+
+  const dataAdapter = createAnonymousOfflineAdapter();
+  const dataDatabase = createLocalDatabase({ storage: dataAdapter, now: () => nowMs });
+  dataDatabase.commit((draft) => {
+    draft.install = { deviceId: 'anonymous_device_controls', createdAt: nowMs };
+  });
+  const dataPlanRepository = createPlanRepository({ database: dataDatabase, now: () => nowMs });
+  const dataPlanApplication = createPlanApplicationService({ repository: dataPlanRepository });
+  dataPlanApplication.initializeDefaultPlans();
+  const sunday = dataPlanApplication.getWeekPlan({
+    weekStart: '2026-08-03',
+    selectedDate: '2026-08-09'
+  }).selectedDay;
+  const settings = createSettingsDataApplicationService({
+    repository: createSettingsRepository({ database: dataDatabase, now: () => nowMs }),
+    database: dataDatabase,
+    now: () => nowMs
+  });
+  const exported = settings.createExportPreview();
+  assert.equal(exported.summary.plans, 7);
+  const bytesBeforeInvalidImport = dataAdapter.storageBytes();
+  assert.throws(() => settings.previewImport('{"packageVersion":'), /JSON|Unexpected|parse/i);
+  assert.equal(dataAdapter.storageBytes(), bytesBeforeInvalidImport);
+
+  const cancelPreview = settings.prepareLocalClear();
+  assert.equal(cancelPreview.counts.plans, 7);
+  assert.equal(dataAdapter.storageBytes(), bytesBeforeInvalidImport);
+  const confirmPreview = settings.prepareLocalClear();
+  const cleared = settings.confirmLocalClear(confirmPreview.confirmationId);
+
+  assert.equal(sunday.isRestDay, true);
+  assert.equal(sunday.canStartWorkout, false);
+  assert.equal(cleared.purged, true);
+  assert.deepEqual(dataDatabase.load().plans, []);
+  assert.deepEqual(dataDatabase.load().records, []);
+  assert.equal(adapter.networkAttempts(), 0);
+  assert.equal(dataAdapter.networkAttempts(), 0);
 });
