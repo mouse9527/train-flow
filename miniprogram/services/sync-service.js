@@ -22,6 +22,7 @@ const {
   assertRemoteSyncProvider
 } = require('./remote-sync-provider');
 const { DEFAULT_USER_SETTINGS } = require('../utils/constants');
+const { computeChecksum } = require('../utils/checksum');
 
 function syncServiceError(message, code) {
   const error = new Error(message);
@@ -46,6 +47,30 @@ function safeErrorCode(error) {
   return error && typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code)
     ? error.code
     : 'CLOUD_SYNC_UNAVAILABLE';
+}
+
+function conflictActions(conflict) {
+  if (conflict.entityType === ENTITY_TYPES.USER_SETTINGS) {
+    return ['keep_remote', 'rebase'];
+  }
+  return ['keep_remote', 'keep_local_as_copy', 'rebase'];
+}
+
+function conflictSummary(conflict, side) {
+  const source = side === 'local' ? conflict.local : conflict.remote;
+  const payload = source && source.payload;
+  const prefix = side === 'local' ? '本机' : '云端';
+  if (!payload) return `${prefix}：已删除`;
+  if (conflict.entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+    return `${prefix}：${payload.title || '未命名计划'} · ${payload.trainingDate || '日期未知'}`;
+  }
+  if (conflict.entityType === ENTITY_TYPES.TRAINING_RECORD) {
+    return `${prefix}：${payload.trainingDate || '日期未知'} · ${payload.status || '状态未知'}`;
+  }
+  const fields = Object.keys(payload)
+    .filter((field) => !['schemaVersion', 'revision'].includes(field))
+    .sort();
+  return `${prefix}：${fields.length > 0 ? fields.join('、') : '设置'}`;
 }
 
 function assertDatabase(database) {
@@ -208,9 +233,87 @@ class SyncService {
         conflictId: conflict.conflictId,
         entityType: conflict.entityType,
         entityId: conflict.entityId,
-        status: conflict.status
+        status: conflict.status,
+        localSummary: conflictSummary(conflict, 'local'),
+        remoteSummary: conflictSummary(conflict, 'remote'),
+        actions: conflictActions(conflict)
       }))
     };
+  }
+
+  resolveConflict({ conflictId, action }) {
+    if (
+      typeof conflictId !== 'string' || conflictId.length === 0 ||
+      !['keep_remote', 'keep_local_as_copy', 'rebase'].includes(action)
+    ) {
+      throw syncServiceError('conflict resolution command is invalid', 'SYNC_CONFLICT_RESOLUTION_INVALID');
+    }
+    const resolvedAt = this.now();
+    if (!Number.isSafeInteger(resolvedAt) || resolvedAt < 0) {
+      throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+    }
+    let receipt;
+    this.database.commit((draft) => {
+      const conflict = draft.sync.conflicts.find((candidate) => candidate.conflictId === conflictId);
+      if (!conflict || conflict.status === 'resolved') {
+        throw syncServiceError('sync conflict is missing or resolved', 'SYNC_CONFLICT_NOT_FOUND');
+      }
+      const allowedActions = conflictActions(conflict);
+      if (!allowedActions.includes(action)) {
+        throw syncServiceError('resolution is not available for this entity', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
+      }
+      const remote = conflict.remote;
+      const key = entityKey(conflict.entityType, conflict.entityId);
+      let copyEntityId = null;
+
+      if (action === 'rebase') {
+        const operation = findOperation(draft.sync.outbox, conflict.local.opId);
+        if (!operation) {
+          throw syncServiceError('conflict operation is missing', 'SYNC_CONFLICT_OPERATION_MISSING');
+        }
+        operation.baseServerRevision = remote.serverRevision;
+        assertSyncOperation(operation);
+      } else {
+        draft.sync.outbox = draft.sync.outbox.filter((operation) => (
+          !operation || operation.entityType !== conflict.entityType || operation.entityId !== conflict.entityId
+        ));
+        applyRemoteDomainChange(draft, remote);
+      }
+
+      if (action === 'keep_local_as_copy') {
+        if (conflict.entityType !== ENTITY_TYPES.WORKOUT_PLAN || !conflict.local.payload) {
+          throw syncServiceError('local copy is unavailable for this conflict', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
+        }
+        copyEntityId = `plan_copy_${computeChecksum({ conflictId, resolvedAt }).slice(0, 24)}`;
+        const copy = {
+          ...cloneJson(conflict.local.payload),
+          id: copyEntityId,
+          title: `${conflict.local.payload.title}（本机副本）`,
+          templateSource: null,
+          updatedAt: resolvedAt,
+          revision: conflict.local.payload.revision + 1
+        };
+        draft.plans.push(copy);
+        appendRepositorySyncMutation(draft, {
+          entityType: ENTITY_TYPES.WORKOUT_PLAN,
+          entityId: copyEntityId,
+          action: 'upsert',
+          payload: copy
+        }, {
+          commandIdentity: `conflict.copy:${conflictId}`,
+          createdAt: resolvedAt,
+          deviceId: draft.install.deviceId
+        });
+      }
+
+      draft.sync.replicas[key] = replicaFor(remote);
+      assertSyncReplica(draft.sync.replicas[key]);
+      conflict.status = 'resolved';
+      conflict.resolution = { action, resolvedAt, copyEntityId };
+      draft.sync.lastError = null;
+      receipt = { conflictId, action, resolvedAt, copyEntityId };
+    });
+    return cloneJson(receipt);
   }
 
   previewEnable() {

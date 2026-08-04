@@ -1358,6 +1358,7 @@ test('AC2: application commands use closed schemas before invoking SyncService',
       async prepareRemotePurge() { calls.push('prepareRemotePurge'); return { confirmationToken: 'purge_test', expiresAt: NOW + 300000 }; },
       async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; },
       recordFailure() { return { enabled: true, code: 'failure' }; },
+      resolveConflict() { return {}; },
       setEnabled() {}
     }
   });
@@ -1407,6 +1408,7 @@ test('AC2: application facade rejects overlapping remote commands and releases i
       async prepareRemotePurge() { calls.push('prepareRemotePurge'); return { confirmationToken: 'purge_test', expiresAt: NOW + 300000 }; },
       async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; },
       recordFailure() { return { enabled: true, code: 'failure' }; },
+      resolveConflict() { return {}; },
       setEnabled() {}
     }
   });

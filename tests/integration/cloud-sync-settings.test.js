@@ -5,11 +5,27 @@ const {
   createSyncApplicationService
 } = require('../../miniprogram/application/sync-application-service');
 const {
+  createSettingsApplicationService
+} = require('../../miniprogram/application/settings-application-service');
+const {
+  createBaselineTrainingRecord
+} = require('../../miniprogram/domain/execution/training-record');
+const {
+  createSettingsRepository
+} = require('../../miniprogram/domain/identity-settings/settings-repository');
+const {
   createPlanRepository
 } = require('../../miniprogram/domain/planning/plan-repository');
 const {
   createDefaultPlans
 } = require('../../miniprogram/domain/planning/default-plan-factory');
+const {
+  ENTITY_TYPES
+} = require('../../miniprogram/domain/sync/entity-mapper');
+const {
+  appendRepositorySyncMutation,
+  entityKey
+} = require('../../miniprogram/domain/sync/sync-operation');
 const {
   createLocalDatabase
 } = require('../../miniprogram/services/local-database');
@@ -48,6 +64,30 @@ function createRuntime(provider, { now = () => NOW } = {}) {
     storage,
     syncService
   };
+}
+
+function remoteEnvelope({ entityType, entityId, payload, serverRevision = 3 }) {
+  return {
+    ownerId: 'anonymous_fixture_owner',
+    entityType,
+    entityId,
+    serverRevision,
+    schemaVersion: 1,
+    payload: structuredClone(payload),
+    deleted: false,
+    deletedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW + serverRevision,
+    sourceDeviceId: 'anonymous_remote_device'
+  };
+}
+
+function enableForConflict(database) {
+  database.commit((draft) => {
+    draft.settings.cloudSyncEnabled = true;
+    draft.sync.enabled = true;
+    draft.sync.provider = 'fixture';
+  });
 }
 
 test('AC1/AC5: CloudBase provider uses only callable functions and a server-issued purge confirmation', async () => {
@@ -210,4 +250,44 @@ test('AC1/AC3: manual and automatic retry share the same outbox and a lost respo
   const remote = await provider.pull({ cursor: null, limit: 100 });
   assert.equal(remote.changes.length, 2, 'remote contains one plan and one settings entity only');
   assert.equal(new Set(remote.changes.map(({ entityId }) => entityId)).size, 2);
+});
+
+test('AC4: plan conflict remains visible until explicit keep-local-as-copy atomically preserves both sides', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  enableForConflict(database);
+  const localOperation = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const remotePlan = { ...structuredClone(plan), title: '云端版本', revision: plan.revision + 1 };
+  provider.conflictOperation(localOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: remotePlan
+  }));
+
+  await syncService.pushPending();
+  const visible = application.getState().conflicts[0];
+  assert.equal(application.getState().code, 'conflict');
+  assert.deepEqual(visible.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+  assert.match(visible.localSummary, /本机/);
+  assert.match(visible.remoteSummary, /云端版本/);
+  assert.equal(JSON.stringify(visible).includes('ownerId'), false);
+  assert.equal(database.load().sync.outbox.some(({ opId }) => opId === localOperation.opId), true);
+
+  const resolved = await application.resolveConflict({
+    conflictId: visible.conflictId,
+    action: 'keep_local_as_copy'
+  });
+  const after = database.load();
+  const original = after.plans.find(({ id }) => id === plan.id);
+  const copy = after.plans.find(({ id }) => id === resolved.copyEntityId);
+
+  assert.equal(original.title, '云端版本');
+  assert.equal(copy.title, `${plan.title}（本机副本）`);
+  assert.equal(after.sync.outbox.some(({ opId }) => opId === localOperation.opId), false);
+  assert.equal(after.sync.outbox.some(({ entityId }) => entityId === copy.id), true);
+  assert.equal(application.getState().conflicts.length, 0);
+  assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision, 3);
 });

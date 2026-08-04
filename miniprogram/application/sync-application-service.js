@@ -96,6 +96,19 @@ function assertRetryCommand(command) {
   return command;
 }
 
+function assertResolveConflictCommand(command) {
+  if (!hasExactFields(command, ['conflictId', 'action'])) {
+    throw applicationError('resolveConflict command must use the closed V1 schema');
+  }
+  if (
+    typeof command.conflictId !== 'string' || command.conflictId.length === 0 ||
+    !['keep_remote', 'keep_local_as_copy', 'rebase'].includes(command.action)
+  ) {
+    throw applicationError('resolveConflict command is invalid');
+  }
+  return command;
+}
+
 function assertSyncService(syncService) {
   if (!syncService || typeof syncService !== 'object' || Array.isArray(syncService)) {
     throw applicationError('createSyncApplicationService requires a SyncService');
@@ -109,6 +122,7 @@ function assertSyncService(syncService) {
     'prepareRemotePurge',
     'purgeRemote',
     'recordFailure',
+    'resolveConflict',
     'setEnabled'
   ]) {
     if (typeof syncService[method] !== 'function') {
@@ -216,6 +230,11 @@ function createSyncApplicationService({ syncService } = {}) {
         if (!state.enabled) return { ok: true, skipped: 'disabled', state };
         return runRecoverableSync();
       });
+    },
+
+    resolveConflict(command) {
+      const validated = assertResolveConflictCommand(command);
+      return runExclusive(() => syncService.resolveConflict(validated));
     },
 
     bootstrap(command) {
