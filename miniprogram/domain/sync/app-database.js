@@ -29,7 +29,8 @@ function createAppDatabase({ now = Date.now, install = null, schemaVersion = 1 }
       lastSyncedAt: null,
       lastError: null,
       outbox: [],
-      conflicts: []
+      conflicts: [],
+      replicas: {}
     }
   };
 }
