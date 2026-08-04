@@ -58,7 +58,7 @@ bash scripts/privacy-scan.sh
 
 - 第一条必须恰好执行 C1–C4 四个顶层跨上下文场景。
 - 第二条只验证源码、测试 fixture、云函数与已有 evidence 文件的隐私规则；测试 sentinel 只允许精确 allowlist。
-- 第三条是发布前严格证据门禁。当前因 `evidence/screenshots/` 缺失而失败，这是预期阻断，不是 warning。
+- 第三条是发布前严格证据门禁。当前因 `evidence/screenshots/` 与 `evidence/logs/` 缺失而失败，这是预期阻断，不是 warning；默认绑定当前 HEAD/tree，也可用 `PRIVACY_SCAN_EXPECTED_HEAD`、`PRIVACY_SCAN_EXPECTED_TREE` 显式绑定 DevTools 实际运行的 source commit。
 - 自动化使用公开 Application Service、Repository、Remote Provider、CloudBase Provider 与 public cloud handler；不直接调用私有 reducer 伪造成功。
 - 深层攻击/完整性覆盖保留在已有 integration/domain/cloudfunction tests，C1–C4 不复制这些大套件。
 
@@ -71,6 +71,14 @@ route	head	tree	sha256	data_source	manual_visual_verdict	file
 ```
 
 每张图片必须绑定页面 route、40 位 Git head、40 位 tree、SHA-256、匿名数据来源、人工视觉结论和文件名。扫描器只验证清单、来源字段和文件哈希，不读取或宣称检查 PNG 像素；图片中的私人内容必须由 Supervisor 人工确认。日志只能保存命令结论和去敏摘要，不能保存 OpenID、ownerId、token 或训练记录 payload。
+
+`evidence/logs/manifest.tsv` 必须包含并逐项绑定 `critical-e2e`、`full-suite`、`privacy-scan` 三类日志，列顺序固定为：
+
+```text
+kind	head	tree	sha256	redaction_verdict	file
+```
+
+日志文件和 manifest 必须 tracked、非符号链接、哈希一致、人工去敏结论为 `PASS`，且 source head/tree 与本次证据运行绑定值一致；任何未列入 manifest 的 tracked `.log` 都会阻断。
 
 ## 已知限制、Unsupported 与 Deferred
 

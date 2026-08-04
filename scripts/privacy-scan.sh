@@ -9,6 +9,9 @@ cd "$scan_root" || exit 2
 
 failed=0
 require_screenshots=${PRIVACY_SCAN_REQUIRE_SCREENSHOTS:-1}
+require_logs=${PRIVACY_SCAN_REQUIRE_LOGS:-$require_screenshots}
+expected_head=${PRIVACY_SCAN_EXPECTED_HEAD:-$(git rev-parse HEAD 2>/dev/null || true)}
+expected_tree=${PRIVACY_SCAN_EXPECTED_TREE:-$(git rev-parse HEAD^{tree} 2>/dev/null || true)}
 
 report() {
   printf '%s %s\n' "$1" "$2"
@@ -162,6 +165,8 @@ if [[ -d "$screenshot_dir" ]]; then
         fi
         signature=$(LC_ALL=C od -An -tx1 -N8 "$image_path" | tr -d ' \n')
         [[ "$signature" == 89504e470d0a1a0a ]] || report SCREENSHOT_SIGNATURE_INVALID "$image_path"
+        [[ "$head" == "$expected_head" ]] || report SCREENSHOT_SOURCE_HEAD_MISMATCH "$manifest"
+        [[ "$tree" == "$expected_tree" ]] || report SCREENSHOT_SOURCE_TREE_MISMATCH "$manifest"
         if ! git cat-file -e "$head^{commit}" 2>/dev/null; then
           report SCREENSHOT_SOURCE_UNRESOLVED "$manifest"
         else
@@ -197,6 +202,88 @@ else
     report SCREENSHOT_EVIDENCE_ABSENT "$screenshot_dir"
   else
     printf '%s %s\n' SCREENSHOT_EVIDENCE_ABSENT "$screenshot_dir"
+  fi
+fi
+
+log_dir=evidence/logs
+log_manifest=$log_dir/manifest.tsv
+if [[ "$require_logs" == 1 ]]; then
+  if [[ ! -d "$log_dir" ]]; then
+    report LOG_EVIDENCE_ABSENT "$log_dir"
+  elif [[ ! -f "$log_manifest" ]]; then
+    report LOG_MANIFEST_MISSING "$log_manifest"
+  elif ! git ls-files --error-unmatch "$log_manifest" >/dev/null 2>&1; then
+    report LOG_MANIFEST_UNTRACKED "$log_manifest"
+  else
+    log_header=$(head -n 1 "$log_manifest")
+    expected_log_header=$'kind\thead\ttree\tsha256\tredaction_verdict\tfile'
+    if [[ "$log_header" != "$expected_log_header" ]]; then
+      report LOG_MANIFEST_SCHEMA "$log_manifest"
+    else
+      log_row_count=0
+      critical_log=0
+      full_log=0
+      privacy_log=0
+      manifest_logs=()
+      while IFS=$'\t' read -r kind head tree digest verdict log_file extra; do
+        [[ -n "$kind$head$tree$digest$verdict$log_file" ]] || continue
+        log_row_count=$((log_row_count + 1))
+        if [[ -n "$extra" || ! "$kind" =~ ^(critical-e2e|full-suite|privacy-scan)$ ||
+          ! "$head" =~ ^[a-f0-9]{40}$ || ! "$tree" =~ ^[a-f0-9]{40}$ ||
+          ! "$digest" =~ ^[a-f0-9]{64}$ || "$verdict" != PASS ]]; then
+          report LOG_MANIFEST_ENTRY "$log_manifest"
+          continue
+        fi
+        [[ "$head" == "$expected_head" ]] || report LOG_SOURCE_HEAD_MISMATCH "$log_manifest"
+        [[ "$tree" == "$expected_tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
+        case "$kind" in
+          critical-e2e) critical_log=1 ;;
+          full-suite) full_log=1 ;;
+          privacy-scan) privacy_log=1 ;;
+        esac
+        if [[ "$log_file" == /* || "$log_file" == *..* || "$log_file" == *\\* ||
+          "$log_file" != *.log ]]; then
+          report LOG_PATH_INVALID "$log_manifest"
+          continue
+        fi
+        log_path=$log_dir/$log_file
+        manifest_logs[${#manifest_logs[@]}]=$log_path
+        if [[ ! -f "$log_path" ]]; then
+          report LOG_FILE_MISSING "$log_path"
+          continue
+        fi
+        if [[ -L "$log_path" ]]; then
+          report LOG_FILE_SYMLINK "$log_path"
+          continue
+        fi
+        if ! git ls-files --error-unmatch "$log_path" >/dev/null 2>&1; then
+          report LOG_FILE_UNTRACKED "$log_path"
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual_log_digest=$(sha256sum "$log_path" | awk '{print $1}')
+        else
+          actual_log_digest=$(shasum -a 256 "$log_path" | awk '{print $1}')
+        fi
+        [[ "$actual_log_digest" == "$digest" ]] || report LOG_HASH_MISMATCH "$log_path"
+      done < <(tail -n +2 "$log_manifest")
+      [[ "$log_row_count" -gt 0 ]] || report LOG_MANIFEST_EMPTY "$log_manifest"
+      [[ "$critical_log" -eq 1 ]] || report LOG_REQUIRED_KIND_MISSING "$log_manifest"
+      [[ "$full_log" -eq 1 ]] || report LOG_REQUIRED_KIND_MISSING "$log_manifest"
+      [[ "$privacy_log" -eq 1 ]] || report LOG_REQUIRED_KIND_MISSING "$log_manifest"
+      while IFS= read -r -d '' tracked_log; do
+        [[ "$tracked_log" == "$log_manifest" ]] && continue
+        listed=0
+        for declared_log in "${manifest_logs[@]}"; do
+          if [[ "$declared_log" == "$tracked_log" ]]; then
+            listed=1
+            break
+          fi
+        done
+        [[ "$listed" -eq 1 ]] || report LOG_UNLISTED "$tracked_log"
+      done < <(git ls-files -z "$log_dir" | while IFS= read -r -d '' candidate; do
+        [[ "$candidate" == *.log ]] && printf '%s\0' "$candidate"
+      done)
+    fi
   fi
 fi
 

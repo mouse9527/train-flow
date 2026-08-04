@@ -501,7 +501,12 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   const purgeReceipt = await sync.purgeRemote({
     confirmationToken: purgePreview.confirmationToken
   });
+  const remoteAfterPurge = await deterministic.pull({ cursor: null, limit: 100 });
   assert.equal(purgeReceipt.purgedAt, FIXED_CLOCK.startAt);
+  assert.deepEqual(remoteAfterPurge.changes, []);
+  assert.equal(sync.getState().code, 'disabled');
+  assert.equal(sync.getState().enabled, false);
+  assert.notEqual(planRepository.findById(syncPlan.id), null);
 
   const cloudBase = createCloudBaseSyncProvider({ wx: adapter });
   await assert.rejects(
@@ -556,6 +561,17 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   });
   assert.notEqual(strictEvidenceScan.status, 0);
   assert.match(strictEvidenceScan.stdout, /SCREENSHOT_EVIDENCE_ABSENT evidence\/screenshots/);
+  const strictLogScan = spawnSync('bash', [path.join(ROOT, 'scripts/privacy-scan.sh')], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0',
+      PRIVACY_SCAN_REQUIRE_LOGS: '1'
+    }
+  });
+  assert.notEqual(strictLogScan.status, 0);
+  assert.match(strictLogScan.stdout, /LOG_EVIDENCE_ABSENT evidence\/logs/);
 
   const negativeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-privacy-'));
   temporaryRoots.push(negativeRoot);
@@ -708,5 +724,58 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   assert.match(
     traversalEvidence.stdout,
     /SCREENSHOT_UNLISTED evidence\/screenshots\/unlisted\.png/
+  );
+
+  const staleSourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-stale-source-'));
+  temporaryRoots.push(staleSourceRoot);
+  fs.mkdirSync(path.join(staleSourceRoot, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(staleSourceRoot, 'evidence/screenshots'), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, 'scripts/privacy-scan.sh'), path.join(staleSourceRoot, 'scripts/privacy-scan.sh'));
+  const pngBytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x00
+  ]);
+  fs.writeFileSync(path.join(staleSourceRoot, 'evidence/screenshots/capture.png'), pngBytes);
+  spawnSync('git', ['init', '-q'], { cwd: staleSourceRoot });
+  spawnSync('git', ['add', '.'], { cwd: staleSourceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'capture product source'
+  ], { cwd: staleSourceRoot });
+  const staleHead = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: staleSourceRoot,
+    encoding: 'utf8'
+  }).stdout.trim();
+  const staleTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], {
+    cwd: staleSourceRoot,
+    encoding: 'utf8'
+  }).stdout.trim();
+  const pngDigest = createHash('sha256').update(pngBytes).digest('hex');
+  fs.writeFileSync(
+    path.join(staleSourceRoot, 'evidence/screenshots/manifest.tsv'),
+    'route\thead\ttree\tsha256\tdata_source\tmanual_visual_verdict\tfile\n' +
+      `/pages/today/index\t${staleHead}\t${staleTree}\t${pngDigest}` +
+      '\tanonymous-fixture\tPASS\tcapture.png\n'
+  );
+  spawnSync('git', ['add', 'evidence/screenshots/manifest.tsv'], { cwd: staleSourceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'attach stale evidence'
+  ], { cwd: staleSourceRoot });
+  const staleEvidence = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: staleSourceRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_ROOT: staleSourceRoot,
+      PRIVACY_SCAN_REQUIRE_LOGS: '0'
+    }
+  });
+  assert.notEqual(staleEvidence.status, 0);
+  assert.match(
+    staleEvidence.stdout,
+    /SCREENSHOT_SOURCE_HEAD_MISMATCH evidence\/screenshots\/manifest\.tsv/
   );
 });
