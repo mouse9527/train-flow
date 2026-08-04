@@ -2,11 +2,12 @@ const { ENTITY_TYPES, mapRemoteChange } = require('../domain/sync/entity-mapper'
 const { assertSyncOperation, entityKey } = require('../domain/sync/sync-operation');
 const { DEFAULT_USER_SETTINGS } = require('../utils/constants');
 
-const PROVIDER_METHODS = Object.freeze(['bootstrap', 'push', 'pull', 'purge']);
+const PROVIDER_METHODS = Object.freeze(['bootstrap', 'push', 'pull', 'preparePurge', 'purge']);
 const BOOTSTRAP_RESULT_FIELDS = Object.freeze(['cursor', 'serverTime']);
 const PUSH_RESULT_FIELDS = Object.freeze(['accepted', 'rejected', 'conflicts']);
 const PULL_RESULT_FIELDS = Object.freeze(['changes', 'nextCursor', 'hasMore']);
 const PURGE_RESULT_FIELDS = Object.freeze(['purgedAt']);
+const PURGE_PREPARATION_FIELDS = Object.freeze(['confirmationToken', 'expiresAt']);
 const ACCEPTED_FIELDS = Object.freeze([
   'opId',
   'entityType',
@@ -156,6 +157,19 @@ function assertPurgeResult(result) {
   return result;
 }
 
+function assertPurgePreparationResult(result) {
+  if (!hasExactFields(result, PURGE_PREPARATION_FIELDS)) {
+    throw providerError('purge preparation result must use the closed V1 schema');
+  }
+  if (
+    typeof result.confirmationToken !== 'string' || result.confirmationToken.length === 0
+  ) {
+    throw providerError('purge preparation confirmationToken is invalid');
+  }
+  assertNonNegativeSafeInteger(result.expiresAt, 'purge preparation expiresAt');
+  return result;
+}
+
 function assertExactRequest(request, fields, label) {
   if (!hasExactFields(request, fields)) {
     throw providerError(`${label} request must use the closed V1 schema`, 'REMOTE_SYNC_REQUEST_INVALID');
@@ -200,7 +214,10 @@ function createDeterministicRemoteSyncProvider({
   const revisions = new Map();
   const entities = new Map();
   const dispositions = new Map();
-  const calls = { bootstrap: [], push: [], pull: [], purge: [] };
+  const calls = { bootstrap: [], push: [], pull: [], preparePurge: [], purge: [] };
+  const purgeConfirmations = new Map();
+  const purgeReceipts = new Map();
+  let purgeSequence = 0;
   let loseNextPush = false;
 
   const provider = {
@@ -335,12 +352,49 @@ function createDeterministicRemoteSyncProvider({
       return cloneJson(result);
     },
 
-    async purge(request) {
-      assertExactRequest(request, ['confirmationToken'], 'purge');
-      if (typeof request.confirmationToken !== 'string' || request.confirmationToken.length === 0) {
-        throw providerError('purge confirmationToken is invalid', 'REMOTE_SYNC_REQUEST_INVALID');
+    async preparePurge(request) {
+      assertExactRequest(request, ['deviceId'], 'preparePurge');
+      if (typeof request.deviceId !== 'string' || request.deviceId.length === 0) {
+        throw providerError('preparePurge deviceId is invalid', 'REMOTE_SYNC_REQUEST_INVALID');
       }
-      calls.purge.push({ confirmationToken: '[redacted]' });
+      calls.preparePurge.push({ deviceId: request.deviceId });
+      purgeSequence += 1;
+      const issuedAt = now();
+      const result = {
+        confirmationToken: `purge_fixture_${issuedAt}_${purgeSequence}`,
+        expiresAt: issuedAt + 300000
+      };
+      purgeConfirmations.set(result.confirmationToken, {
+        deviceId: request.deviceId,
+        expiresAt: result.expiresAt
+      });
+      assertPurgePreparationResult(result);
+      return cloneJson(result);
+    },
+
+    async purge(request) {
+      assertExactRequest(request, ['deviceId', 'confirmationToken'], 'purge');
+      if (
+        typeof request.deviceId !== 'string' || request.deviceId.length === 0 ||
+        typeof request.confirmationToken !== 'string' || request.confirmationToken.length === 0
+      ) {
+        throw providerError('purge confirmation is invalid', 'REMOTE_SYNC_REQUEST_INVALID');
+      }
+      calls.purge.push({ deviceId: request.deviceId, confirmationToken: '[redacted]' });
+      const replay = purgeReceipts.get(request.confirmationToken) || null;
+      if (replay) {
+        if (replay.deviceId !== request.deviceId) {
+          throw providerError('purge confirmation is invalid', 'PURGE_CONFIRMATION_INVALID');
+        }
+        return cloneJson(replay.receipt);
+      }
+      const confirmation = purgeConfirmations.get(request.confirmationToken) || null;
+      if (
+        !confirmation || confirmation.deviceId !== request.deviceId ||
+        confirmation.expiresAt <= now()
+      ) {
+        throw providerError('purge confirmation is invalid', 'PURGE_CONFIRMATION_INVALID');
+      }
       changes.length = 0;
       receipts.clear();
       identities.clear();
@@ -348,8 +402,12 @@ function createDeterministicRemoteSyncProvider({
       entities.clear();
       dispositions.clear();
       const result = { purgedAt: now() };
+      purgeReceipts.set(request.confirmationToken, {
+        deviceId: request.deviceId,
+        receipt: cloneJson(result)
+      });
       assertPurgeResult(result);
-      return result;
+      return cloneJson(result);
     }
   };
 
@@ -358,6 +416,7 @@ function createDeterministicRemoteSyncProvider({
 
 module.exports = {
   assertBootstrapResult,
+  assertPurgePreparationResult,
   assertPullResult,
   assertPurgeResult,
   assertPushResult,

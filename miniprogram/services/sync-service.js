@@ -1,24 +1,33 @@
 const {
   ENTITY_TYPES,
   createConflictState,
+  mapLocalMutation,
   mapRemoteChange,
   rebaseSettingsChange
 } = require('../domain/sync/entity-mapper');
 const {
+  appendRepositorySyncMutation,
   applyAcceptedOperations,
   assertSyncOperation,
   assertSyncReplica,
+  createRepositoryDeviceIdFactory,
   entityKey,
   selectPushableOperations
 } = require('../domain/sync/sync-operation');
 const {
   assertBootstrapResult,
+  assertPurgePreparationResult,
   assertPurgeResult,
   assertPushResult,
   assertPullResult,
   assertRemoteSyncProvider
 } = require('./remote-sync-provider');
 const { DEFAULT_USER_SETTINGS } = require('../utils/constants');
+const { computeChecksum } = require('../utils/checksum');
+const {
+  createBaselineTrainingRecord
+} = require('../domain/execution/training-record');
+const { isDeletedTrainingRecord } = require('../domain/records/training-record');
 
 function syncServiceError(message, code) {
   const error = new Error(message);
@@ -28,6 +37,47 @@ function syncServiceError(message, code) {
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+const STATUS_LABELS = Object.freeze({
+  disabled: '未启用',
+  synced: '已同步',
+  waiting: '等待同步',
+  syncing: '同步中',
+  conflict: '冲突',
+  failure: '失败可重试'
+});
+
+function safeErrorCode(error) {
+  return error && typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code)
+    ? error.code
+    : 'CLOUD_SYNC_UNAVAILABLE';
+}
+
+function conflictActions(conflict) {
+  if (conflict.entityType === ENTITY_TYPES.USER_SETTINGS) {
+    return ['keep_remote', 'rebase'];
+  }
+  return conflict.local && conflict.local.action === 'upsert' && conflict.local.payload
+    ? ['keep_remote', 'keep_local_as_copy', 'rebase']
+    : ['keep_remote', 'rebase'];
+}
+
+function conflictSummary(conflict, side) {
+  const source = side === 'local' ? conflict.local : conflict.remote;
+  const payload = source && source.payload;
+  const prefix = side === 'local' ? '本机' : '云端';
+  if (!payload) return `${prefix}：已删除`;
+  if (conflict.entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+    return `${prefix}：${payload.title || '未命名计划'} · ${payload.trainingDate || '日期未知'}`;
+  }
+  if (conflict.entityType === ENTITY_TYPES.TRAINING_RECORD) {
+    return `${prefix}：${payload.trainingDate || '日期未知'} · ${payload.status || '状态未知'}`;
+  }
+  const fields = Object.keys(payload)
+    .filter((field) => !['schemaVersion', 'revision'].includes(field))
+    .sort();
+  return `${prefix}：${fields.length > 0 ? fields.join('、') : '设置'}`;
 }
 
 function assertDatabase(database) {
@@ -64,6 +114,341 @@ function replicaFor(change) {
     payloadHash: change.payloadHash,
     deleted: change.action === 'delete'
   };
+}
+
+function currentDomainEntity(draft, entityType, entityId) {
+  if (entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+    return draft.plans.find(({ id }) => id === entityId) || null;
+  }
+  if (entityType === ENTITY_TYPES.TRAINING_RECORD) {
+    return draft.records.find(({ id }) => id === entityId) || null;
+  }
+  if (entityType === ENTITY_TYPES.USER_SETTINGS && entityId === 'settings') {
+    return draft.settings;
+  }
+  return null;
+}
+
+function currentDomainMutation(draft, entityType, entityId) {
+  const current = currentDomainEntity(draft, entityType, entityId);
+  if (entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+    return !current || current.status === 'deleted'
+      ? { entityType, entityId, action: 'delete', payload: null }
+      : { entityType, entityId, action: 'upsert', payload: cloneJson(current) };
+  }
+  if (entityType === ENTITY_TYPES.TRAINING_RECORD) {
+    return !current || isDeletedTrainingRecord(current)
+      ? { entityType, entityId, action: 'delete', payload: null }
+      : { entityType, entityId, action: 'upsert', payload: cloneJson(current) };
+  }
+  if (entityType === ENTITY_TYPES.USER_SETTINGS && entityId === 'settings') {
+    return {
+      entityType,
+      entityId,
+      action: 'upsert',
+      payload: settingsSyncPayload(current)
+    };
+  }
+  throw syncServiceError('sync conflict entity is unsupported', 'SYNC_CONFLICT_STALE');
+}
+
+function validEntityOperations(outbox, entityType, entityId) {
+  const matching = [];
+  for (let index = 0; index < outbox.length; index += 1) {
+    const candidate = outbox[index];
+    try {
+      assertSyncOperation(candidate);
+      if (candidate.entityType === entityType && candidate.entityId === entityId) {
+        matching.push({ index, operation: candidate });
+      }
+    } catch (_error) {
+      if (candidate && candidate.entityType === entityType && candidate.entityId === entityId) {
+        return null;
+      }
+    }
+  }
+  return matching;
+}
+
+function conflictSuccessorKeys(snapshot) {
+  const keys = new Set();
+  for (const conflict of snapshot.sync.conflicts) {
+    if (!conflict || conflict.status === 'resolved' || !conflict.local) continue;
+    const matching = validEntityOperations(
+      snapshot.sync.outbox,
+      conflict.entityType,
+      conflict.entityId
+    );
+    if (
+      matching && matching.length > 1 &&
+      matching.some(({ operation }) => operation.opId === conflict.local.opId)
+    ) {
+      keys.add(entityKey(conflict.entityType, conflict.entityId));
+    }
+  }
+  return keys;
+}
+
+function convergeConflictSuccessors(draft, keys, detectedAt) {
+  for (const key of keys) {
+    const unresolved = draft.sync.conflicts.filter((conflict) => (
+      conflict && conflict.status !== 'resolved' &&
+      entityKey(conflict.entityType, conflict.entityId) === key
+    ));
+    if (unresolved.length === 0) continue;
+    const highestRevision = unresolved.reduce((revision, conflict) => (
+      Math.max(revision, conflict.remote.serverRevision)
+    ), 0);
+    const highest = unresolved.filter(({ remote }) => remote.serverRevision === highestRevision);
+    const remoteFactHashes = new Set(highest.map(({ remote }) => computeChecksum({
+      entityType: remote.entityType,
+      entityId: remote.entityId,
+      serverRevision: remote.serverRevision,
+      action: remote.action,
+      payload: remote.payload,
+      payloadHash: remote.payloadHash,
+      deletedAt: remote.deletedAt
+    })));
+    if (remoteFactHashes.size !== 1) {
+      throw syncServiceError(
+        'same remote revision contains divergent conflict facts',
+        'SYNC_CONFLICT_DIVERGENT_REMOTE'
+      );
+    }
+    const exemplar = highest[0];
+    const matching = validEntityOperations(
+      draft.sync.outbox,
+      exemplar.entityType,
+      exemplar.entityId
+    );
+    if (!matching || matching.length < 2) {
+      throw syncServiceError('sync conflict successor queue changed', 'SYNC_CONFLICT_STALE');
+    }
+    if (exemplar.entityType === ENTITY_TYPES.USER_SETTINGS) {
+      if (
+        exemplar.remote.action !== 'upsert' || !exemplar.remote.payload ||
+        matching.some(({ operation }) => operation.action !== 'upsert' || !operation.payload)
+      ) {
+        throw syncServiceError('settings conflict successor cannot be merged', 'SYNC_CONFLICT_STALE');
+      }
+      const nextRevision = Math.max(
+        draft.settings.revision,
+        exemplar.remote.payload.revision
+      ) + 1;
+      if (!Number.isSafeInteger(nextRevision)) {
+        throw syncServiceError(
+          'settings revision cannot advance safely during successor merge',
+          'SYNC_SETTINGS_REVISION_OVERFLOW'
+        );
+      }
+      draft.settings = matching.reduce((settings, { operation }) => ({
+        ...settings,
+        ...cloneJson(operation.payload)
+      }), {
+        ...cloneJson(exemplar.remote.payload),
+        revision: nextRevision
+      });
+      draft.settings.revision = nextRevision;
+    }
+    const survivor = matching.at(-1).operation;
+    const mutation = currentDomainMutation(draft, exemplar.entityType, exemplar.entityId);
+    if (
+      survivor.action !== mutation.action ||
+      (exemplar.entityType !== ENTITY_TYPES.USER_SETTINGS &&
+        computeChecksum(survivor.payload) !== computeChecksum(mutation.payload))
+    ) {
+      throw syncServiceError('sync conflict successor does not match current entity', 'SYNC_CONFLICT_STALE');
+    }
+    if (exemplar.entityType === ENTITY_TYPES.USER_SETTINGS) {
+      survivor.payload = cloneJson(mutation.payload);
+    }
+    survivor.baseServerRevision = exemplar.remote.serverRevision;
+    survivor.attemptCount = 0;
+    survivor.lastAttemptAt = null;
+    assertSyncOperation(survivor);
+    const removeIndexes = new Set(matching.slice(0, -1).map(({ index }) => index));
+    draft.sync.outbox = draft.sync.outbox.filter((_operation, index) => !removeIndexes.has(index));
+    draft.sync.conflicts = draft.sync.conflicts.filter((conflict) => (
+      !conflict || conflict.status === 'resolved' ||
+      entityKey(conflict.entityType, conflict.entityId) !== key
+    ));
+    draft.sync.conflicts.push(createConflictState({
+      localOperation: survivor,
+      remoteChange: exemplar.remote,
+      localEntity: mutation.payload,
+      currentEntity: currentDomainEntity(draft, exemplar.entityType, exemplar.entityId),
+      detectedAt
+    }));
+    draft.sync.replicas[key] = replicaFor(exemplar.remote);
+    assertSyncReplica(draft.sync.replicas[key]);
+  }
+}
+
+function requireCurrentConflictBinding(draft, conflict) {
+  if (!conflict.local || typeof conflict.local !== 'object' || Array.isArray(conflict.local)) {
+    throw syncServiceError('sync conflict binding is missing', 'SYNC_CONFLICT_STALE');
+  }
+  const matching = [];
+  for (let index = 0; index < draft.sync.outbox.length; index += 1) {
+    const candidate = draft.sync.outbox[index];
+    try {
+      assertSyncOperation(candidate);
+      if (candidate.entityType === conflict.entityType && candidate.entityId === conflict.entityId) {
+        matching.push({ index, operation: candidate });
+      }
+    } catch (_error) {
+      // Unsupported work for the same entity cannot be safely consumed as the displayed conflict.
+      if (
+        candidate &&
+        candidate.entityType === conflict.entityType &&
+        candidate.entityId === conflict.entityId
+      ) {
+        throw syncServiceError('sync conflict no longer matches the entity queue', 'SYNC_CONFLICT_STALE');
+      }
+    }
+  }
+  if (matching.length !== 1 || matching[0].operation.opId !== conflict.local.opId) {
+    throw syncServiceError('sync conflict no longer matches the entity queue', 'SYNC_CONFLICT_STALE');
+  }
+  const { index, operation } = matching[0];
+  if (
+    operation.baseServerRevision !== conflict.local.baseServerRevision ||
+    operation.action !== conflict.local.action ||
+    computeChecksum(operation.payload) !== computeChecksum(conflict.local.payload)
+  ) {
+    throw syncServiceError('sync conflict operation facts changed', 'SYNC_CONFLICT_STALE');
+  }
+  const currentEntity = currentDomainEntity(draft, conflict.entityType, conflict.entityId);
+  const currentRevision = currentEntity && Number.isSafeInteger(currentEntity.revision)
+    ? currentEntity.revision
+    : null;
+  if (
+    !conflict.local ||
+    typeof conflict.local.entityHash !== 'string' ||
+    conflict.local.entityHash !== computeChecksum(currentEntity) ||
+    conflict.local.entityRevision !== currentRevision
+  ) {
+    throw syncServiceError('sync conflict local entity changed', 'SYNC_CONFLICT_STALE');
+  }
+  return { index, operation };
+}
+
+function settingsSyncPayload(settings) {
+  const payload = {};
+  for (const [field, value] of Object.entries(settings)) {
+    if (!['schemaVersion', 'revision'].includes(field)) payload[field] = value;
+  }
+  return payload;
+}
+
+function lastValidOperationFor(outbox, entityType, entityId) {
+  let match = null;
+  for (const candidate of outbox) {
+    try {
+      assertSyncOperation(candidate);
+      if (candidate.entityType === entityType && candidate.entityId === entityId) match = candidate;
+    } catch (_error) {
+      // Unsupported legacy work still blocks push, but cannot prove a current entity fact.
+    }
+  }
+  return match;
+}
+
+function mutationIsRepresented(snapshot, mutation, replicaPayload) {
+  const normalized = mapLocalMutation(mutation);
+  const queued = lastValidOperationFor(snapshot.sync.outbox, normalized.entityType, normalized.entityId);
+  if (queued) {
+    return queued.action === normalized.action &&
+      computeChecksum(queued.payload) === computeChecksum(normalized.payload);
+  }
+  const replica = snapshot.sync.replicas[entityKey(normalized.entityType, normalized.entityId)] || null;
+  return Boolean(
+    replica &&
+    replica.deleted === (normalized.action === 'delete') &&
+    replica.payloadHash === computeChecksum(replicaPayload)
+  );
+}
+
+function buildEnablePreview(snapshot) {
+  const targetSettings = {
+    ...snapshot.settings,
+    cloudSyncEnabled: true,
+    revision: snapshot.settings.cloudSyncEnabled
+      ? snapshot.settings.revision
+      : snapshot.settings.revision + 1
+  };
+  const candidates = [];
+  for (const plan of snapshot.plans.filter(({ status }) => status !== 'deleted')) {
+    candidates.push({
+      mutation: {
+        entityType: ENTITY_TYPES.WORKOUT_PLAN,
+        entityId: plan.id,
+        action: 'upsert',
+        payload: cloneJson(plan)
+      },
+      replicaPayload: plan
+    });
+  }
+  for (const record of snapshot.records.filter((candidate) => !isDeletedTrainingRecord(candidate))) {
+    candidates.push({
+      mutation: {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: record.id,
+        action: 'upsert',
+        payload: cloneJson(record)
+      },
+      replicaPayload: record
+    });
+  }
+  candidates.push({
+    mutation: {
+      entityType: ENTITY_TYPES.USER_SETTINGS,
+      entityId: 'settings',
+      action: 'upsert',
+      payload: settingsSyncPayload(targetSettings)
+    },
+    replicaPayload: targetSettings
+  });
+  const missingMutations = candidates
+    .filter(({ mutation, replicaPayload }) => !mutationIsRepresented(snapshot, mutation, replicaPayload))
+    .map(({ mutation }) => mapLocalMutation(mutation));
+  const previewToken = computeChecksum({
+    scope: 'trainflow-enable-preview-v1',
+    baselineLocalRevision: snapshot.localRevision,
+    targetSettings,
+    missing: missingMutations.map((mutation) => ({
+      entityType: mutation.entityType,
+      entityId: mutation.entityId,
+      action: mutation.action,
+      payloadHash: computeChecksum(mutation.payload)
+    }))
+  });
+  return {
+    baselineLocalRevision: snapshot.localRevision,
+    previewToken,
+    scope: {
+      plans: snapshot.plans.filter(({ status }) => status !== 'deleted').length,
+      records: snapshot.records.filter((candidate) => !isDeletedTrainingRecord(candidate)).length,
+      settings: 1,
+      pendingOperations: snapshot.sync.outbox.length
+    },
+    targetSettings,
+    missingMutations
+  };
+}
+
+function remoteBoundaryNeedsReset(snapshot) {
+  return Boolean(
+    snapshot.settings.cloudSyncEnabled ||
+    snapshot.sync.enabled ||
+    snapshot.sync.provider !== 'none' ||
+    snapshot.sync.cursor !== null ||
+    snapshot.sync.lastSyncedAt !== null ||
+    snapshot.sync.lastError !== null ||
+    snapshot.sync.outbox.length > 0 ||
+    snapshot.sync.conflicts.length > 0 ||
+    Object.keys(snapshot.sync.replicas).length > 0
+  );
 }
 
 function addConflict(draft, conflict) {
@@ -138,15 +523,251 @@ function applyRemoteDomainChange(draft, change) {
 }
 
 class SyncService {
-  constructor({ database, provider, now = Date.now }) {
+  constructor({
+    database,
+    provider,
+    now = Date.now,
+    deviceIdFactory = createRepositoryDeviceIdFactory()
+  }) {
     assertDatabase(database);
     assertRemoteSyncProvider(provider);
     if (typeof now !== 'function') {
       throw syncServiceError('SyncService now must be a function', 'SYNC_SERVICE_INVALID');
     }
+    if (typeof deviceIdFactory !== 'function') {
+      throw syncServiceError('SyncService deviceIdFactory must be a function', 'SYNC_SERVICE_INVALID');
+    }
     this.database = database;
     this.provider = provider;
     this.now = now;
+    this.deviceIdFactory = deviceIdFactory;
+  }
+
+  getSanitizedState({ phase = 'idle' } = {}) {
+    if (!['idle', 'syncing'].includes(phase)) {
+      throw syncServiceError('sync state phase is invalid', 'SYNC_STATE_INVALID');
+    }
+    const snapshot = this.database.load();
+    const enabled = Boolean(snapshot.sync.enabled && snapshot.settings.cloudSyncEnabled);
+    const conflicts = snapshot.sync.conflicts.filter(({ status }) => status !== 'resolved');
+    const pendingCount = snapshot.sync.outbox.length;
+    const storedError = snapshot.sync.lastError;
+    const errorCode = storedError && typeof storedError === 'object'
+      ? storedError.code
+      : typeof storedError === 'string'
+        ? storedError
+        : null;
+    let code = 'waiting';
+    if (!enabled) code = 'disabled';
+    else if (phase === 'syncing') code = 'syncing';
+    else if (conflicts.length > 0) code = 'conflict';
+    else if (errorCode) code = 'failure';
+    else if (pendingCount > 0 || snapshot.sync.lastSyncedAt === null) code = 'waiting';
+    else code = 'synced';
+    return {
+      code,
+      label: code === 'waiting' ? `等待 ${pendingCount} 项` : STATUS_LABELS[code],
+      enabled,
+      pendingCount,
+      lastSyncedAt: snapshot.sync.lastSyncedAt,
+      errorCode: errorCode || null,
+      conflicts: conflicts.map((conflict) => ({
+        conflictId: conflict.conflictId,
+        entityType: conflict.entityType,
+        entityId: conflict.entityId,
+        status: conflict.status,
+        localSummary: conflictSummary(conflict, 'local'),
+        remoteSummary: conflictSummary(conflict, 'remote'),
+        actions: conflictActions(conflict)
+      }))
+    };
+  }
+
+  resolveConflict({ conflictId, action }) {
+    if (
+      typeof conflictId !== 'string' || conflictId.length === 0 ||
+      !['keep_remote', 'keep_local_as_copy', 'rebase'].includes(action)
+    ) {
+      throw syncServiceError('conflict resolution command is invalid', 'SYNC_CONFLICT_RESOLUTION_INVALID');
+    }
+    const resolvedAt = this.now();
+    if (!Number.isSafeInteger(resolvedAt) || resolvedAt < 0) {
+      throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+    }
+    let receipt;
+    this.database.commit((draft) => {
+      const conflict = draft.sync.conflicts.find((candidate) => candidate.conflictId === conflictId);
+      if (!conflict || conflict.status === 'resolved') {
+        throw syncServiceError('sync conflict is missing or resolved', 'SYNC_CONFLICT_NOT_FOUND');
+      }
+      const allowedActions = conflictActions(conflict);
+      if (!allowedActions.includes(action)) {
+        throw syncServiceError('resolution is not available for this entity', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
+      }
+      const binding = requireCurrentConflictBinding(draft, conflict);
+      const remote = conflict.remote;
+      const key = entityKey(conflict.entityType, conflict.entityId);
+      let copyEntityId = null;
+
+      if (action === 'rebase') {
+        binding.operation.baseServerRevision = remote.serverRevision;
+        assertSyncOperation(binding.operation);
+      } else {
+        draft.sync.outbox.splice(binding.index, 1);
+        applyRemoteDomainChange(draft, remote);
+      }
+
+      if (action === 'keep_local_as_copy') {
+        if (!conflict.local.payload) {
+          throw syncServiceError('local copy is unavailable for this conflict', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
+        }
+        let copy;
+        if (conflict.entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+          copyEntityId = `plan_copy_${computeChecksum({ conflictId, resolvedAt }).slice(0, 24)}`;
+          copy = {
+            ...cloneJson(conflict.local.payload),
+            id: copyEntityId,
+            title: `${conflict.local.payload.title}（本机副本）`,
+            templateSource: null,
+            updatedAt: resolvedAt,
+            revision: conflict.local.payload.revision + 1
+          };
+          draft.plans.push(copy);
+        } else if (conflict.entityType === ENTITY_TYPES.TRAINING_RECORD) {
+          const source = conflict.local.payload;
+          const sessionId = `local_copy_${computeChecksum({ conflictId, resolvedAt }).slice(0, 24)}`;
+          copy = createBaselineTrainingRecord({
+            id: sessionId,
+            planSnapshot: cloneJson(source.planSnapshot),
+            trainingDate: source.trainingDate,
+            status: source.status,
+            startedAt: source.startedAt,
+            endedAt: source.endedAt,
+            elapsedActiveSeconds: source.elapsedActiveSeconds,
+            stepResults: cloneJson(source.stepResults)
+          });
+          copy.feedback = cloneJson(source.feedback);
+          const copyCreatedAt = Math.max(resolvedAt, source.endedAt);
+          copy.createdAt = copyCreatedAt;
+          copy.updatedAt = copyCreatedAt;
+          copy.revision = source.revision;
+          if (Object.prototype.hasOwnProperty.call(source, 'actualCorrections')) {
+            copy.actualCorrections = cloneJson(source.actualCorrections);
+            copy.processedCorrectionCommands = cloneJson(source.processedCorrectionCommands);
+          }
+          copyEntityId = copy.id;
+          draft.records.push(copy);
+        } else {
+          throw syncServiceError('local copy is unavailable for this conflict', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
+        }
+        appendRepositorySyncMutation(draft, {
+          entityType: conflict.entityType,
+          entityId: copyEntityId,
+          action: 'upsert',
+          payload: copy
+        }, {
+          commandIdentity: `conflict.copy:${conflictId}`,
+          createdAt: resolvedAt,
+          deviceId: draft.install.deviceId
+        });
+      }
+
+      draft.sync.replicas[key] = replicaFor(remote);
+      assertSyncReplica(draft.sync.replicas[key]);
+      conflict.status = 'resolved';
+      conflict.resolution = { action, resolvedAt, copyEntityId };
+      draft.sync.lastError = null;
+      receipt = { conflictId, action, resolvedAt, copyEntityId };
+    });
+    return cloneJson(receipt);
+  }
+
+  previewEnable() {
+    const preview = buildEnablePreview(this.database.load());
+    return {
+      baselineLocalRevision: preview.baselineLocalRevision,
+      previewToken: preview.previewToken,
+      scope: preview.scope
+    };
+  }
+
+  setEnabled({ enabled, expectedLocalRevision, previewToken } = {}) {
+    if (
+      typeof enabled !== 'boolean' ||
+      !Number.isSafeInteger(expectedLocalRevision) || expectedLocalRevision < 0 ||
+      (enabled && (typeof previewToken !== 'string' || !/^[a-f0-9]{64}$/.test(previewToken))) ||
+      (!enabled && previewToken !== undefined)
+    ) {
+      throw syncServiceError('cloud sync preference command is invalid', 'SYNC_PREFERENCE_INVALID');
+    }
+    const changedAt = this.now();
+    if (!Number.isSafeInteger(changedAt) || changedAt < 0) {
+      throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+    }
+    try {
+      return this.database.commit((draft) => {
+        if (enabled) {
+          const preview = buildEnablePreview(draft);
+          if (
+            preview.baselineLocalRevision !== expectedLocalRevision ||
+            preview.previewToken !== previewToken
+          ) {
+            throw syncServiceError('enable preview no longer matches local data', 'SYNC_ENABLE_PREVIEW_STALE');
+          }
+          draft.settings = cloneJson(preview.targetSettings);
+          for (const mutation of preview.missingMutations) {
+            appendRepositorySyncMutation(draft, mutation, {
+              commandIdentity: `sync.enable:${previewToken}:${mutation.entityType}:${mutation.entityId}`,
+              createdAt: changedAt,
+              deviceId: draft.install ? draft.install.deviceId : null,
+              deviceIdFactory: this.deviceIdFactory
+            });
+          }
+        } else if (draft.settings.cloudSyncEnabled) {
+          const expectedSettingsRevision = draft.settings.revision;
+          draft.settings = {
+            ...draft.settings,
+            cloudSyncEnabled: false,
+            revision: expectedSettingsRevision + 1
+          };
+          appendRepositorySyncMutation(draft, {
+            entityType: ENTITY_TYPES.USER_SETTINGS,
+            entityId: 'settings',
+            action: 'upsert',
+            payload: { cloudSyncEnabled: false }
+          }, {
+            commandIdentity: `sync.preference:${expectedSettingsRevision}`,
+            createdAt: changedAt,
+            deviceId: draft.install ? draft.install.deviceId : null,
+            deviceIdFactory: this.deviceIdFactory
+          });
+        }
+        draft.sync.enabled = enabled;
+        draft.sync.provider = enabled ? 'cloudbase' : 'none';
+        if (!enabled) draft.sync.lastError = null;
+      }, expectedLocalRevision);
+    } catch (error) {
+      if (
+        enabled &&
+        error && typeof error.message === 'string' &&
+        /LocalDatabase revision conflict|baseline changed concurrently/.test(error.message)
+      ) {
+        throw syncServiceError('enable preview no longer matches local data', 'SYNC_ENABLE_PREVIEW_STALE');
+      }
+      throw error;
+    }
+  }
+
+  recordFailure(error) {
+    const failedAt = this.now();
+    if (!Number.isSafeInteger(failedAt) || failedAt < 0) {
+      throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+    }
+    const code = safeErrorCode(error);
+    this.database.commit((draft) => {
+      draft.sync.lastError = { code, failedAt };
+    });
+    return this.getSanitizedState();
   }
 
   async bootstrap() {
@@ -164,14 +785,90 @@ class SyncService {
   }
 
   async purgeRemote({ confirmationToken } = {}) {
-    const response = await this.provider.purge({ confirmationToken });
+    const snapshot = this.database.load();
+    if (
+      !snapshot.install ||
+      typeof snapshot.install.deviceId !== 'string' ||
+      snapshot.install.deviceId.length === 0
+    ) {
+      throw syncServiceError('remote purge requires an install deviceId', 'SYNC_DEVICE_ID_REQUIRED');
+    }
+    const response = await this.provider.purge({
+      deviceId: snapshot.install.deviceId,
+      confirmationToken
+    });
     assertPurgeResult(response);
+    if (!remoteBoundaryNeedsReset(snapshot)) return cloneJson(response);
+    try {
+      this.database.commit((draft) => {
+        if (draft.settings.cloudSyncEnabled) {
+          draft.settings = {
+            ...draft.settings,
+            cloudSyncEnabled: false,
+            revision: draft.settings.revision + 1
+          };
+        }
+        draft.sync.enabled = false;
+        draft.sync.provider = 'none';
+        draft.sync.cursor = null;
+        draft.sync.lastSyncedAt = null;
+        draft.sync.lastError = null;
+        draft.sync.outbox = [];
+        draft.sync.conflicts = [];
+        draft.sync.replicas = {};
+      }, snapshot.localRevision);
+    } catch (error) {
+      if (
+        error && typeof error.message === 'string' &&
+        /LocalDatabase revision conflict|baseline changed concurrently/.test(error.message)
+      ) {
+        throw syncServiceError(
+          'remote purge succeeded but local sync boundary changed; retry the same confirmation',
+          'SYNC_PURGE_LOCAL_STALE'
+        );
+      }
+      throw error;
+    }
+    return cloneJson(response);
+  }
+
+  async prepareRemotePurge() {
+    const snapshot = this.database.load();
+    if (
+      !snapshot.install ||
+      typeof snapshot.install.deviceId !== 'string' ||
+      snapshot.install.deviceId.length === 0
+    ) {
+      throw syncServiceError('remote purge requires an install deviceId', 'SYNC_DEVICE_ID_REQUIRED');
+    }
+    const response = await this.provider.preparePurge({ deviceId: snapshot.install.deviceId });
+    assertPurgePreparationResult(response);
     return cloneJson(response);
   }
 
   async pushPending() {
-    const snapshot = this.database.load();
-    const selection = selectPushableOperations(snapshot.sync.outbox);
+    let snapshot = this.database.load();
+    const successorKeys = conflictSuccessorKeys(snapshot);
+    if (successorKeys.size > 0) {
+      const convergedAt = this.now();
+      if (!Number.isSafeInteger(convergedAt) || convergedAt < 0) {
+        throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+      }
+      snapshot = this.database.commit((draft) => {
+        convergeConflictSuccessors(draft, successorKeys, convergedAt);
+        draft.sync.lastError = null;
+      }, snapshot.localRevision);
+    }
+    const blockedKeys = new Set(snapshot.sync.conflicts
+      .filter((conflict) => conflict && conflict.status !== 'resolved')
+      .map((conflict) => entityKey(conflict.entityType, conflict.entityId)));
+    const selected = selectPushableOperations(snapshot.sync.outbox);
+    const selection = {
+      ...selected,
+      operations: selected.operations.filter((operation) => (
+        !blockedKeys.has(entityKey(operation.entityType, operation.entityId))
+      ))
+    };
     if (selection.operations.length === 0) {
       return {
         attemptedOpIds: [],
@@ -220,10 +917,16 @@ class SyncService {
         const operation = findOperation(draft.sync.outbox, classification.opId);
         if (!operation) continue;
         const remoteChange = mapRemoteChange(classification.remote);
+        const sameEntityOperations = validEntityOperations(
+          draft.sync.outbox,
+          operation.entityType,
+          operation.entityId
+        );
         if (
           operation.entityType === ENTITY_TYPES.USER_SETTINGS &&
           operation.action === 'upsert' &&
-          remoteChange.action === 'upsert'
+          remoteChange.action === 'upsert' &&
+          sameEntityOperations && sameEntityOperations.length === 1
         ) {
           const rebased = rebaseSettingsChange({
             localSettings: draft.settings,
@@ -244,6 +947,7 @@ class SyncService {
             localOperation: operation,
             remoteChange,
             localEntity: operation.payload,
+            currentEntity: currentDomainEntity(draft, operation.entityType, operation.entityId),
             detectedAt: attemptedAt
           }));
         }
@@ -346,6 +1050,7 @@ class SyncService {
             localOperation,
             remoteChange: change,
             localEntity: localOperation.payload,
+            currentEntity: currentDomainEntity(draft, localOperation.entityType, localOperation.entityId),
             detectedAt: pulledAt
           }));
         } else {

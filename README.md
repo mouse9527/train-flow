@@ -82,6 +82,25 @@ to the previewed package plus the exact local database revision. Confirmed
 restores and clears use one strict A/B commit. Local clear always says what it
 does: it removes this device's data and never claims that cloud data was deleted.
 
+## Optional cloud sync verification
+
+Open `pages/settings/index?section=cloud-sync` to enable or disable optional
+CloudBase sync, preview the local upload scope, retry recoverable failures,
+resolve conflicts explicitly, or delete only the cloud account copy. The page
+renders the sanitized SyncService state and never reads CloudBase collections
+directly. Cloud failure does not block local planning, workouts or records.
+
+WeChat DevTools `develop` builds provide anonymous, non-persistent visual states:
+
+- `pages/settings/index?section=cloud-sync&fixture=waiting`
+- `pages/settings/index?section=cloud-sync&fixture=denied`
+- `pages/settings/index?section=cloud-sync&fixture=conflict`
+- `pages/settings/index?section=cloud-sync&fixture=purge`
+
+The `trial` and `release` environments ignore every fixture parameter and use
+the real local sync state. The purge fixture only prepares the server-bound
+confirmation surface; it does not touch a real cloud account or local data.
+
 ## Statistics page verification
 
 Open `pages/stats/index` to review the current Monday-to-Sunday completion rate,

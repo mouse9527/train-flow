@@ -1,0 +1,104 @@
+.sync-status {
+  padding: 28rpx;
+  border: 2rpx solid #dce4eb;
+  border-radius: 24rpx;
+  background: #ffffff;
+}
+
+.sync-status-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 18rpx;
+}
+
+.sync-status-dot {
+  width: 18rpx;
+  height: 18rpx;
+  margin-top: 10rpx;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #98a2b3;
+}
+
+.sync-status-synced .sync-status-dot {
+  background: #18864b;
+}
+
+.sync-status-waiting .sync-status-dot,
+.sync-status-syncing .sync-status-dot {
+  background: #e08a00;
+}
+
+.sync-status-conflict .sync-status-dot,
+.sync-status-failure .sync-status-dot {
+  background: #b42318;
+}
+
+.sync-status-title,
+.sync-status-meta,
+.sync-recovery text,
+.sync-conflict-title,
+.sync-conflict-summary {
+  display: block;
+}
+
+.sync-status-title {
+  color: #182230;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.sync-status-meta,
+.sync-recovery,
+.sync-conflict-summary {
+  color: #52606d;
+  font-size: 26rpx;
+  line-height: 1.6;
+}
+
+.sync-status-meta {
+  margin-top: 6rpx;
+}
+
+.sync-recovery,
+.sync-conflict {
+  margin-top: 24rpx;
+  padding-top: 24rpx;
+  border-top: 2rpx solid #e6ebf0;
+}
+
+.sync-error-code {
+  margin-top: 8rpx;
+  color: #7a271a;
+}
+
+.sync-status-button,
+.sync-conflict-button {
+  margin-top: 18rpx;
+  color: #182230;
+  border: 2rpx solid #cbd5df;
+  border-radius: 16rpx;
+  background: #ffffff;
+  font-size: 26rpx;
+}
+
+.sync-conflict-title {
+  color: #7a271a;
+  font-weight: 700;
+}
+
+.sync-conflict-summary {
+  margin-top: 10rpx;
+}
+
+.sync-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 12rpx;
+}
+
+.sync-conflict-button {
+  margin: 0;
+  padding: 0 18rpx;
+}

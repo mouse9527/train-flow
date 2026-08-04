@@ -1,0 +1,44 @@
+<view class="sync-status sync-status-{{state.code}}" wx:if="{{state}}">
+  <view class="sync-status-heading">
+    <view class="sync-status-dot"></view>
+    <view>
+      <text class="sync-status-title">{{state.label}}</text>
+      <text class="sync-status-meta" wx:if="{{state.enabled && state.pendingCount > 0}}">{{state.pendingCount}} 项本机变更尚未同步</text>
+      <text class="sync-status-meta" wx:if="{{!state.enabled}}">云端关闭时，本机计划和训练记录仍可正常使用</text>
+    </view>
+  </view>
+
+  <view class="sync-recovery" wx:if="{{state.code === 'failure'}}">
+    <text>云端暂不可用，本机训练不受影响。可稍后手动重试。</text>
+    <text class="sync-error-code" wx:if="{{state.errorCode}}">错误码：{{state.errorCode}}</text>
+    <button class="sync-status-button" bindtap="onRetry">重新同步</button>
+  </view>
+
+  <view class="sync-recovery" wx:if="{{state.code === 'waiting'}}">
+    <text>变更已安全保存在本机，联网后会自动重试。</text>
+    <button class="sync-status-button" bindtap="onRetry">立即同步</button>
+  </view>
+
+  <view class="sync-conflicts" wx:if="{{state.conflicts.length > 0}}">
+    <view class="sync-conflict" wx:for="{{state.conflicts}}" wx:key="conflictId">
+      <text class="sync-conflict-title">需要选择如何处理</text>
+      <text class="sync-conflict-summary">{{item.localSummary}}</text>
+      <text class="sync-conflict-summary">{{item.remoteSummary}}</text>
+      <view class="sync-conflict-actions">
+        <button
+          class="sync-conflict-button"
+          wx:for="{{item.actions}}"
+          wx:for-item="action"
+          wx:key="*this"
+          data-conflict-id="{{item.conflictId}}"
+          data-action="{{action}}"
+          catchtap="onResolve"
+        >
+          <text wx:if="{{action === 'keep_remote'}}">采用云端</text>
+          <text wx:elif="{{action === 'keep_local_as_copy'}}">保留本机副本</text>
+          <text wx:else>基于云端重试</text>
+        </button>
+      </view>
+    </view>
+  </view>
+</view>

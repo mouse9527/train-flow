@@ -1,0 +1,1508 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const {
+  createSyncApplicationService
+} = require('../../miniprogram/application/sync-application-service');
+const {
+  createSettingsApplicationService
+} = require('../../miniprogram/application/settings-application-service');
+const {
+  createBaselineTrainingRecord
+} = require('../../miniprogram/domain/execution/training-record');
+const {
+  createSettingsRepository
+} = require('../../miniprogram/domain/identity-settings/settings-repository');
+const {
+  createPlanRepository
+} = require('../../miniprogram/domain/planning/plan-repository');
+const {
+  createTrainingRecordRepository
+} = require('../../miniprogram/domain/records/training-record-repository');
+const {
+  createDefaultPlans
+} = require('../../miniprogram/domain/planning/default-plan-factory');
+const {
+  ENTITY_TYPES,
+  createConflictState,
+  mapRemoteChange
+} = require('../../miniprogram/domain/sync/entity-mapper');
+const {
+  appendRepositorySyncMutation,
+  entityKey
+} = require('../../miniprogram/domain/sync/sync-operation');
+const {
+  createLocalDatabase
+} = require('../../miniprogram/services/local-database');
+const {
+  createSyncService
+} = require('../../miniprogram/services/sync-service');
+const { StorageDouble } = require('../helpers/storage-double');
+const {
+  assertPurgePreparationResult,
+  createCloudBaseSyncProvider
+} = require('../../miniprogram/services/cloudbase-sync-provider');
+const {
+  createDeterministicRemoteSyncProvider
+} = require('../../miniprogram/services/remote-sync-provider');
+const { computeChecksum } = require('../../miniprogram/utils/checksum');
+
+const NOW = 1785719340000;
+
+function createRuntime(provider, { now = () => NOW } = {}) {
+  const storage = new StorageDouble();
+  const database = createLocalDatabase({ storage, now });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_cloud_settings', createdAt: NOW - 1000 };
+  });
+  const plan = {
+    ...structuredClone(createDefaultPlans({ now })[0]),
+    id: 'plan_cloud_settings',
+    trainingDate: '2026-08-10',
+    templateSource: null
+  };
+  createPlanRepository({ database, now }).save(plan, 0);
+  const syncService = createSyncService({ database, provider, now });
+  return {
+    application: createSyncApplicationService({ syncService }),
+    database,
+    plan,
+    storage,
+    syncService
+  };
+}
+
+function createFaultableProvider({ now }) {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_stage_failure',
+    now
+  });
+  let nextFailure = null;
+  function fail(stage) {
+    if (nextFailure !== stage) return;
+    nextFailure = null;
+    const error = new Error(`private ${stage} failure sentinel`);
+    error.code = 'CLOUD_SYNC_UNAVAILABLE';
+    throw error;
+  }
+  return {
+    ...provider,
+    failNext(stage) {
+      nextFailure = stage;
+    },
+    async bootstrap(request) {
+      fail('bootstrap');
+      return provider.bootstrap(request);
+    },
+    async push(request) {
+      fail('push');
+      return provider.push(request);
+    },
+    async pull(request) {
+      fail('pull');
+      return provider.pull(request);
+    },
+    async preparePurge(request) {
+      fail('preparePurge');
+      return provider.preparePurge(request);
+    },
+    async purge(request) {
+      fail('purge');
+      return provider.purge(request);
+    }
+  };
+}
+
+function addReadableRecord(database, plan, id) {
+  const record = createBaselineTrainingRecord({
+    id,
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+  });
+  return record;
+}
+
+function assertLocalDomainWritable({ database, plan, recordId, now, marker }) {
+  const planRepository = createPlanRepository({ database, now });
+  const currentPlan = planRepository.findById(plan.id);
+  const savedPlan = planRepository.save({
+    ...currentPlan,
+    title: `${currentPlan.title}-${marker}`
+  }, currentPlan.revision);
+  const settingsRepository = createSettingsRepository({ database, now });
+  const settingsApplication = createSettingsApplicationService({ repository: settingsRepository });
+  const currentSettings = settingsApplication.getSettings();
+  const savedSettings = settingsApplication.updateSettings({
+    defaultRestSeconds: currentSettings.defaultRestSeconds === 75 ? 80 : 75
+  }, currentSettings.revision);
+
+  assert.equal(planRepository.findById(plan.id).title, savedPlan.title);
+  assert.equal(savedSettings.revision, currentSettings.revision + 1);
+  assert.equal(database.load().records.some(({ id }) => id === recordId), true);
+}
+
+function remoteEnvelope({ entityType, entityId, payload, serverRevision = 3 }) {
+  return {
+    ownerId: 'anonymous_fixture_owner',
+    entityType,
+    entityId,
+    serverRevision,
+    schemaVersion: 1,
+    payload: structuredClone(payload),
+    deleted: false,
+    deletedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW + serverRevision,
+    sourceDeviceId: 'anonymous_remote_device'
+  };
+}
+
+function enableForConflict(database) {
+  database.commit((draft) => {
+    draft.settings.cloudSyncEnabled = true;
+    draft.sync.enabled = true;
+    draft.sync.provider = 'fixture';
+  });
+}
+
+test('AC1/AC5: CloudBase provider uses only callable functions and a server-issued purge confirmation', async () => {
+  const calls = [];
+  const responses = {
+    authBootstrap: { cursor: null, serverTime: NOW },
+    syncPush: { accepted: [], rejected: [], conflicts: [] },
+    syncPull: { changes: [], nextCursor: null, hasMore: false },
+    accountPurge: null
+  };
+  const wxApi = {
+    cloud: {
+      async callFunction(request) {
+        calls.push(structuredClone(request));
+        if (request.name === 'accountPurge' && request.data.action === 'prepare') {
+          return {
+            result: {
+              confirmationToken: 'purge_v1.server-issued-token',
+              expiresAt: NOW + 300000
+            }
+          };
+        }
+        if (request.name === 'accountPurge' && request.data.action === 'confirm') {
+          return { result: { purgedAt: NOW + 1 } };
+        }
+        return { result: responses[request.name] };
+      }
+    }
+  };
+  const provider = createCloudBaseSyncProvider({ wx: wxApi });
+
+  await provider.bootstrap({ deviceId: 'device_client_boundary' });
+  await provider.push({ operations: [] });
+  await provider.pull({ cursor: null, limit: 25 });
+  const prepared = await provider.preparePurge({ deviceId: 'device_client_boundary' });
+  assertPurgePreparationResult(prepared);
+  const receipt = await provider.purge({
+    deviceId: 'device_client_boundary',
+    confirmationToken: prepared.confirmationToken
+  });
+
+  assert.deepEqual(receipt, { purgedAt: NOW + 1 });
+  assert.deepEqual(calls, [
+    { name: 'authBootstrap', data: { deviceId: 'device_client_boundary', schemaVersion: 1 } },
+    { name: 'syncPush', data: { operations: [] } },
+    { name: 'syncPull', data: { cursor: null, limit: 25 } },
+    { name: 'accountPurge', data: { action: 'prepare', deviceId: 'device_client_boundary' } },
+    {
+      name: 'accountPurge',
+      data: {
+        action: 'confirm',
+        deviceId: 'device_client_boundary',
+        confirmationToken: 'purge_v1.server-issued-token'
+      }
+    }
+  ]);
+  assert.equal(typeof wxApi.cloud.database, 'undefined', 'client provider must not query CloudBase collections');
+});
+
+test('AC5: deterministic provider binds purge confirmation to the requesting device and replays one receipt', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const prepared = await provider.preparePurge({ deviceId: 'device_fixture_one' });
+
+  await assert.rejects(
+    () => provider.purge({
+      deviceId: 'device_fixture_two',
+      confirmationToken: prepared.confirmationToken
+    }),
+    { code: 'PURGE_CONFIRMATION_INVALID' }
+  );
+  const first = await provider.purge({
+    deviceId: 'device_fixture_one',
+    confirmationToken: prepared.confirmationToken
+  });
+  const replay = await provider.purge({
+    deviceId: 'device_fixture_one',
+    confirmationToken: prepared.confirmationToken
+  });
+
+  assert.deepEqual(first, { purgedAt: NOW });
+  assert.deepEqual(replay, first);
+  assert.deepEqual(provider.calls.purge, [
+    { deviceId: 'device_fixture_two', confirmationToken: '[redacted]' },
+    { deviceId: 'device_fixture_one', confirmationToken: '[redacted]' },
+    { deviceId: 'device_fixture_one', confirmationToken: '[redacted]' }
+  ]);
+});
+
+test('P1: cloud purge atomically resets only the remote boundary and re-enable uploads every entity from base zero', async () => {
+  let clock = NOW;
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_purge_reenable',
+    now: () => clock
+  });
+  const { application, database, plan, syncService } = createRuntime(provider, { now: () => clock });
+  const record = createBaselineTrainingRecord({
+    id: 'session_purge_reenable',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    draft.sync.outbox = [];
+    draft.sync.replicas = {};
+  });
+  const firstPreview = application.prepareEnable();
+  assert.equal((await application.confirmEnable({ confirmationId: firstPreview.confirmationId })).ok, true);
+
+  clock = NOW + 2000;
+  const plans = createPlanRepository({ database, now: () => clock });
+  const currentPlan = plans.findById(plan.id);
+  plans.save({
+    ...structuredClone(currentPlan),
+    title: '删除云端前的本机编辑',
+    revision: currentPlan.revision + 1,
+    updatedAt: clock
+  }, currentPlan.revision);
+  const pendingPlanOp = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  provider.conflictOperation(pendingPlanOp.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: {
+      ...structuredClone(currentPlan),
+      title: '即将删除的云端冲突',
+      revision: currentPlan.revision + 1
+    }
+  }));
+  await syncService.pushPending();
+  database.commit((draft) => {
+    draft.sync.lastError = { code: 'RECOVERABLE_FIXTURE', failedAt: NOW };
+  });
+  const beforePurge = database.load();
+  assert.ok(beforePurge.sync.cursor);
+  assert.ok(Object.keys(beforePurge.sync.replicas).length > 0);
+  assert.ok(beforePurge.sync.conflicts.length > 0);
+  assert.ok(beforePurge.sync.outbox.length > 0);
+
+  const prepared = await application.prepareRemotePurge();
+  const receipt = await application.purgeRemote({ confirmationToken: prepared.confirmationToken });
+  const afterPurge = database.load();
+
+  assert.equal(receipt.purgedAt, clock);
+  assert.deepEqual(afterPurge.plans, beforePurge.plans);
+  assert.deepEqual(afterPurge.records, beforePurge.records);
+  for (const field of [
+    'vibrationEnabled',
+    'soundEnabled',
+    'voiceEnabled',
+    'keepScreenOn',
+    'defaultStartLocalTime',
+    'recommendedEndLocalTime',
+    'defaultRestSeconds',
+    'timezone'
+  ]) {
+    assert.equal(afterPurge.settings[field], beforePurge.settings[field]);
+  }
+  assert.equal(afterPurge.settings.cloudSyncEnabled, false);
+  assert.equal(afterPurge.sync.enabled, false);
+  assert.equal(afterPurge.sync.provider, 'none');
+  assert.equal(afterPurge.sync.cursor, null);
+  assert.equal(afterPurge.sync.lastSyncedAt, null);
+  assert.equal(afterPurge.sync.lastError, null);
+  assert.deepEqual(afterPurge.sync.outbox, []);
+  assert.deepEqual(afterPurge.sync.conflicts, []);
+  assert.deepEqual(afterPurge.sync.replicas, {});
+
+  const secondPreview = application.prepareEnable();
+  assert.deepEqual(secondPreview.scope, {
+    plans: 1,
+    records: 1,
+    settings: 1,
+    pendingOperations: 0
+  });
+  assert.equal((await application.confirmEnable({ confirmationId: secondPreview.confirmationId })).ok, true);
+  const reenableOperations = provider.calls.push.at(-1).operations;
+  assert.equal(reenableOperations.length, 3);
+  assert.equal(reenableOperations.every(({ baseServerRevision }) => baseServerRevision === 0), true);
+  assert.deepEqual(database.load().sync.outbox, []);
+  assert.equal(application.getState().code, 'synced');
+});
+
+test('P1: purge provider failure leaves local domain and sync metadata unchanged and the same token retries', async () => {
+  const fake = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_purge_retry',
+    now: () => NOW
+  });
+  const realPurge = fake.purge.bind(fake);
+  let failNextPurge = true;
+  const provider = {
+    ...fake,
+    async purge(request) {
+      if (failNextPurge) {
+        failNextPurge = false;
+        const error = new Error('temporary purge failure');
+        error.code = 'CLOUD_SYNC_UNAVAILABLE';
+        throw error;
+      }
+      return realPurge(request);
+    }
+  };
+  const { application, database } = createRuntime(provider);
+  const preview = application.prepareEnable();
+  assert.equal((await application.confirmEnable({ confirmationId: preview.confirmationId })).ok, true);
+  const prepared = await application.prepareRemotePurge();
+  const beforeFailure = database.load();
+
+  await assert.rejects(
+    () => application.purgeRemote({ confirmationToken: prepared.confirmationToken }),
+    { code: 'CLOUD_SYNC_UNAVAILABLE' }
+  );
+  const afterFailure = database.load();
+  assert.deepEqual(afterFailure.plans, beforeFailure.plans);
+  assert.deepEqual(afterFailure.records, beforeFailure.records);
+  assert.deepEqual(afterFailure.settings, beforeFailure.settings);
+  assert.deepEqual(
+    { ...afterFailure.sync, lastError: null },
+    { ...beforeFailure.sync, lastError: null }
+  );
+  assert.equal(afterFailure.sync.lastError.code, 'CLOUD_SYNC_UNAVAILABLE');
+  assert.equal(application.getState().code, 'failure');
+  assert.equal(application.getState().label, '失败可重试');
+
+  const receipt = await application.purgeRemote({ confirmationToken: prepared.confirmationToken });
+  assert.equal(receipt.purgedAt, NOW);
+  const afterRetry = database.load();
+  assert.equal(afterRetry.sync.enabled, false);
+  assert.equal(afterRetry.settings.cloudSyncEnabled, false);
+  assert.deepEqual(afterRetry.sync.outbox, []);
+  assert.deepEqual(afterRetry.sync.replicas, {});
+});
+
+test('AC1/AC2: enabling previews only upload counts and denied cloud becomes a recoverable sanitized state', async () => {
+  const privateError = 'openid-secret-allowlist-sentinel';
+  const fake = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const provider = {
+    ...fake,
+    async bootstrap() {
+      const error = new Error(privateError);
+      error.code = 'CLOUD_SYNC_UNAVAILABLE';
+      throw error;
+    }
+  };
+  const { application, database, plan } = createRuntime(provider);
+  const preview = application.prepareEnable();
+
+  assert.deepEqual(preview.scope, {
+    plans: 1,
+    records: 0,
+    settings: 1,
+    pendingOperations: 1
+  });
+  assert.equal(JSON.stringify(preview).includes(plan.title), false, 'preview must not expose local payloads');
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const snapshot = database.load();
+
+  assert.equal(result.ok, false);
+  assert.equal(snapshot.settings.cloudSyncEnabled, true);
+  assert.equal(snapshot.sync.enabled, true);
+  assert.equal(snapshot.plans[0].title, plan.title, 'cloud denial must not block or mutate local plans');
+  assert.equal(application.getState().code, 'failure');
+  assert.equal(application.getState().label, '失败可重试');
+  assert.equal(application.getState().errorCode, 'CLOUD_SYNC_UNAVAILABLE');
+  assert.equal(JSON.stringify(application.getState()).includes(privateError), false);
+  assert.equal(JSON.stringify(application.getState()).includes('openid'), false);
+});
+
+test('P1: every provider stage failure is sanitized, leaves local domains writable, and retries', async (t) => {
+  for (const stage of ['bootstrap', 'push', 'pull', 'preparePurge', 'purge']) {
+    await t.test(stage, async () => {
+      let clock = NOW;
+      const provider = createFaultableProvider({ now: () => clock });
+      const { application, database, plan } = createRuntime(provider, { now: () => clock });
+      const record = addReadableRecord(database, plan, `record_stage_${stage}`);
+      let retry;
+
+      if (['bootstrap', 'push', 'pull'].includes(stage)) {
+        provider.failNext(stage);
+        const preview = application.prepareEnable();
+        const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+        assert.equal(result.ok, false);
+        assert.equal(result.state.code, 'failure');
+        assert.equal(result.state.label, '失败可重试');
+        assert.equal(result.state.errorCode, 'CLOUD_SYNC_UNAVAILABLE');
+
+        clock += 10000;
+        assertLocalDomainWritable({
+          database,
+          plan,
+          recordId: record.id,
+          now: () => clock,
+          marker: stage
+        });
+        retry = await application.retry({ source: 'manual' });
+        assert.equal(retry.ok, true);
+        if (retry.state.code === 'waiting') {
+          retry = await application.retry({ source: 'automatic' });
+          assert.equal(retry.ok, true);
+        }
+        assert.equal(retry.state.code, 'synced');
+      } else {
+        const preview = application.prepareEnable();
+        assert.equal((await application.confirmEnable({ confirmationId: preview.confirmationId })).ok, true);
+        let prepared = null;
+        if (stage === 'purge') prepared = await application.prepareRemotePurge();
+        provider.failNext(stage);
+        await assert.rejects(
+          () => stage === 'preparePurge'
+            ? application.prepareRemotePurge()
+            : application.purgeRemote({ confirmationToken: prepared.confirmationToken }),
+          { code: 'CLOUD_SYNC_UNAVAILABLE' }
+        );
+        assert.equal(application.getState().code, 'failure');
+        assert.equal(application.getState().label, '失败可重试');
+        assert.equal(application.getState().errorCode, 'CLOUD_SYNC_UNAVAILABLE');
+
+        clock += 10000;
+        assertLocalDomainWritable({
+          database,
+          plan,
+          recordId: record.id,
+          now: () => clock,
+          marker: stage
+        });
+        if (stage === 'preparePurge') {
+          retry = await application.retry({ source: 'manual' });
+          assert.equal(retry.ok, true);
+          prepared = await application.prepareRemotePurge();
+          assert.match(prepared.confirmationToken, /^purge_fixture_/);
+        } else {
+          const receipt = await application.purgeRemote({
+            confirmationToken: prepared.confirmationToken
+          });
+          assert.equal(receipt.purgedAt, clock);
+          assert.equal(application.getState().code, 'disabled');
+          assert.equal(database.load().plans[0].title.endsWith(`-${stage}`), true);
+          assert.equal(database.load().records.some(({ id }) => id === record.id), true);
+        }
+      }
+
+      assert.equal(JSON.stringify(application.getState()).includes('private'), false);
+    });
+  }
+});
+
+test('P1: empty outbox enable preview atomically enqueues every missing active local entity before sync', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan } = createRuntime(provider);
+  const record = createBaselineTrainingRecord({
+    id: 'session_enable_preview',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    draft.sync.outbox = [];
+    draft.sync.replicas = {};
+  });
+
+  const preview = application.prepareEnable();
+  assert.deepEqual(preview.scope, {
+    plans: 1,
+    records: 1,
+    settings: 1,
+    pendingOperations: 0
+  });
+  assert.equal(Object.prototype.hasOwnProperty.call(preview, 'previewToken'), false);
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    new Set(provider.calls.push[0].operations.map(({ entityType }) => entityType)),
+    new Set([
+      ENTITY_TYPES.WORKOUT_PLAN,
+      ENTITY_TYPES.TRAINING_RECORD,
+      ENTITY_TYPES.USER_SETTINGS
+    ])
+  );
+  assert.equal(provider.calls.push[0].operations.length, 3);
+  assert.equal(database.load().sync.outbox.length, 0);
+});
+
+test('P1: stale enable preview rejects with zero writes after the intervening local revision', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database } = createRuntime(provider);
+  database.commit((draft) => {
+    draft.sync.outbox = [];
+    draft.sync.replicas = {};
+  });
+  const preview = application.prepareEnable();
+  database.commit((draft) => {
+    draft.settings.defaultRestSeconds = 95;
+    draft.settings.revision += 1;
+  });
+  const beforeConfirm = database.load();
+
+  await assert.rejects(
+    () => application.confirmEnable({ confirmationId: preview.confirmationId }),
+    { code: 'SYNC_ENABLE_PREVIEW_STALE' }
+  );
+  assert.deepEqual(database.load(), beforeConfirm);
+  assert.equal(provider.calls.bootstrap.length, 0);
+  assert.equal(provider.calls.push.length, 0);
+});
+
+test('P1: enable bootstrap preserves exact queued work and skips an exact replica fact', async () => {
+  const fake = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const provider = {
+    ...fake,
+    async bootstrap() {
+      const error = new Error('offline fixture');
+      error.code = 'CLOUD_SYNC_UNAVAILABLE';
+      throw error;
+    }
+  };
+  const { application, database, plan } = createRuntime(provider);
+  const originalPlanOp = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const record = createBaselineTrainingRecord({
+    id: 'session_enable_replica',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    draft.sync.replicas[entityKey(ENTITY_TYPES.TRAINING_RECORD, record.id)] = {
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      serverRevision: 4,
+      payloadHash: computeChecksum(record),
+      deleted: false
+    };
+  });
+
+  const preview = application.prepareEnable();
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const outbox = database.load().sync.outbox;
+
+  assert.equal(result.ok, false);
+  assert.equal(outbox.find(({ entityId }) => entityId === plan.id).opId, originalPlanOp.opId);
+  assert.equal(outbox.some(({ entityId }) => entityId === record.id), false);
+  assert.equal(outbox.filter(({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS).length, 1);
+});
+
+test('AC1/AC3: manual and automatic retry share the same outbox and a lost response creates no remote duplicate', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database } = createRuntime(provider);
+  const preview = application.prepareEnable();
+  provider.loseNextPushResponse();
+
+  const enabled = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  assert.equal(enabled.ok, false);
+  const afterLost = database.load();
+  const pendingOpIds = afterLost.sync.outbox.map(({ opId }) => opId);
+  assert.ok(pendingOpIds.length >= 2, 'plan and cloud preference remain queued after lost response');
+
+  provider.loseNextPushResponse();
+  const manual = await application.retry({ source: 'manual' });
+  assert.equal(manual.ok, false);
+  assert.deepEqual(database.load().sync.outbox.map(({ opId }) => opId), pendingOpIds);
+  assert.equal(manual.state.code, 'failure');
+  const automatic = await application.retry({ source: 'automatic' });
+  assert.equal(automatic.ok, true);
+  assert.deepEqual(database.load().sync.outbox, []);
+  assert.deepEqual(
+    provider.calls.push.slice(0, 3).map(({ operations }) => operations.map(({ opId }) => opId)),
+    [pendingOpIds, pendingOpIds, pendingOpIds],
+    'manual and automatic lost-response retries must send the exact same operation identities'
+  );
+  assert.equal(application.getState().code, 'synced');
+  assert.equal(application.getState().label, '已同步');
+
+  const remote = await provider.pull({ cursor: null, limit: 100 });
+  assert.equal(remote.changes.length, 2, 'remote contains one plan and one settings entity only');
+  assert.equal(new Set(remote.changes.map(({ entityId }) => entityId)).size, 2);
+});
+
+test('AC3: rejected operations stay visible and retain their exact pending identity', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_rejected_visibility',
+    now: () => NOW
+  });
+  const { application, database, plan } = createRuntime(provider);
+  const rejected = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  provider.rejectOperation(rejected.opId, 'REMOTE_VALIDATION_REJECTED');
+
+  const preview = application.prepareEnable();
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const state = application.getState();
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.result.push.rejected, [{
+    opId: rejected.opId,
+    code: 'REMOTE_VALIDATION_REJECTED'
+  }]);
+  assert.equal(state.code, 'waiting');
+  assert.equal(state.label, '等待 1 项');
+  assert.equal(state.pendingCount, 1);
+  assert.equal(database.load().sync.outbox[0].opId, rejected.opId);
+});
+
+test('AC3/AC4: one mixed push removes accepted work while rejected and conflict operations stay actionable', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_mixed_classification',
+    now: () => NOW
+  });
+  const { application, database, plan } = createRuntime(provider);
+  const record = createBaselineTrainingRecord({
+    id: 'record_mixed_classification',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    appendRepositorySyncMutation(draft, {
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      action: 'upsert',
+      payload: record
+    }, {
+      commandIdentity: 'record.mixed-classification.fixture',
+      createdAt: NOW,
+      deviceId: draft.install.deviceId
+    });
+  });
+  const before = database.load();
+  const planOperation = before.sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const recordOperation = before.sync.outbox.find(({ entityId }) => entityId === record.id);
+  provider.rejectOperation(recordOperation.opId, 'REMOTE_VALIDATION_REJECTED');
+  provider.conflictOperation(planOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: {
+      ...structuredClone(plan),
+      title: '云端混合分类计划',
+      revision: plan.revision + 1
+    }
+  }));
+
+  const preview = application.prepareEnable();
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const after = database.load();
+  const state = application.getState();
+  const acceptedSettings = result.result.push.acceptedOpIds.find((opId) => (
+    ![planOperation.opId, recordOperation.opId].includes(opId)
+  ));
+
+  assert.equal(result.ok, true);
+  assert.equal(typeof acceptedSettings, 'string');
+  assert.deepEqual(result.result.push.rejected, [{
+    opId: recordOperation.opId,
+    code: 'REMOTE_VALIDATION_REJECTED'
+  }]);
+  assert.equal(result.result.push.conflicts[0].opId, planOperation.opId);
+  assert.equal(after.sync.outbox.some(({ opId }) => opId === acceptedSettings), false);
+  assert.deepEqual(
+    after.sync.outbox.map(({ opId }) => opId).sort(),
+    [planOperation.opId, recordOperation.opId].sort()
+  );
+  assert.equal(state.code, 'conflict');
+  assert.equal(state.label, '冲突');
+  assert.equal(state.pendingCount, 2);
+  assert.equal(state.conflicts.length, 1);
+  assert.equal(state.conflicts[0].conflictId.length > 0, true);
+  assert.equal(state.conflicts[0].actions.includes('rebase'), true, 'conflict must expose an explicit retry action');
+});
+
+test('AC4: plan conflict remains visible until explicit keep-local-as-copy atomically preserves both sides', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  enableForConflict(database);
+  const localOperation = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const remotePlan = { ...structuredClone(plan), title: '云端版本', revision: plan.revision + 1 };
+  provider.conflictOperation(localOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: remotePlan
+  }));
+
+  await syncService.pushPending();
+  const visible = application.getState().conflicts[0];
+  assert.equal(application.getState().code, 'conflict');
+  assert.deepEqual(visible.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+  assert.match(visible.localSummary, /本机/);
+  assert.match(visible.remoteSummary, /云端版本/);
+  assert.equal(JSON.stringify(visible).includes('ownerId'), false);
+  assert.equal(database.load().sync.outbox.some(({ opId }) => opId === localOperation.opId), true);
+
+  const resolved = await application.resolveConflict({
+    conflictId: visible.conflictId,
+    action: 'keep_local_as_copy'
+  });
+  const after = database.load();
+  const original = after.plans.find(({ id }) => id === plan.id);
+  const copy = after.plans.find(({ id }) => id === resolved.copyEntityId);
+
+  assert.equal(original.title, '云端版本');
+  assert.equal(copy.title, `${plan.title}（本机副本）`);
+  assert.equal(after.sync.outbox.some(({ opId }) => opId === localOperation.opId), false);
+  assert.equal(after.sync.outbox.some(({ entityId }) => entityId === copy.id), true);
+  assert.equal(application.getState().conflicts.length, 0);
+  assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision, 3);
+});
+
+test('P1: a same-entity successor makes the displayed conflict stale with zero resolution writes', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  enableForConflict(database);
+  const localOperation = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const remotePlan = { ...structuredClone(plan), title: '云端旧冲突', revision: plan.revision + 1 };
+  provider.conflictOperation(localOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: remotePlan
+  }));
+  await syncService.pushPending();
+  const visible = application.getState().conflicts[0];
+
+  const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+  const current = repository.findById(plan.id);
+  repository.save({
+    ...structuredClone(current),
+    title: '冲突出现后的新编辑',
+    revision: current.revision + 1,
+    updatedAt: NOW + 2000
+  }, current.revision);
+  const beforeResolution = database.load();
+  const providerCallsBeforeResolution = structuredClone(provider.calls);
+
+  await assert.rejects(
+    () => application.resolveConflict({
+      conflictId: visible.conflictId,
+      action: 'keep_remote'
+    }),
+    { code: 'SYNC_CONFLICT_STALE' }
+  );
+  assert.deepEqual(database.load(), beforeResolution);
+  assert.deepEqual(provider.calls, providerCallsBeforeResolution);
+  assert.equal(application.getState().conflicts.length, 1);
+  assert.equal(
+    database.load().sync.outbox.filter(({ entityId }) => entityId === plan.id).length,
+    2
+  );
+
+  const pushCallsBeforeRetry = provider.calls.push.length;
+  const retry = await application.retry({ source: 'manual' });
+  const afterRetry = database.load();
+  const converged = application.getState().conflicts;
+  assert.equal(retry.ok, true);
+  assert.equal(provider.calls.push.length, pushCallsBeforeRetry, 'retry must not push the stale conflicted head again');
+  assert.equal(afterRetry.sync.outbox.filter(({ entityId }) => entityId === plan.id).length, 1);
+  assert.equal(converged.length, 1, 'retry must replace, not multiply, the stale conflict');
+  assert.match(converged[0].localSummary, /冲突出现后的新编辑/);
+
+  const resolved = await application.resolveConflict({
+    conflictId: converged[0].conflictId,
+    action: 'rebase'
+  });
+  const afterRebase = database.load();
+  const survivor = afterRebase.sync.outbox.find(({ entityId }) => entityId === plan.id);
+  assert.equal(resolved.action, 'rebase');
+  assert.notEqual(survivor.opId, localOperation.opId, 'superseded conflicted op must not return');
+  assert.equal(survivor.baseServerRevision, 3);
+  assert.equal(survivor.payload.title, '冲突出现后的新编辑');
+  assert.equal(repository.findById(plan.id).title, '冲突出现后的新编辑');
+  assert.equal(afterRebase.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision, 3);
+  assert.equal(application.getState().conflicts.length, 0);
+});
+
+test('P1: a successor queued before conflict detection converges on retry without losing the latest entity fact', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_successor_before_conflict',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  enableForConflict(database);
+  const staleHead = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+  const current = repository.findById(plan.id);
+  const successor = repository.save({
+    ...structuredClone(current),
+    title: '冲突检测前的最新编辑',
+    revision: current.revision + 1,
+    updatedAt: NOW + 2000
+  }, current.revision);
+  provider.conflictOperation(staleHead.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: { ...structuredClone(plan), title: '云端冲突版本', revision: plan.revision + 1 }
+  }));
+  await syncService.pushPending();
+  const visible = application.getState().conflicts[0];
+
+  await assert.rejects(
+    () => application.resolveConflict({ conflictId: visible.conflictId, action: 'rebase' }),
+    { code: 'SYNC_CONFLICT_STALE' }
+  );
+  const pushCallsBeforeRetry = provider.calls.push.length;
+  const retry = await application.retry({ source: 'manual' });
+  const afterRetry = database.load();
+  const conflicts = application.getState().conflicts;
+
+  assert.equal(retry.ok, true);
+  assert.equal(provider.calls.push.length, pushCallsBeforeRetry, 'retry must not repeat the stale head');
+  assert.equal(afterRetry.sync.outbox.filter(({ entityId }) => entityId === plan.id).length, 1);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].localSummary, /冲突检测前的最新编辑/);
+  assert.equal(repository.findById(plan.id).title, successor.title);
+
+  const resolved = await application.resolveConflict({
+    conflictId: conflicts[0].conflictId,
+    action: 'keep_local_as_copy'
+  });
+  const afterResolution = database.load();
+  assert.equal(repository.findById(plan.id).title, '云端冲突版本');
+  assert.equal(
+    afterResolution.plans.find(({ id }) => id === resolved.copyEntityId).title,
+    `${successor.title}（本机副本）`
+  );
+  assert.equal(afterResolution.sync.outbox.some(({ entityId }) => entityId === plan.id), false);
+  assert.equal(afterResolution.sync.outbox.some(({ entityId }) => entityId === resolved.copyEntityId), true);
+  assert.equal(
+    afterResolution.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision,
+    3
+  );
+  assert.equal(application.getState().conflicts.length, 0);
+});
+
+test('P1: successor convergence preserves record facts, plan tombstones, settings patches, and fails closed on mismatch', async (t) => {
+  await t.test('record full payload', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_record_successor',
+      now: () => NOW
+    });
+    const { application, database, plan, syncService } = createRuntime(provider);
+    const record = createBaselineTrainingRecord({
+      id: 'record_successor_full',
+      planSnapshot: structuredClone(plan),
+      trainingDate: plan.trainingDate,
+      status: 'completed',
+      startedAt: NOW,
+      endedAt: NOW + 1000,
+      elapsedActiveSeconds: 1,
+      stepResults: plan.steps.map((step) => ({
+        stepId: step.id,
+        status: 'completed',
+        completedAt: NOW + 1000,
+        setResults: []
+      }))
+    });
+    database.commit((draft) => {
+      draft.records.push(structuredClone(record));
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: record.id,
+        action: 'upsert',
+        payload: record
+      }, {
+        commandIdentity: 'record.successor.head',
+        createdAt: NOW,
+        deviceId: draft.install.deviceId
+      });
+    });
+    const head = database.load().sync.outbox.find(({ entityId }) => entityId === record.id);
+    const recordRepository = createTrainingRecordRepository({ database });
+    const successor = recordRepository.correct({
+      recordId: record.id,
+      expectedRevision: record.revision,
+      commandKey: 'record.successor.latest-correction',
+      nowMs: NOW + 2000,
+      actualCorrections: [],
+      feedback: {
+        rpe: 7,
+        weightBeforeKg: null,
+        pain: {
+          knee: false,
+          lowerBack: false,
+          ankleOrToe: false,
+          dizziness: false
+        },
+        note: 'R6 distinguishable record successor'
+      }
+    });
+    const successorOperation = database.load().sync.outbox
+      .filter(({ entityId }) => entityId === record.id)
+      .at(-1);
+    enableForConflict(database);
+    provider.conflictOperation(head.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      payload: structuredClone(record)
+    }));
+
+    await syncService.pushPending();
+    await application.retry({ source: 'manual' });
+    const after = database.load();
+    const operation = after.sync.outbox.find(({ entityId }) => entityId === record.id);
+    assert.equal(after.sync.outbox.filter(({ entityId }) => entityId === record.id).length, 1);
+    assert.equal(operation.opId, successorOperation.opId);
+    assert.notEqual(operation.opId, head.opId);
+    assert.deepEqual(operation.payload, successor);
+    assert.deepEqual(after.records.find(({ id }) => id === record.id), successor);
+    assert.equal(operation.payload.feedback.note, 'R6 distinguishable record successor');
+    assert.equal(after.records.find(({ id }) => id === record.id).feedback.note, 'R6 distinguishable record successor');
+    assert.equal(application.getState().conflicts.length, 1);
+  });
+
+  await t.test('plan delete tombstone', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_delete_successor',
+      now: () => NOW
+    });
+    const { application, database, plan, syncService } = createRuntime(provider);
+    enableForConflict(database);
+    const head = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+    const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+    repository.delete(plan.id, repository.findById(plan.id).revision);
+    provider.conflictOperation(head.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: plan.id,
+      payload: { ...structuredClone(plan), title: '云端保留计划', revision: plan.revision + 1 }
+    }));
+
+    await syncService.pushPending();
+    await application.retry({ source: 'manual' });
+    const visible = application.getState().conflicts[0];
+    const after = database.load();
+    const operation = after.sync.outbox.find(({ entityId }) => entityId === plan.id);
+    assert.equal(operation.action, 'delete');
+    assert.equal(operation.payload, null);
+    assert.equal(repository.findById(plan.id), null);
+    assert.match(visible.localSummary, /已删除/);
+    await application.resolveConflict({ conflictId: visible.conflictId, action: 'rebase' });
+    assert.equal(database.load().sync.outbox.find(({ entityId }) => entityId === plan.id).baseServerRevision, 3);
+  });
+
+  await t.test('settings successor patch merge', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_settings_successor',
+      now: () => NOW
+    });
+    const { application, database, syncService } = createRuntime(provider);
+    const settings = createSettingsApplicationService({
+      repository: createSettingsRepository({ database, now: () => NOW })
+    });
+    settings.updateSettings({ defaultRestSeconds: 90 }, database.load().settings.revision);
+    settings.updateSettings({ soundEnabled: false }, database.load().settings.revision);
+    enableForConflict(database);
+    const settingsOperations = database.load().sync.outbox.filter(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    );
+    const remote = {
+      ...structuredClone(database.load().settings),
+      defaultRestSeconds: 70,
+      soundEnabled: true,
+      vibrationEnabled: false,
+      revision: database.load().settings.revision + 2
+    };
+    provider.conflictOperation(settingsOperations[0].opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.USER_SETTINGS,
+      entityId: 'settings',
+      payload: remote
+    }));
+
+    await syncService.pushPending();
+    await application.retry({ source: 'manual' });
+    const after = database.load();
+    const operation = after.sync.outbox.find(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    );
+    assert.equal(after.sync.outbox.filter(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    ).length, 1);
+    assert.equal(operation.opId, settingsOperations[1].opId);
+    assert.equal(operation.payload.defaultRestSeconds, 90);
+    assert.equal(operation.payload.soundEnabled, false);
+    assert.equal(operation.payload.vibrationEnabled, false);
+    assert.equal(after.settings.defaultRestSeconds, 90);
+    assert.equal(after.settings.soundEnabled, false);
+    assert.equal(after.settings.vibrationEnabled, false);
+    assert.equal(application.getState().conflicts.length, 1);
+  });
+
+  await t.test('mismatched latest fact is zero-write fail closed', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_mismatch_successor',
+      now: () => NOW
+    });
+    const { database, plan, syncService } = createRuntime(provider);
+    enableForConflict(database);
+    const head = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+    const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+    const current = repository.findById(plan.id);
+    repository.save({ ...current, title: '真实最新计划' }, current.revision);
+    provider.conflictOperation(head.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: plan.id,
+      payload: { ...structuredClone(plan), title: '云端版本', revision: plan.revision + 1 }
+    }));
+    await syncService.pushPending();
+    database.commit((draft) => {
+      const latest = draft.sync.outbox.filter(({ entityId }) => entityId === plan.id).at(-1);
+      latest.payload = { ...latest.payload, title: '伪造但结构合法的旧事实' };
+    });
+    const before = database.load();
+    const callsBefore = structuredClone(provider.calls);
+
+    await assert.rejects(() => syncService.pushPending(), { code: 'SYNC_CONFLICT_STALE' });
+    assert.deepEqual(database.load(), before);
+    assert.deepEqual(provider.calls, callsBefore);
+  });
+});
+
+test('P1: successor normalization deduplicates only canonical remote facts and never arbitrates by order', async (t) => {
+  function fixture(remoteEnvelopes) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_remote_normalization',
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    enableForConflict(runtime.database);
+    const head = runtime.database.load().sync.outbox.find(({ entityId }) => entityId === runtime.plan.id);
+    const repository = createPlanRepository({ database: runtime.database, now: () => NOW + 2000 });
+    const current = repository.findById(runtime.plan.id);
+    repository.save({ ...current, title: '本机 normalization successor' }, current.revision);
+    const currentEntity = runtime.database.load().plans.find(({ id }) => id === runtime.plan.id);
+    runtime.database.commit((draft) => {
+      draft.sync.conflicts = remoteEnvelopes.map((envelope) => createConflictState({
+        localOperation: head,
+        remoteChange: mapRemoteChange(envelope),
+        localEntity: head.payload,
+        currentEntity,
+        detectedAt: NOW
+      }));
+    });
+    return { ...runtime, head, repository, provider };
+  }
+
+  function remote(plan, { title, serverRevision }) {
+    return remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: plan.id,
+      payload: { ...structuredClone(plan), title, revision: plan.revision + 1 },
+      serverRevision
+    });
+  }
+
+  await t.test('identical highest-revision facts deduplicate', async () => {
+    const seed = createRuntime(createDeterministicRemoteSyncProvider({ now: () => NOW }));
+    const fact = remote(seed.plan, { title: '云端同一事实', serverRevision: 3 });
+    const runtime = fixture([fact, structuredClone(fact)]);
+    await runtime.syncService.pushPending();
+    const after = runtime.database.load();
+    assert.equal(after.sync.conflicts.filter(({ status }) => status !== 'resolved').length, 1);
+    assert.equal(after.sync.outbox.filter(({ entityId }) => entityId === runtime.plan.id).length, 1);
+    assert.equal(after.sync.conflicts.find(({ status }) => status !== 'resolved').remote.payload.title, '云端同一事实');
+  });
+
+  await t.test('divergent facts at the same highest revision fail closed with zero effects', async () => {
+    const seed = createRuntime(createDeterministicRemoteSyncProvider({ now: () => NOW }));
+    const runtime = fixture([
+      remote(seed.plan, { title: '云端事实-A', serverRevision: 3 }),
+      remote(seed.plan, { title: '云端事实-B', serverRevision: 3 })
+    ]);
+    const before = runtime.database.load();
+    const callsBefore = structuredClone(runtime.provider.calls);
+
+    await assert.rejects(
+      () => runtime.syncService.pushPending(),
+      { code: 'SYNC_CONFLICT_DIVERGENT_REMOTE' }
+    );
+    assert.deepEqual(runtime.database.load(), before);
+    assert.deepEqual(runtime.provider.calls, callsBefore);
+  });
+
+  await t.test('one unique highest revision supersedes lower facts independent of order', async () => {
+    const seed = createRuntime(createDeterministicRemoteSyncProvider({ now: () => NOW }));
+    const lowA = remote(seed.plan, { title: '云端低版本-A', serverRevision: 2 });
+    const lowB = remote(seed.plan, { title: '云端低版本-B', serverRevision: 2 });
+    const high = remote(seed.plan, { title: '云端唯一高版本', serverRevision: 4 });
+    for (const facts of [[lowA, high, lowB], [high, lowB, lowA]]) {
+      const runtime = fixture(facts);
+      await runtime.syncService.pushPending();
+      const unresolved = runtime.database.load().sync.conflicts.filter(({ status }) => status !== 'resolved');
+      assert.equal(unresolved.length, 1);
+      assert.equal(unresolved[0].remote.serverRevision, 4);
+      assert.equal(unresolved[0].remote.payload.title, '云端唯一高版本');
+    }
+  });
+});
+
+test('AC4: record copy and settings rebase stay explicit and preserve visible conflict state until chosen', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  const record = createBaselineTrainingRecord({
+    id: 'session_cloud_conflict',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    appendRepositorySyncMutation(draft, {
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      action: 'upsert',
+      payload: record
+    }, {
+      commandIdentity: 'record.conflict.fixture',
+      createdAt: NOW,
+      deviceId: draft.install.deviceId
+    });
+  });
+  const settings = createSettingsApplicationService({
+    repository: createSettingsRepository({ database, now: () => NOW })
+  });
+  settings.updateSettings({ defaultRestSeconds: 95 }, database.load().settings.revision);
+  enableForConflict(database);
+  const before = database.load();
+  const recordOperation = before.sync.outbox.find(({ entityId }) => entityId === record.id);
+  const settingsOperation = before.sync.outbox.find(
+    ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+  );
+  const remoteRecord = structuredClone(record);
+  const remoteSettings = {
+    ...structuredClone(before.settings),
+    defaultRestSeconds: 80,
+    cloudSyncEnabled: true,
+    revision: before.settings.revision + 2
+  };
+  provider.conflictOperation(recordOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.TRAINING_RECORD,
+    entityId: record.id,
+    payload: remoteRecord
+  }));
+  provider.conflictOperation(settingsOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.USER_SETTINGS,
+    entityId: 'settings',
+    payload: remoteSettings
+  }));
+
+  await syncService.pushPending();
+  const conflicts = application.getState().conflicts;
+  const recordConflict = conflicts.find(({ entityType }) => entityType === ENTITY_TYPES.TRAINING_RECORD);
+  const settingsConflict = conflicts.find(({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS);
+  assert.deepEqual(recordConflict.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+  assert.deepEqual(settingsConflict.actions, ['keep_remote', 'rebase']);
+  assert.equal(database.load().records[0].elapsedActiveSeconds, 1, 'record stays local before explicit choice');
+
+  const copyReceipt = await application.resolveConflict({
+    conflictId: recordConflict.conflictId,
+    action: 'keep_local_as_copy'
+  });
+  const afterRecord = database.load();
+  assert.deepEqual(afterRecord.records.find(({ id }) => id === record.id), remoteRecord);
+  const recordCopy = afterRecord.records.find(({ id }) => id === copyReceipt.copyEntityId);
+  assert.ok(recordCopy, 'local record copy must remain available');
+  assert.equal(recordCopy.elapsedActiveSeconds, 1);
+  assert.equal(afterRecord.sync.outbox.some(({ entityId }) => entityId === recordCopy.id), true);
+
+  await application.resolveConflict({
+    conflictId: settingsConflict.conflictId,
+    action: 'rebase'
+  });
+  const after = database.load();
+  const rebasedSettingsOperation = after.sync.outbox.find(
+    ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+  );
+  assert.equal(after.settings.defaultRestSeconds, 95);
+  assert.equal(rebasedSettingsOperation.baseServerRevision, 3);
+  assert.equal(application.getState().conflicts.length, 0);
+});
+
+test('P1: conflict action matrix consumes only the exact operation for plan, record and settings', async (t) => {
+  async function planFixture(label) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: `anonymous_plan_${label}`,
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    enableForConflict(runtime.database);
+    const operation = runtime.database.load().sync.outbox.find(({ entityId }) => entityId === runtime.plan.id);
+    const remote = {
+      ...structuredClone(runtime.plan),
+      title: `云端计划 ${label}`,
+      revision: runtime.plan.revision + 1
+    };
+    provider.conflictOperation(operation.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: runtime.plan.id,
+      payload: remote
+    }));
+    await runtime.syncService.pushPending();
+    return { ...runtime, operation, remote, conflict: runtime.application.getState().conflicts[0] };
+  }
+
+  async function recordFixture(label) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: `anonymous_record_${label}`,
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    const record = createBaselineTrainingRecord({
+      id: `session_record_${label}`,
+      planSnapshot: structuredClone(runtime.plan),
+      trainingDate: runtime.plan.trainingDate,
+      status: 'completed',
+      startedAt: NOW,
+      endedAt: NOW + 1000,
+      elapsedActiveSeconds: 1,
+      stepResults: runtime.plan.steps.map((step) => ({
+        stepId: step.id,
+        status: 'completed',
+        completedAt: NOW + 1000,
+        setResults: []
+      }))
+    });
+    runtime.database.commit((draft) => {
+      draft.records.push(structuredClone(record));
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: record.id,
+        action: 'upsert',
+        payload: record
+      }, {
+        commandIdentity: `record.matrix.${label}`,
+        createdAt: NOW,
+        deviceId: draft.install.deviceId
+      });
+    });
+    enableForConflict(runtime.database);
+    const operation = runtime.database.load().sync.outbox.find(({ entityId }) => entityId === record.id);
+    const remote = {
+      ...structuredClone(record),
+      feedback: {
+        rpe: 6,
+        weightBeforeKg: null,
+        pain: { knee: false, lowerBack: false, ankleOrToe: false, dizziness: false },
+        note: `云端记录 ${label}`
+      }
+    };
+    provider.conflictOperation(operation.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      payload: remote
+    }));
+    await runtime.syncService.pushPending();
+    const conflict = runtime.application.getState().conflicts.find(
+      ({ entityType }) => entityType === ENTITY_TYPES.TRAINING_RECORD
+    );
+    return { ...runtime, operation, record, remote, conflict };
+  }
+
+  async function settingsFixture(label) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: `anonymous_settings_${label}`,
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    const settings = createSettingsApplicationService({
+      repository: createSettingsRepository({ database: runtime.database, now: () => NOW })
+    });
+    settings.updateSettings({ defaultRestSeconds: 95 }, runtime.database.load().settings.revision);
+    enableForConflict(runtime.database);
+    const before = runtime.database.load();
+    const operation = before.sync.outbox.find(({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS);
+    const remote = {
+      ...structuredClone(before.settings),
+      defaultRestSeconds: 80,
+      cloudSyncEnabled: true,
+      revision: before.settings.revision + 2
+    };
+    provider.conflictOperation(operation.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.USER_SETTINGS,
+      entityId: 'settings',
+      payload: remote
+    }));
+    await runtime.syncService.pushPending();
+    const conflict = runtime.application.getState().conflicts.find(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    );
+    return { ...runtime, operation, remote, conflict };
+  }
+
+  await t.test('plan keep_remote consumes the exact op and applies remote', async () => {
+    const fixture = await planFixture('keep_remote');
+    assert.deepEqual(fixture.conflict.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'keep_remote'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.plans.find(({ id }) => id === fixture.plan.id).title, fixture.remote.title);
+    assert.equal(after.sync.outbox.some(({ opId }) => opId === fixture.operation.opId), false);
+  });
+
+  await t.test('plan rebase preserves local and exact opId at the remote base', async () => {
+    const fixture = await planFixture('rebase');
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'rebase'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.plans.find(({ id }) => id === fixture.plan.id).title, fixture.plan.title);
+    const operation = after.sync.outbox.find(({ opId }) => opId === fixture.operation.opId);
+    assert.equal(operation.baseServerRevision, 3);
+  });
+
+  await t.test('record keep_remote consumes the exact op and applies remote', async () => {
+    const fixture = await recordFixture('keep_remote');
+    assert.deepEqual(fixture.conflict.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'keep_remote'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.records.find(({ id }) => id === fixture.record.id).feedback.note, '云端记录 keep_remote');
+    assert.equal(after.sync.outbox.some(({ opId }) => opId === fixture.operation.opId), false);
+  });
+
+  await t.test('record rebase preserves local and exact opId at the remote base', async () => {
+    const fixture = await recordFixture('rebase');
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'rebase'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.records.find(({ id }) => id === fixture.record.id).feedback, null);
+    const operation = after.sync.outbox.find(({ opId }) => opId === fixture.operation.opId);
+    assert.equal(operation.baseServerRevision, 3);
+  });
+
+  await t.test('settings keep_remote consumes the exact op and applies remote', async () => {
+    const fixture = await settingsFixture('keep_remote');
+    assert.deepEqual(fixture.conflict.actions, ['keep_remote', 'rebase']);
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'keep_remote'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.settings.defaultRestSeconds, 80);
+    assert.equal(after.sync.outbox.some(({ opId }) => opId === fixture.operation.opId), false);
+  });
+
+  await t.test('settings rebase preserves the local field on the exact op', async () => {
+    const fixture = await settingsFixture('rebase');
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'rebase'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.settings.defaultRestSeconds, 95);
+    const operation = after.sync.outbox.find(({ opId }) => opId === fixture.operation.opId);
+    assert.equal(operation.baseServerRevision, 3);
+  });
+});
