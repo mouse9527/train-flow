@@ -1082,3 +1082,21 @@ test('AC5: repository ignores local secrets/generated bundles and documents an a
     assert.match(guide, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
 });
+
+test('QA: accepted upstream dependency exception is a stable, reviewable deployment contract', () => {
+  const guide = fs.readFileSync(path.resolve(__dirname, '../../cloudfunctions/README.md'), 'utf8');
+  assert.match(guide, /^## Accepted upstream dependency exception$/m);
+  assert.match(guide, /<!-- trainflow-dependency-exception:v1 GHSA-p6mc-m468-83gw -->/);
+  for (const requiredFact of [
+    'lodash.set 4.3.2',
+    'wx-server-sdk 4.0.2',
+    '@cloudbase/node-sdk 3.17.2',
+    'realtime/watch updatedFields only',
+    'Production JavaScript must not call .watch()',
+    'All four package-lock.json files remain committed and fixed',
+    'Re-run npm audit --omit=dev after every dependency change',
+    'Any product .watch() introduction blocks deployment immediately'
+  ]) {
+    assert.match(guide, new RegExp(requiredFact.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+});
