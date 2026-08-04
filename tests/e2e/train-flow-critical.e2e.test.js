@@ -672,6 +672,33 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
     }
   });
   assert.equal(acceptedLogs.status, 0, acceptedLogs.stdout || acceptedLogs.stderr);
+  fs.mkdirSync(path.join(validLogRepository.repositoryRoot, 'tests'), { recursive: true });
+  fs.writeFileSync(
+    path.join(validLogRepository.repositoryRoot, 'tests/stale-boundary.test.js'),
+    "const sourceChangedAfterEvidence = true;\n"
+  );
+  spawnSync('git', ['add', 'tests/stale-boundary.test.js'], {
+    cwd: validLogRepository.repositoryRoot
+  });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'change test boundary after evidence'
+  ], { cwd: validLogRepository.repositoryRoot });
+  const staleLogs = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: validLogRepository.repositoryRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_ROOT: validLogRepository.repositoryRoot,
+      PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0',
+      PRIVACY_SCAN_REQUIRE_LOGS: '1',
+      PRIVACY_SCAN_EXPECTED_HEAD: validLogRepository.sourceHead,
+      PRIVACY_SCAN_EXPECTED_TREE: validLogRepository.sourceTree
+    }
+  });
+  assert.notEqual(staleLogs.status, 0);
+  assert.match(staleLogs.stdout, /LOG_SOURCE_STALE evidence\/logs\/manifest\.tsv/);
 
   const invalidLogRepository = initializeEvidenceRepository('train-flow-invalid-logs-');
   const invalidLogDir = path.join(invalidLogRepository.repositoryRoot, 'evidence/logs');
@@ -690,10 +717,17 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
     Buffer.from([0])
   ]);
   const arbitraryLog = 'arbitrary text without command provenance\n';
+  const zeroSuiteLog = commandLog(
+    'full-suite',
+    invalidLogRepository.sourceHead,
+    invalidLogRepository.sourceTree,
+    '# tests 0\n# pass 0\n# fail 0'
+  );
   fs.writeFileSync(path.join(invalidLogDir, 'shared.log'), sharedLog);
   fs.writeFileSync(path.join(invalidLogDir, 'empty.log'), '');
   fs.writeFileSync(path.join(invalidLogDir, 'binary.log'), binaryLog);
   fs.writeFileSync(path.join(invalidLogDir, 'arbitrary.log'), arbitraryLog);
+  fs.writeFileSync(path.join(invalidLogDir, 'zero-suite.log'), zeroSuiteLog);
   const unresolvedHead = '0'.repeat(40);
   const unresolvedTree = '1'.repeat(40);
   fs.writeFileSync(
@@ -710,7 +744,9 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
       `critical-e2e\t${invalidLogRepository.sourceHead}\t${invalidLogRepository.sourceTree}` +
       `\t${digestOf(binaryLog)}\tPASS\tbinary.log\n` +
       `critical-e2e\t${unresolvedHead}\t${unresolvedTree}` +
-      `\t${digestOf(arbitraryLog)}\tPASS\tarbitrary.log\n`
+      `\t${digestOf(arbitraryLog)}\tPASS\tarbitrary.log\n` +
+      `full-suite\t${invalidLogRepository.sourceHead}\t${invalidLogRepository.sourceTree}` +
+      `\t${digestOf(zeroSuiteLog)}\tPASS\tzero-suite.log\n`
   );
   spawnSync('git', ['add', 'evidence/logs'], { cwd: invalidLogRepository.repositoryRoot });
   spawnSync('git', [
@@ -738,8 +774,10 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   assert.match(rejectedLogs.stdout, /EVIDENCE_LOG_BINARY evidence\/logs\/binary\.log/);
   assert.match(rejectedLogs.stdout, /LOG_CONTENT_INVALID evidence\/logs\/arbitrary\.log/);
   assert.match(rejectedLogs.stdout, /LOG_RESULT_INVALID evidence\/logs\/shared\.log/);
+  assert.match(rejectedLogs.stdout, /LOG_RESULT_INVALID evidence\/logs\/zero-suite\.log/);
   assert.match(rejectedLogs.stdout, /LOG_SOURCE_UNRESOLVED evidence\/logs\/manifest\.tsv/);
   assert.match(rejectedLogs.stdout, /LOG_REQUIRED_KIND_MISSING evidence\/logs\/manifest\.tsv/);
+  assert.doesNotMatch(rejectedLogs.stdout, /PII_LITERAL evidence\/logs\/manifest\.tsv/);
   assert.doesNotMatch(rejectedLogs.stdout, /must-remain-private/);
 
   const negativeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-privacy-'));

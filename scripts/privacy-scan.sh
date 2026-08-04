@@ -121,7 +121,19 @@ while IFS= read -r -d '' file; do
   fi
 
   scan_pattern PII_LITERAL "$file" "$pii_assignment_pattern"
-  scan_pattern PII_LITERAL "$file" "$pii_number_pattern"
+  case "$file" in
+    evidence/screenshots/manifest.tsv)
+      tail -n +2 "$file" | cut -f1,5,6,7 | LC_ALL=C grep -Eq "$pii_number_pattern" &&
+        report PII_LITERAL "$file"
+      ;;
+    evidence/logs/manifest.tsv)
+      tail -n +2 "$file" | cut -f1,5,6 | LC_ALL=C grep -Eq "$pii_number_pattern" &&
+        report PII_LITERAL "$file"
+      ;;
+    *)
+      scan_pattern PII_LITERAL "$file" "$pii_number_pattern"
+      ;;
+  esac
   scan_pattern CREDENTIAL_ASSIGNMENT "$file" "$credential_pattern"
 
   if [[ "$file" == evidence/logs/* ]]; then
@@ -273,7 +285,9 @@ if [[ "$require_logs" == 1 ]]; then
         else
           log_source_tree=$(git rev-parse "$head^{tree}")
           [[ "$log_source_tree" == "$tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
-          git diff --quiet "$head" -- miniprogram cloudfunctions project.config.json package.json ||
+          git diff --quiet "$head" -- \
+            miniprogram cloudfunctions tests scripts \
+            project.config.json package.json package-lock.json README.md ||
             report LOG_SOURCE_STALE "$log_manifest"
         fi
         if [[ "$unique_binding" -eq 1 ]]; then
@@ -324,13 +338,20 @@ if [[ "$require_logs" == 1 ]]; then
           report LOG_CONTENT_INVALID "$log_path"
         fi
         case "$kind" in
-          critical-e2e|full-suite)
+          critical-e2e)
             tests_count=$(sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
             pass_count=$(sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
             fail_count=$(sed -n 's/^# fail \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
-            if [[ -z "$tests_count" || -z "$pass_count" || "$fail_count" != 0 ||
-              "$tests_count" -ne "$pass_count" ||
-              ( "$kind" == critical-e2e && "$tests_count" -ne 4 ) ]]; then
+            if [[ "$tests_count" != 4 || "$pass_count" != 4 || "$fail_count" != 0 ]]; then
+              report LOG_RESULT_INVALID "$log_path"
+            fi
+            ;;
+          full-suite)
+            tests_count=$(sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
+            pass_count=$(sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
+            fail_count=$(sed -n 's/^# fail \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
+            if [[ ! "$tests_count" =~ ^[1-9][0-9]*$ ||
+              "$pass_count" != "$tests_count" || "$fail_count" != 0 ]]; then
               report LOG_RESULT_INVALID "$log_path"
             fi
             ;;
