@@ -1,0 +1,29 @@
+{
+  "schema": "trainflow.cloudbase-database-rules/v1",
+  "collections": {
+    "tf_accounts": {
+      "read": false,
+      "write": false
+    },
+    "tf_changes": {
+      "read": false,
+      "write": false
+    },
+    "tf_entities": {
+      "read": false,
+      "write": false
+    },
+    "tf_operations": {
+      "read": false,
+      "write": false
+    },
+    "tf_purge_confirmations": {
+      "read": false,
+      "write": false
+    },
+    "tf_purge_receipts": {
+      "read": false,
+      "write": false
+    }
+  }
+}

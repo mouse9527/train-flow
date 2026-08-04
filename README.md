@@ -19,6 +19,8 @@ framework, no npm runtime dependencies.
 - `miniprogram/domain/` — domain models and repository contracts, framework-free.
 - `miniprogram/assets/` — packaged local media used by device adapters.
 - `tests/integration/`, `tests/e2e/` — Node `--test` suites.
+- `cloudfunctions/` — trusted CloudBase identity, push, pull and purge functions;
+  see `cloudfunctions/README.md` before materializing or deploying them.
 
 ## Notification audio asset
 
@@ -103,3 +105,8 @@ runtime chart dependency.
 The public repository contains no real identities, health data, training
 records, OpenIDs, or secrets — see `design/train-flow-solution-design.md` in the
 workspace for the full privacy boundary.
+
+Cloud sync remains optional: the local product works without a cloud environment.
+When enabling it, configure allowlist hashes and HMAC keys only as CloudBase
+function secrets, apply deny-all client database rules, then run
+`npm run cloud:prepare` before uploading the four independent function packages.

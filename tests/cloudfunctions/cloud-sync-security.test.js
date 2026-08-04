@@ -633,3 +633,63 @@ test('AC5: client source cannot bypass cloud functions with direct sensitive col
   assert.doesNotMatch(combined, /wx\.cloud\.database\s*\(/);
   assert.doesNotMatch(combined, /collection\s*\(\s*['"]tf_(?:accounts|entities|operations|changes|purge_receipts)['"]\s*\)/);
 });
+
+test('AC5: database rules deny every sensitive collection and example env contains names without values', () => {
+  const projectRoot = path.resolve(__dirname, '../..');
+  const rules = JSON.parse(fs.readFileSync(
+    path.join(projectRoot, 'cloudbase/database.rules.json'),
+    'utf8'
+  ));
+  assert.equal(rules.schema, 'trainflow.cloudbase-database-rules/v1');
+  const expectedCollections = [
+    'tf_accounts',
+    'tf_changes',
+    'tf_entities',
+    'tf_operations',
+    'tf_purge_confirmations',
+    'tf_purge_receipts'
+  ];
+  assert.deepEqual(Object.keys(rules.collections).sort(), expectedCollections);
+  for (const collectionName of expectedCollections) {
+    assert.deepEqual(rules.collections[collectionName], { read: false, write: false });
+  }
+
+  const envLines = fs.readFileSync(path.join(projectRoot, '.env.example'), 'utf8')
+    .split(/\r?\n/)
+    .filter((line) => line && !line.startsWith('#'));
+  assert.deepEqual(envLines, [
+    'TRAINFLOW_ALLOWED_OPENID_SHA256=',
+    'TRAINFLOW_OWNER_HMAC_KEY=',
+    'TRAINFLOW_CURSOR_HMAC_KEY=',
+    'TRAINFLOW_PURGE_HMAC_KEY=',
+    'TRAINFLOW_PURGE_TTL_SECONDS='
+  ]);
+  assert.equal(envLines.every((line) => line.endsWith('=')), true);
+});
+
+test('AC5: repository ignores local secrets/generated bundles and documents an auditable CloudBase deploy path', () => {
+  const projectRoot = path.resolve(__dirname, '../..');
+  const ignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf8');
+  for (const pattern of [
+    '.env', '.env.*', '!.env.example', 'cloudbaserc.local.json',
+    'project.private.config.json', 'cloudfunctions/*/_shared/'
+  ]) {
+    assert.match(ignore, new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+  }
+  const rootPackage = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  assert.equal(rootPackage.scripts['cloud:prepare'], 'node scripts/prepare-cloudfunctions.js');
+  const guide = fs.readFileSync(path.join(projectRoot, 'cloudfunctions/README.md'), 'utf8');
+  for (const phrase of [
+    'npm run cloud:prepare',
+    'TRAINFLOW_ALLOWED_OPENID_SHA256',
+    'ownerId + entityType + entityId',
+    'ownerId + opId',
+    'ownerId + epoch + sequence',
+    'read: false',
+    'write: false',
+    'prepare',
+    'confirm'
+  ]) {
+    assert.match(guide, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+});
