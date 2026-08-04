@@ -1,11 +1,17 @@
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
 const { createDefaultPlans } = require('../../miniprogram/domain/planning/default-plan-factory');
 const {
   createCloudSyncHandlers
 } = require('../../cloudfunctions/shared');
+const {
+  materializeCloudFunctions
+} = require('../../scripts/prepare-cloudfunctions');
 
 const NOW = 1785816000000;
 const ALLOWED_OPENID = 'openid-test-allowed';
@@ -555,4 +561,75 @@ test('AC4: expired or wrongly bound purge confirmation performs no deletion', as
     assert.equal(error.code, 'PURGE_CONFIRMATION_INVALID');
   }
   assert.equal(Object.keys(store.snapshot().entities).length, 1);
+});
+
+test('AC1/AC5: all four public cloud entrypoints lazily obtain trusted runtime and expose only their named handler', async () => {
+  for (const functionName of ['authBootstrap', 'syncPush', 'syncPull', 'accountPurge']) {
+    const entry = require(`../../cloudfunctions/${functionName}`);
+    const calls = [];
+    let loads = 0;
+    const main = entry.createMain(() => {
+      loads += 1;
+      return {
+        createHandlers() {
+          return {
+            [functionName]: async (event) => {
+              calls.push(structuredClone(event));
+              return { functionName };
+            }
+          };
+        }
+      };
+    });
+
+    assert.equal(loads, 0, 'CloudBase SDK/context must not load at module evaluation time');
+    assert.deepEqual(await main({ requestId: 'public-entry' }), { functionName });
+    assert.equal(loads, 1);
+    assert.deepEqual(calls, [{ requestId: 'public-entry' }]);
+  }
+});
+
+test('AC5: materialized CloudBase function packages are self-contained and match canonical shared source', () => {
+  const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trainflow-cloud-pack-'));
+  try {
+    const report = materializeCloudFunctions({
+      projectRoot: path.resolve(__dirname, '../..'),
+      targetRoot
+    });
+    assert.deepEqual(report.functions, ['accountPurge', 'authBootstrap', 'syncPull', 'syncPush']);
+    assert.match(report.sharedDigest, /^[a-f0-9]{64}$/);
+    for (const functionName of report.functions) {
+      const packageRoot = path.join(targetRoot, functionName);
+      const entrySource = fs.readFileSync(path.join(packageRoot, 'index.js'), 'utf8');
+      assert.doesNotMatch(entrySource, /require\(['"]\.\.\/shared/);
+      assert.match(entrySource, /\.\/_shared\/cloudbase-runtime/);
+      const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+      assert.equal(packageJson.dependencies['wx-server-sdk'], '4.0.2');
+      const sharedDigest = sha256(fs.readFileSync(path.join(packageRoot, '_shared', 'index.js')));
+      assert.equal(sharedDigest, report.fileDigests['index.js']);
+      assert.equal(
+        sha256(fs.readFileSync(path.join(packageRoot, '_shared', 'cloudbase-runtime.js'))),
+        report.fileDigests['cloudbase-runtime.js']
+      );
+    }
+  } finally {
+    fs.rmSync(targetRoot, { recursive: true, force: true });
+  }
+});
+
+test('AC5: client source cannot bypass cloud functions with direct sensitive collection access', () => {
+  const clientRoot = path.resolve(__dirname, '../../miniprogram');
+  const stack = [clientRoot];
+  const sources = [];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(target);
+      else if (entry.name.endsWith('.js')) sources.push(fs.readFileSync(target, 'utf8'));
+    }
+  }
+  const combined = sources.join('\n');
+  assert.doesNotMatch(combined, /wx\.cloud\.database\s*\(/);
+  assert.doesNotMatch(combined, /collection\s*\(\s*['"]tf_(?:accounts|entities|operations|changes|purge_receipts)['"]\s*\)/);
 });
