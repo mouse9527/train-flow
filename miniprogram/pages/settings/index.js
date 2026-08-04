@@ -364,9 +364,15 @@ function createSettingsPageDefinition({
     if (!this._syncApplication || this._isUnloaded) return Promise.resolve({ cancelled: true });
     const epoch = this._lifecycleEpoch;
     const confirmationId = this._syncEnableConfirmationId;
-    return Promise.resolve(
-      this._syncApplication.confirmEnable({ confirmationId })
-    ).then((result) => {
+    let pending;
+    try {
+      pending = this._syncApplication.confirmEnable({ confirmationId });
+      this.setData({ syncState: this._syncApplication.getState() });
+    } catch (error) {
+      this.setData({ syncError: safeErrorCode(error) });
+      return Promise.reject(error);
+    }
+    return Promise.resolve(pending).then((result) => {
       if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
       this._syncEnableConfirmationId = '';
       this.setData({
@@ -407,7 +413,15 @@ function createSettingsPageDefinition({
     if (!this._syncApplication || this._isUnloaded) return Promise.resolve({ cancelled: true });
     const epoch = this._lifecycleEpoch;
     this.setData({ syncError: '', syncNotice: '' });
-    return Promise.resolve(this._syncApplication.retry({ source })).then((result) => {
+    let pending;
+    try {
+      pending = this._syncApplication.retry({ source });
+      this.setData({ syncState: this._syncApplication.getState() });
+    } catch (error) {
+      this.setData({ syncError: safeErrorCode(error) });
+      return Promise.reject(error);
+    }
+    return Promise.resolve(pending).then((result) => {
       if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
       this.setData({
         syncState: result.state,

@@ -179,6 +179,43 @@ test('manual and automatic recovery use retry with distinct source labels and co
   ]);
 });
 
+test('an in-flight retry immediately renders the sanitized syncing state', async () => {
+  const { createSettingsPageDefinition } = require('../../miniprogram/pages/settings/index');
+  let phase = 'idle';
+  let finishRetry;
+  const pendingRetry = new Promise((resolve) => { finishRetry = resolve; });
+  const sync = {
+    getState() {
+      return {
+        enabled: true,
+        code: phase === 'syncing' ? 'syncing' : 'waiting',
+        label: phase === 'syncing' ? '同步中' : '等待 1 项',
+        pendingCount: 1,
+        lastSyncedAt: null,
+        errorCode: null,
+        conflicts: []
+      };
+    },
+    retry() {
+      phase = 'syncing';
+      return pendingRetry;
+    }
+  };
+  const page = pageHarness(createSettingsPageDefinition({
+    settingsApplication: settingsApplication(),
+    syncApplicationFactory: () => sync,
+    getWx: () => wxDouble('release')
+  }));
+
+  page.onLoad({ section: 'cloud-sync' });
+  const retry = page.onRetrySync();
+  assert.equal(page.data.syncState.code, 'syncing');
+  phase = 'idle';
+  finishRetry({ ok: true, state: sync.getState() });
+  await retry;
+  assert.equal(page.data.syncState.code, 'waiting');
+});
+
 test('developer fixtures are anonymous and develop-only while trial and release use production state', () => {
   const {
     createSettingsPageDefinition,
