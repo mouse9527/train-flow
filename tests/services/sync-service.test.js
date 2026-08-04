@@ -758,6 +758,35 @@ test('AC2/AC3: settings patch push materializes one canonical remote entity and 
   assert.deepEqual(database.load().settings, remoteSettings.payload);
 });
 
+test('AC2/AC4: fake provider coalesces repeated entity revisions inside one raw page while cursor consumes the full log', async () => {
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const remoteDraft = newDraft();
+  const first = queuePlan(remoteDraft, { intentKey: 'coalesce-first', title: 'Remote revision one' });
+  const firstPush = await provider.push({ operations: [first] });
+  applyAcceptedOperations(remoteDraft, firstPush.accepted);
+  remoteDraft.localRevision += 1;
+  const second = queuePlan(remoteDraft, {
+    intentKey: 'coalesce-second',
+    title: 'Remote revision two',
+    createdAt: NOW + 1
+  });
+  await provider.push({ operations: [second] });
+
+  const page = await provider.pull({ cursor: null, limit: 10 });
+  assert.equal(page.changes.length, 1);
+  assert.equal(page.changes[0].serverRevision, 2);
+  assert.equal(page.changes[0].payload.title, 'Remote revision two');
+  assert.equal(page.nextCursor, 'cursor_2');
+  assert.equal(page.hasMore, false);
+
+  const { database } = persistentRuntime();
+  const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+  const pulled = await service.pullNextPage({ limit: 10 });
+  assert.equal(pulled.applied, 1);
+  assert.equal(database.load().sync.cursor, 'cursor_2');
+  assert.equal(database.load().plans[0].title, 'Remote revision two');
+});
+
 function savedPlan(database, { id, trainingDate, title }) {
   return createPlanRepository({ database, now: () => NOW }).save({
     ...clone(planFixture()),

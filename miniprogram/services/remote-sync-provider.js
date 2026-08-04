@@ -317,8 +317,15 @@ function createDeterministicRemoteSyncProvider({
       }
       const offset = parseCursor(request.cursor, changes.length);
       calls.pull.push(cloneJson(request));
-      const page = changes.slice(offset, offset + request.limit).map(cloneJson);
-      const nextOffset = offset + page.length;
+      const rawPage = changes.slice(offset, offset + request.limit);
+      const latestByEntity = new Map();
+      rawPage.forEach((change, index) => {
+        latestByEntity.set(entityKey(change.entityType, change.entityId), { change, index });
+      });
+      const page = [...latestByEntity.values()]
+        .sort((left, right) => left.index - right.index)
+        .map(({ change }) => cloneJson(change));
+      const nextOffset = offset + rawPage.length;
       const result = {
         changes: page,
         nextCursor: nextOffset === 0 ? null : `cursor_${nextOffset}`,
