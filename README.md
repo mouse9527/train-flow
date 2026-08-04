@@ -50,8 +50,12 @@ npm run docs:check
 - `pages/today/index?date=2026-08-03&fixture=active`：进行中的训练。
 - `pages/today/index?date=2026-08-03&fixture=completed`：已完成训练。
 - `pages/stats/index?fixture=worked-sample&state=populated&date=2026-08-05`：匿名统计示例。
+- `pages/stats/index?fixture=worked-sample&state=empty&date=2026-08-09`：匿名空统计状态。
 - `pages/settings/index?section=data`：本机导入、导出与清除。
+- `pages/settings/index?section=cloud-sync&fixture=waiting`：匿名待同步状态。
+- `pages/settings/index?section=cloud-sync&fixture=denied`：匿名权限失败状态。
 - `pages/settings/index?section=cloud-sync&fixture=conflict`：匿名同步冲突界面。
+- `pages/settings/index?section=cloud-sync&fixture=purge`：匿名云端删除确认界面。
 
 Fixture 只提供匿名、只读的开发视图，不会写入真实记录或访问真实云账号。
 
