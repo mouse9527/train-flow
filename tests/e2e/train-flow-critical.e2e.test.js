@@ -12,6 +12,9 @@ const {
   createStatisticsApplicationService
 } = require('../../miniprogram/application/statistics-application-service');
 const {
+  createTimedWorkoutRuntime
+} = require('../../miniprogram/application/timed-workout-runtime');
+const {
   createWorkoutApplicationService
 } = require('../../miniprogram/application/workout-application-service');
 const {
@@ -115,5 +118,75 @@ test('C1 anonymous offline first launch reaches one terminal record and weekly s
   assert.equal(statistics.week.completionCountLabel, '1 / 6 次');
   assert.notEqual(statistics.metrics.activeMinutes.valueLabel, '0');
   assert.equal(statistics.metrics.strengthCount.valueLabel, '3');
+  assert.equal(adapter.networkAttempts(), 0);
+});
+
+test('C2 lifecycle reconstruction emits one expiry boundary and terminal replay stays idempotent', () => {
+  const adapter = createAnonymousOfflineAdapter();
+  let nowMs = FIXED_CLOCK.startAt;
+  let notifications = 0;
+  const database = createLocalDatabase({ storage: adapter, now: () => nowMs });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'anonymous_device_restart', createdAt: nowMs };
+  });
+  const runtime = (prefix) => {
+    let sequence = 0;
+    return createTimedWorkoutRuntime({
+      database,
+      now: () => nowMs,
+      idFactory: () => 'session_critical_restart',
+      commandKeyFactory: (type) => `${prefix}:${++sequence}:${type}`,
+      notifyExpired() {
+        notifications += 1;
+      }
+    });
+  };
+
+  const beforeRestart = runtime('before-restart');
+  beforeRestart.load({ planId: 'plan_20260803_builtin' });
+  beforeRestart.start();
+  nowMs = FIXED_CLOCK.hideAt;
+  beforeRestart.onHide();
+  beforeRestart.destroy();
+
+  nowMs = FIXED_CLOCK.restartAt;
+  const afterRestart = runtime('after-restart');
+  const restored = afterRestart.load();
+  assert.equal(restored.state, 'expired-awaiting-confirmation');
+  assert.equal(notifications, 1);
+  afterRestart.onShow();
+  assert.equal(notifications, 1);
+  afterRestart.destroy();
+
+  const reconstructedAgain = runtime('reconstructed-again');
+  const restoredAgain = reconstructedAgain.load();
+  assert.equal(restoredAgain.state, 'expired-awaiting-confirmation');
+  assert.equal(notifications, 1);
+
+  const planRepository = createPlanRepository({ database, now: () => nowMs });
+  const sessionRepository = createSessionRepository({ database });
+  const workout = createWorkoutApplicationService({
+    planRepository,
+    sessionRepository,
+    deviceId: 'anonymous_device_restart',
+    idFactory: () => 'unused_session_id',
+    now: () => nowMs
+  });
+  const active = sessionRepository.loadActive();
+  const terminalCommand = {
+    type: 'abort',
+    expectedSessionRevision: active.sessionRevision,
+    commandKey: 'critical:terminal-replay',
+    nowMs,
+    payload: { reason: 'acceptance-boundary' }
+  };
+  const first = workout.execute(terminalCommand);
+  const replay = workout.execute(terminalCommand);
+  const records = createTrainingRecordRepository({ database }).list();
+
+  assert.equal(first.session.status, 'aborted');
+  assert.equal(replay.replayed, true);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].sourceSessionId, active.id);
   assert.equal(adapter.networkAttempts(), 0);
 });
