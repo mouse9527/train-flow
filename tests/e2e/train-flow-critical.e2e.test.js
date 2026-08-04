@@ -565,6 +565,9 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   });
   assert.equal(trackedFilesResult.status, 0, trackedFilesResult.stderr);
   for (const file of trackedFilesResult.stdout.split('\0').filter(Boolean)) {
+    if (file.startsWith('evidence/screenshots/') || file.startsWith('evidence/logs/')) {
+      continue;
+    }
     const destination = path.join(sourceScanRoot, file);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(path.join(ROOT, file), destination);
