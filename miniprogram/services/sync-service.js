@@ -23,6 +23,9 @@ const {
 } = require('./remote-sync-provider');
 const { DEFAULT_USER_SETTINGS } = require('../utils/constants');
 const { computeChecksum } = require('../utils/checksum');
+const {
+  createBaselineTrainingRecord
+} = require('../domain/execution/training-record');
 
 function syncServiceError(message, code) {
   const error = new Error(message);
@@ -281,21 +284,50 @@ class SyncService {
       }
 
       if (action === 'keep_local_as_copy') {
-        if (conflict.entityType !== ENTITY_TYPES.WORKOUT_PLAN || !conflict.local.payload) {
+        if (!conflict.local.payload) {
           throw syncServiceError('local copy is unavailable for this conflict', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
         }
-        copyEntityId = `plan_copy_${computeChecksum({ conflictId, resolvedAt }).slice(0, 24)}`;
-        const copy = {
-          ...cloneJson(conflict.local.payload),
-          id: copyEntityId,
-          title: `${conflict.local.payload.title}（本机副本）`,
-          templateSource: null,
-          updatedAt: resolvedAt,
-          revision: conflict.local.payload.revision + 1
-        };
-        draft.plans.push(copy);
+        let copy;
+        if (conflict.entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+          copyEntityId = `plan_copy_${computeChecksum({ conflictId, resolvedAt }).slice(0, 24)}`;
+          copy = {
+            ...cloneJson(conflict.local.payload),
+            id: copyEntityId,
+            title: `${conflict.local.payload.title}（本机副本）`,
+            templateSource: null,
+            updatedAt: resolvedAt,
+            revision: conflict.local.payload.revision + 1
+          };
+          draft.plans.push(copy);
+        } else if (conflict.entityType === ENTITY_TYPES.TRAINING_RECORD) {
+          const source = conflict.local.payload;
+          const sessionId = `local_copy_${computeChecksum({ conflictId, resolvedAt }).slice(0, 24)}`;
+          copy = createBaselineTrainingRecord({
+            id: sessionId,
+            planSnapshot: cloneJson(source.planSnapshot),
+            trainingDate: source.trainingDate,
+            status: source.status,
+            startedAt: source.startedAt,
+            endedAt: source.endedAt,
+            elapsedActiveSeconds: source.elapsedActiveSeconds,
+            stepResults: cloneJson(source.stepResults)
+          });
+          copy.feedback = cloneJson(source.feedback);
+          const copyCreatedAt = Math.max(resolvedAt, source.endedAt);
+          copy.createdAt = copyCreatedAt;
+          copy.updatedAt = copyCreatedAt;
+          copy.revision = source.revision;
+          if (Object.prototype.hasOwnProperty.call(source, 'actualCorrections')) {
+            copy.actualCorrections = cloneJson(source.actualCorrections);
+            copy.processedCorrectionCommands = cloneJson(source.processedCorrectionCommands);
+          }
+          copyEntityId = copy.id;
+          draft.records.push(copy);
+        } else {
+          throw syncServiceError('local copy is unavailable for this conflict', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
+        }
         appendRepositorySyncMutation(draft, {
-          entityType: ENTITY_TYPES.WORKOUT_PLAN,
+          entityType: conflict.entityType,
           entityId: copyEntityId,
           action: 'upsert',
           payload: copy

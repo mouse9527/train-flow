@@ -291,3 +291,97 @@ test('AC4: plan conflict remains visible until explicit keep-local-as-copy atomi
   assert.equal(application.getState().conflicts.length, 0);
   assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision, 3);
 });
+
+test('AC4: record copy and settings rebase stay explicit and preserve visible conflict state until chosen', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  const record = createBaselineTrainingRecord({
+    id: 'session_cloud_conflict',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    appendRepositorySyncMutation(draft, {
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      action: 'upsert',
+      payload: record
+    }, {
+      commandIdentity: 'record.conflict.fixture',
+      createdAt: NOW,
+      deviceId: draft.install.deviceId
+    });
+  });
+  const settings = createSettingsApplicationService({
+    repository: createSettingsRepository({ database, now: () => NOW })
+  });
+  settings.updateSettings({ defaultRestSeconds: 95 }, database.load().settings.revision);
+  enableForConflict(database);
+  const before = database.load();
+  const recordOperation = before.sync.outbox.find(({ entityId }) => entityId === record.id);
+  const settingsOperation = before.sync.outbox.find(
+    ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+  );
+  const remoteRecord = structuredClone(record);
+  const remoteSettings = {
+    ...structuredClone(before.settings),
+    defaultRestSeconds: 80,
+    cloudSyncEnabled: true,
+    revision: before.settings.revision + 2
+  };
+  provider.conflictOperation(recordOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.TRAINING_RECORD,
+    entityId: record.id,
+    payload: remoteRecord
+  }));
+  provider.conflictOperation(settingsOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.USER_SETTINGS,
+    entityId: 'settings',
+    payload: remoteSettings
+  }));
+
+  await syncService.pushPending();
+  const conflicts = application.getState().conflicts;
+  const recordConflict = conflicts.find(({ entityType }) => entityType === ENTITY_TYPES.TRAINING_RECORD);
+  const settingsConflict = conflicts.find(({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS);
+  assert.deepEqual(recordConflict.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+  assert.deepEqual(settingsConflict.actions, ['keep_remote', 'rebase']);
+  assert.equal(database.load().records[0].elapsedActiveSeconds, 1, 'record stays local before explicit choice');
+
+  const copyReceipt = await application.resolveConflict({
+    conflictId: recordConflict.conflictId,
+    action: 'keep_local_as_copy'
+  });
+  const afterRecord = database.load();
+  assert.deepEqual(afterRecord.records.find(({ id }) => id === record.id), remoteRecord);
+  const recordCopy = afterRecord.records.find(({ id }) => id === copyReceipt.copyEntityId);
+  assert.ok(recordCopy, 'local record copy must remain available');
+  assert.equal(recordCopy.elapsedActiveSeconds, 1);
+  assert.equal(afterRecord.sync.outbox.some(({ entityId }) => entityId === recordCopy.id), true);
+
+  await application.resolveConflict({
+    conflictId: settingsConflict.conflictId,
+    action: 'rebase'
+  });
+  const after = database.load();
+  const rebasedSettingsOperation = after.sync.outbox.find(
+    ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+  );
+  assert.equal(after.settings.defaultRestSeconds, 95);
+  assert.equal(rebasedSettingsOperation.baseServerRevision, 3);
+  assert.equal(application.getState().conflicts.length, 0);
+});
