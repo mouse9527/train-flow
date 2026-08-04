@@ -17,10 +17,15 @@ const {
   createPlanRepository
 } = require('../../miniprogram/domain/planning/plan-repository');
 const {
+  createTrainingRecordRepository
+} = require('../../miniprogram/domain/records/training-record-repository');
+const {
   createDefaultPlans
 } = require('../../miniprogram/domain/planning/default-plan-factory');
 const {
-  ENTITY_TYPES
+  ENTITY_TYPES,
+  createConflictState,
+  mapRemoteChange
 } = require('../../miniprogram/domain/sync/entity-mapper');
 const {
   appendRepositorySyncMutation,
@@ -997,19 +1002,28 @@ test('P1: successor convergence preserves record facts, plan tombstones, setting
       });
     });
     const head = database.load().sync.outbox.find(({ entityId }) => entityId === record.id);
-    const successor = structuredClone(record);
-    database.commit((draft) => {
-      appendRepositorySyncMutation(draft, {
-        entityType: ENTITY_TYPES.TRAINING_RECORD,
-        entityId: record.id,
-        action: 'upsert',
-        payload: successor
-      }, {
-        commandIdentity: 'record.successor.latest',
-        createdAt: NOW + 2000,
-        deviceId: draft.install.deviceId
-      });
+    const recordRepository = createTrainingRecordRepository({ database });
+    const successor = recordRepository.correct({
+      recordId: record.id,
+      expectedRevision: record.revision,
+      commandKey: 'record.successor.latest-correction',
+      nowMs: NOW + 2000,
+      actualCorrections: [],
+      feedback: {
+        rpe: 7,
+        weightBeforeKg: null,
+        pain: {
+          knee: false,
+          lowerBack: false,
+          ankleOrToe: false,
+          dizziness: false
+        },
+        note: 'R6 distinguishable record successor'
+      }
     });
+    const successorOperation = database.load().sync.outbox
+      .filter(({ entityId }) => entityId === record.id)
+      .at(-1);
     enableForConflict(database);
     provider.conflictOperation(head.opId, remoteEnvelope({
       entityType: ENTITY_TYPES.TRAINING_RECORD,
@@ -1022,8 +1036,12 @@ test('P1: successor convergence preserves record facts, plan tombstones, setting
     const after = database.load();
     const operation = after.sync.outbox.find(({ entityId }) => entityId === record.id);
     assert.equal(after.sync.outbox.filter(({ entityId }) => entityId === record.id).length, 1);
+    assert.equal(operation.opId, successorOperation.opId);
+    assert.notEqual(operation.opId, head.opId);
     assert.deepEqual(operation.payload, successor);
     assert.deepEqual(after.records.find(({ id }) => id === record.id), successor);
+    assert.equal(operation.payload.feedback.note, 'R6 distinguishable record successor');
+    assert.equal(after.records.find(({ id }) => id === record.id).feedback.note, 'R6 distinguishable record successor');
     assert.equal(application.getState().conflicts.length, 1);
   });
 
@@ -1130,6 +1148,84 @@ test('P1: successor convergence preserves record facts, plan tombstones, setting
     await assert.rejects(() => syncService.pushPending(), { code: 'SYNC_CONFLICT_STALE' });
     assert.deepEqual(database.load(), before);
     assert.deepEqual(provider.calls, callsBefore);
+  });
+});
+
+test('P1: successor normalization deduplicates only canonical remote facts and never arbitrates by order', async (t) => {
+  function fixture(remoteEnvelopes) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_remote_normalization',
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    enableForConflict(runtime.database);
+    const head = runtime.database.load().sync.outbox.find(({ entityId }) => entityId === runtime.plan.id);
+    const repository = createPlanRepository({ database: runtime.database, now: () => NOW + 2000 });
+    const current = repository.findById(runtime.plan.id);
+    repository.save({ ...current, title: '本机 normalization successor' }, current.revision);
+    const currentEntity = runtime.database.load().plans.find(({ id }) => id === runtime.plan.id);
+    runtime.database.commit((draft) => {
+      draft.sync.conflicts = remoteEnvelopes.map((envelope) => createConflictState({
+        localOperation: head,
+        remoteChange: mapRemoteChange(envelope),
+        localEntity: head.payload,
+        currentEntity,
+        detectedAt: NOW
+      }));
+    });
+    return { ...runtime, head, repository, provider };
+  }
+
+  function remote(plan, { title, serverRevision }) {
+    return remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: plan.id,
+      payload: { ...structuredClone(plan), title, revision: plan.revision + 1 },
+      serverRevision
+    });
+  }
+
+  await t.test('identical highest-revision facts deduplicate', async () => {
+    const seed = createRuntime(createDeterministicRemoteSyncProvider({ now: () => NOW }));
+    const fact = remote(seed.plan, { title: '云端同一事实', serverRevision: 3 });
+    const runtime = fixture([fact, structuredClone(fact)]);
+    await runtime.syncService.pushPending();
+    const after = runtime.database.load();
+    assert.equal(after.sync.conflicts.filter(({ status }) => status !== 'resolved').length, 1);
+    assert.equal(after.sync.outbox.filter(({ entityId }) => entityId === runtime.plan.id).length, 1);
+    assert.equal(after.sync.conflicts.find(({ status }) => status !== 'resolved').remote.payload.title, '云端同一事实');
+  });
+
+  await t.test('divergent facts at the same highest revision fail closed with zero effects', async () => {
+    const seed = createRuntime(createDeterministicRemoteSyncProvider({ now: () => NOW }));
+    const runtime = fixture([
+      remote(seed.plan, { title: '云端事实-A', serverRevision: 3 }),
+      remote(seed.plan, { title: '云端事实-B', serverRevision: 3 })
+    ]);
+    const before = runtime.database.load();
+    const callsBefore = structuredClone(runtime.provider.calls);
+
+    await assert.rejects(
+      () => runtime.syncService.pushPending(),
+      { code: 'SYNC_CONFLICT_DIVERGENT_REMOTE' }
+    );
+    assert.deepEqual(runtime.database.load(), before);
+    assert.deepEqual(runtime.provider.calls, callsBefore);
+  });
+
+  await t.test('one unique highest revision supersedes lower facts independent of order', async () => {
+    const seed = createRuntime(createDeterministicRemoteSyncProvider({ now: () => NOW }));
+    const lowA = remote(seed.plan, { title: '云端低版本-A', serverRevision: 2 });
+    const lowB = remote(seed.plan, { title: '云端低版本-B', serverRevision: 2 });
+    const high = remote(seed.plan, { title: '云端唯一高版本', serverRevision: 4 });
+    for (const facts of [[lowA, high, lowB], [high, lowB, lowA]]) {
+      const runtime = fixture(facts);
+      await runtime.syncService.pushPending();
+      const unresolved = runtime.database.load().sync.conflicts.filter(({ status }) => status !== 'resolved');
+      assert.equal(unresolved.length, 1);
+      assert.equal(unresolved[0].remote.serverRevision, 4);
+      assert.equal(unresolved[0].remote.payload.title, '云端唯一高版本');
+    }
   });
 });
 

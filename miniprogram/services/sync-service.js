@@ -196,9 +196,26 @@ function convergeConflictSuccessors(draft, keys, detectedAt) {
       entityKey(conflict.entityType, conflict.entityId) === key
     ));
     if (unresolved.length === 0) continue;
-    const exemplar = unresolved.reduce((latest, conflict) => (
-      !latest || conflict.remote.serverRevision > latest.remote.serverRevision ? conflict : latest
-    ), null);
+    const highestRevision = unresolved.reduce((revision, conflict) => (
+      Math.max(revision, conflict.remote.serverRevision)
+    ), 0);
+    const highest = unresolved.filter(({ remote }) => remote.serverRevision === highestRevision);
+    const remoteFactHashes = new Set(highest.map(({ remote }) => computeChecksum({
+      entityType: remote.entityType,
+      entityId: remote.entityId,
+      serverRevision: remote.serverRevision,
+      action: remote.action,
+      payload: remote.payload,
+      payloadHash: remote.payloadHash,
+      deletedAt: remote.deletedAt
+    })));
+    if (remoteFactHashes.size !== 1) {
+      throw syncServiceError(
+        'same remote revision contains divergent conflict facts',
+        'SYNC_CONFLICT_DIVERGENT_REMOTE'
+      );
+    }
+    const exemplar = highest[0];
     const matching = validEntityOperations(
       draft.sync.outbox,
       exemplar.entityType,
