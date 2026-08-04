@@ -17,6 +17,7 @@ const {
 } = require('../../miniprogram/application/settings-application-service');
 const { createLocalDatabase } = require('../../miniprogram/services/local-database');
 const { computeChecksum } = require('../../miniprogram/utils/checksum');
+const { DEFAULT_USER_SETTINGS } = require('../../miniprogram/utils/constants');
 const { StorageDouble, clone } = require('../helpers/storage-double');
 const {
   assertBootstrapResult,
@@ -714,6 +715,8 @@ test('AC3/AC6: push removes only exact accepted operations and preserves rejecte
   assert.equal(after.sync.conflicts.length, 1);
   assert.equal(after.sync.conflicts[0].local.opId, conflictOperation.opId);
   assert.equal(after.sync.conflicts[0].remote.serverRevision, 7);
+  assert.equal(after.sync.conflicts[0].remote.ownerId, undefined);
+  assert.equal(after.sync.conflicts[0].remote.sourceDeviceId, undefined);
   assert.deepEqual(after.sync.replicas[entityKey(acceptedOperation.entityType, acceptedOperation.entityId)], {
     entityType: acceptedOperation.entityType,
     entityId: acceptedOperation.entityId,
@@ -805,4 +808,196 @@ test('AC3: accepted head rebases the next same-entity operation without changing
   assert.equal(after.sync.outbox[0].opId, next.opId);
   assert.equal(after.sync.outbox[0].baseServerRevision, 1);
   assert.notEqual(after.sync.outbox[0].opId, head.opId);
+});
+
+function scriptedPullProvider(result) {
+  return {
+    async bootstrap() { return { cursor: null, serverTime: NOW }; },
+    async push() { return { accepted: [], rejected: [], conflicts: [] }; },
+    async pull() { return clone(result); },
+    async purge() { return { purgedAt: NOW }; }
+  };
+}
+
+test('AC4: pull applies a fully validated page, replicas and opaque nextCursor in one A/B commit', async () => {
+  const remote = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const remoteDraft = newDraft();
+  const firstPlan = { ...clone(planFixture()), id: 'plan_pull_first', trainingDate: '2026-09-20' };
+  const secondPlan = { ...clone(planFixture()), id: 'plan_pull_second', trainingDate: '2026-09-21' };
+  const firstOperation = appendSyncOperation(remoteDraft, {
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: firstPlan.id,
+    action: 'upsert',
+    payload: firstPlan
+  }, { createdAt: NOW, intentKey: 'pull-first', deviceIdFactory: () => 'device_remote_pull' });
+  const secondOperation = appendSyncOperation(remoteDraft, {
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: secondPlan.id,
+    action: 'upsert',
+    payload: secondPlan
+  }, { createdAt: NOW + 1, intentKey: 'pull-second', deviceIdFactory: () => 'unused' });
+  await remote.push({ operations: [firstOperation, secondOperation] });
+  const { database, storage } = persistentRuntime();
+  const before = database.load();
+  const service = createSyncService({ database, provider: remote, now: () => NOW + 5_000 });
+
+  const result = await service.pullNextPage({ limit: 10 });
+  const after = database.load();
+
+  assert.equal(result.applied, 2);
+  assert.equal(after.localRevision, before.localRevision + 1);
+  assert.equal(after.sync.cursor, 'cursor_2');
+  assert.deepEqual(after.plans.map(({ id }) => id).sort(), ['plan_pull_first', 'plan_pull_second']);
+  assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, firstPlan.id)].serverRevision, 1);
+  assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, secondPlan.id)].serverRevision, 1);
+  assertSingleSnapshotCommit(storage, after, (candidate) => {
+    assert.equal(candidate.sync.cursor, 'cursor_2');
+    assert.equal(candidate.plans.length, 2);
+  });
+});
+
+test('AC4/AC6: invalid, duplicate, stale or active-session pull changes fail before any write or cursor advance', async (t) => {
+  const baseOperation = queuePlan(newDraft(), { intentKey: 'pull-invalid-base' });
+  const valid = remotePlanEnvelope(baseOperation, { serverRevision: 4 });
+  const cases = [{
+    name: 'invalid second change',
+    changes: [valid, { ...clone(valid), entityId: 'plan_payload_identity_mismatch' }]
+  }, {
+    name: 'duplicate entity in one page',
+    changes: [valid, { ...clone(valid), serverRevision: 5 }]
+  }, {
+    name: 'active Session entity',
+    changes: [{ ...clone(valid), entityType: 'active_session', entityId: 'session_must_stay_local' }]
+  }, {
+    name: 'invalid tombstone timestamp',
+    changes: [{
+      ...clone(valid),
+      payload: null,
+      deleted: true,
+      deletedAt: NOW,
+      updatedAt: NOW + 1
+    }]
+  }, {
+    name: 'missing trusted owner envelope fact',
+    changes: [{ ...clone(valid), ownerId: '' }]
+  }];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { database, storage } = persistentRuntime();
+      const before = database.load();
+      storage.clearOperations();
+      const service = createSyncService({
+        database,
+        provider: scriptedPullProvider({ changes: scenario.changes, nextCursor: 'opaque_next', hasMore: false }),
+        now: () => NOW + 5_000
+      });
+
+      await assert.rejects(() => service.pullNextPage({ limit: 10 }));
+      assert.deepEqual(database.load(), before);
+      assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+    });
+  }
+
+  await t.test('stale server revision', async () => {
+    const { database, storage } = persistentRuntime();
+    database.commit((draft) => {
+      draft.sync.replicas[entityKey(baseOperation.entityType, baseOperation.entityId)] = {
+        entityType: baseOperation.entityType,
+        entityId: baseOperation.entityId,
+        serverRevision: 5,
+        payloadHash: computeChecksum(baseOperation.payload),
+        deleted: false
+      };
+    });
+    const before = database.load();
+    storage.clearOperations();
+    const service = createSyncService({
+      database,
+      provider: scriptedPullProvider({ changes: [valid], nextCursor: 'opaque_stale', hasMore: false }),
+      now: () => NOW + 5_000
+    });
+
+    await assert.rejects(
+      () => service.pullNextPage({ limit: 10 }),
+      (error) => error && error.code === 'SYNC_PULL_REVISION_STALE'
+    );
+    assert.deepEqual(database.load(), before);
+    assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+  });
+});
+
+test('AC4: pull storage failure and exact page replay preserve the committed cursor boundary', async () => {
+  const operation = queuePlan(newDraft(), { intentKey: 'pull-atomic-failure' });
+  const remote = remotePlanEnvelope(operation, { serverRevision: 1 });
+  const page = { changes: [remote], nextCursor: 'opaque_page_1', hasMore: false };
+  const { database, storage } = persistentRuntime();
+  const service = createSyncService({
+    database,
+    provider: scriptedPullProvider(page),
+    now: () => NOW + 5_000
+  });
+  const beforeFailure = database.load();
+  storage.failNextWrite(SLOT_B, new Error('forced pull page storage failure'));
+
+  await assert.rejects(() => service.pullNextPage({ limit: 10 }), /forced pull page storage failure/);
+  assert.deepEqual(database.load(), beforeFailure);
+
+  storage.clearOperations();
+  await service.pullNextPage({ limit: 10 });
+  const committed = database.load();
+  assert.equal(committed.sync.cursor, 'opaque_page_1');
+  storage.clearOperations();
+
+  const replay = await service.pullNextPage({ limit: 10 });
+  assert.equal(replay.replayed, 1);
+  assert.deepEqual(database.load(), committed);
+  assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+});
+
+test('AC4/AC6: pull rebases settings fields explicitly while preserving the local opId and remote replica fact', async () => {
+  const { database } = persistentRuntime();
+  const settings = createSettingsApplicationService({
+    repository: createSettingsRepository({ database, now: () => NOW })
+  });
+  settings.updateSettings({ soundEnabled: false, vibrationEnabled: false }, 1);
+  const before = database.load();
+  const localOperation = clone(before.sync.outbox[0]);
+  const remoteSettings = {
+    ...DEFAULT_USER_SETTINGS,
+    soundEnabled: true,
+    vibrationEnabled: true,
+    defaultRestSeconds: 90,
+    revision: 5
+  };
+  const remote = {
+    ownerId: 'owner_fake_sync',
+    entityType: ENTITY_TYPES.USER_SETTINGS,
+    entityId: 'settings',
+    serverRevision: 3,
+    schemaVersion: 1,
+    payload: remoteSettings,
+    deleted: false,
+    deletedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW + 1,
+    sourceDeviceId: 'device_remote_settings'
+  };
+  const service = createSyncService({
+    database,
+    provider: scriptedPullProvider({ changes: [remote], nextCursor: 'opaque_settings', hasMore: false }),
+    now: () => NOW + 5_000
+  });
+
+  await service.pullNextPage({ limit: 10 });
+  const after = database.load();
+
+  assert.equal(after.settings.soundEnabled, false);
+  assert.equal(after.settings.vibrationEnabled, false);
+  assert.equal(after.settings.defaultRestSeconds, 90);
+  assert.equal(after.settings.revision, 6);
+  assert.equal(after.sync.outbox[0].opId, localOperation.opId);
+  assert.equal(after.sync.outbox[0].baseServerRevision, 3);
+  assert.equal(after.sync.conflicts.at(-1).status, 'rebased');
+  assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.USER_SETTINGS, 'settings')].serverRevision, 3);
 });

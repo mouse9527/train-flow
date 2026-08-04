@@ -306,6 +306,9 @@ function assertRemoteEnvelope(envelope) {
       throw syncError(`remote ${field} must be a non-negative safe integer`, 'SYNC_REMOTE_ENVELOPE_INVALID');
     }
   }
+  if (envelope.updatedAt < envelope.createdAt) {
+    throw syncError('remote timestamps are out of order', 'SYNC_REMOTE_ENVELOPE_INVALID');
+  }
   if (
     typeof envelope.ownerId !== 'string' || envelope.ownerId.length === 0 ||
     typeof envelope.sourceDeviceId !== 'string' || envelope.sourceDeviceId.length === 0
@@ -318,7 +321,11 @@ function mapRemoteChange(envelope) {
   assertRemoteEnvelope(envelope);
   const action = envelope.deleted ? 'delete' : 'upsert';
   if (envelope.deleted) {
-    if (envelope.payload !== null || !Number.isSafeInteger(envelope.deletedAt) || envelope.deletedAt < 0) {
+    if (
+      envelope.payload !== null ||
+      !Number.isSafeInteger(envelope.deletedAt) ||
+      envelope.deletedAt !== envelope.updatedAt
+    ) {
       throw syncError('remote tombstone is invalid', 'SYNC_TOMBSTONE_PAYLOAD_INVALID');
     }
   } else if (envelope.deletedAt !== null) {
@@ -337,7 +344,7 @@ function mapRemoteChange(envelope) {
     action: mutation.action,
     payload: mutation.payload,
     deletedAt: envelope.deletedAt,
-    payloadHash: computeChecksum({ action: mutation.action, payload: mutation.payload })
+    payloadHash: computeChecksum(mutation.payload)
   };
 }
 

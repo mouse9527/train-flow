@@ -1,13 +1,21 @@
-const { createConflictState } = require('../domain/sync/entity-mapper');
+const {
+  ENTITY_TYPES,
+  createConflictState,
+  mapRemoteChange,
+  rebaseSettingsChange
+} = require('../domain/sync/entity-mapper');
 const {
   applyAcceptedOperations,
   assertSyncOperation,
+  assertSyncReplica,
   selectPushableOperations
 } = require('../domain/sync/sync-operation');
 const {
   assertPushResult,
+  assertPullResult,
   assertRemoteSyncProvider
 } = require('./remote-sync-provider');
+const { DEFAULT_USER_SETTINGS } = require('../utils/constants');
 
 function syncServiceError(message, code) {
   const error = new Error(message);
@@ -29,6 +37,85 @@ function findOperation(outbox, opId) {
   const operation = outbox.find((candidate) => candidate && candidate.opId === opId) || null;
   if (operation) assertSyncOperation(operation);
   return operation;
+}
+
+function pendingOperationFor(outbox, change) {
+  for (const candidate of outbox) {
+    try {
+      assertSyncOperation(candidate);
+      if (candidate.entityType === change.entityType && candidate.entityId === change.entityId) {
+        return candidate;
+      }
+    } catch (_error) {
+      // Legacy descriptors remain quarantined and are not interpreted as complete local work.
+    }
+  }
+  return null;
+}
+
+function replicaFor(change) {
+  return {
+    entityType: change.entityType,
+    entityId: change.entityId,
+    serverRevision: change.serverRevision,
+    payloadHash: change.payloadHash,
+    deleted: change.action === 'delete'
+  };
+}
+
+function addConflict(draft, conflict) {
+  if (!draft.sync.conflicts.some(({ conflictId }) => conflictId === conflict.conflictId)) {
+    draft.sync.conflicts.push(conflict);
+  }
+}
+
+function applyRemoteDomainChange(draft, change) {
+  if (change.entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+    const index = draft.plans.findIndex(({ id }) => id === change.entityId);
+    if (change.action === 'upsert') {
+      if (index === -1) draft.plans.push(cloneJson(change.payload));
+      else draft.plans[index] = cloneJson(change.payload);
+      return;
+    }
+    if (index !== -1 && draft.plans[index].status !== 'deleted') {
+      const current = draft.plans[index];
+      draft.plans[index] = {
+        ...cloneJson(current),
+        status: 'deleted',
+        updatedAt: change.deletedAt,
+        deletedAt: change.deletedAt,
+        revision: current.revision + 1
+      };
+    }
+    return;
+  }
+
+  if (change.entityType === ENTITY_TYPES.TRAINING_RECORD) {
+    const index = draft.records.findIndex(({ id }) => id === change.entityId);
+    if (change.action === 'upsert') {
+      if (index === -1) draft.records.push(cloneJson(change.payload));
+      else draft.records[index] = cloneJson(change.payload);
+    } else if (index !== -1) {
+      draft.records.splice(index, 1);
+    }
+    draft.statisticsProjection = {
+      dirty: true,
+      reason: 'training-record-changed',
+      recordId: change.entityId,
+      recordRevision: change.payload && change.payload.revision ? change.payload.revision : 0,
+      invalidatedAt: change.deletedAt === null ? change.payload.updatedAt : change.deletedAt
+    };
+    return;
+  }
+
+  if (change.action === 'upsert') {
+    draft.settings = cloneJson(change.payload);
+  } else {
+    draft.settings = {
+      ...DEFAULT_USER_SETTINGS,
+      revision: draft.settings.revision + 1
+    };
+  }
 }
 
 class SyncService {
@@ -94,7 +181,7 @@ class SyncService {
         if (!operation) continue;
         const conflict = createConflictState({
           localOperation: operation,
-          remoteChange: classification.remote,
+          remoteChange: mapRemoteChange(classification.remote),
           localEntity: operation.payload,
           detectedAt: attemptedAt
         });
@@ -113,6 +200,112 @@ class SyncService {
       rejected: cloneJson(response.rejected),
       conflicts: cloneJson(response.conflicts),
       unsupported: selection.unsupported
+    };
+  }
+
+  async pullNextPage({ limit = 50 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw syncServiceError('pull limit must be an integer from 1 to 100', 'SYNC_PULL_LIMIT_INVALID');
+    }
+    const snapshot = this.database.load();
+    const response = await this.provider.pull({ cursor: snapshot.sync.cursor, limit });
+    assertPullResult(response);
+    const changes = response.changes.map(mapRemoteChange);
+    const keys = new Set();
+    let replayed = 0;
+    for (const change of changes) {
+      const key = JSON.stringify([change.entityType, change.entityId]);
+      if (keys.has(key)) {
+        throw syncServiceError('pull page contains duplicate entity changes', 'SYNC_PULL_DUPLICATE_ENTITY');
+      }
+      keys.add(key);
+      const replica = snapshot.sync.replicas[key] || null;
+      if (!replica) continue;
+      if (change.serverRevision < replica.serverRevision) {
+        throw syncServiceError('pull change serverRevision is stale', 'SYNC_PULL_REVISION_STALE');
+      }
+      if (change.serverRevision === replica.serverRevision) {
+        if (
+          replica.payloadHash !== change.payloadHash ||
+          replica.deleted !== (change.action === 'delete')
+        ) {
+          throw syncServiceError(
+            'pull change reuses a serverRevision for different facts',
+            'SYNC_PULL_REVISION_COLLISION'
+          );
+        }
+        replayed += 1;
+      }
+    }
+
+    if (replayed === changes.length && response.nextCursor === snapshot.sync.cursor) {
+      return {
+        applied: 0,
+        replayed,
+        nextCursor: snapshot.sync.cursor,
+        hasMore: response.hasMore
+      };
+    }
+
+    const pulledAt = this.now();
+    if (!Number.isSafeInteger(pulledAt) || pulledAt < 0) {
+      throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+    }
+    let applied = 0;
+    this.database.commit((draft) => {
+      for (const change of changes) {
+        const key = JSON.stringify([change.entityType, change.entityId]);
+        const currentReplica = draft.sync.replicas[key] || null;
+        if (
+          currentReplica &&
+          currentReplica.serverRevision === change.serverRevision &&
+          currentReplica.payloadHash === change.payloadHash &&
+          currentReplica.deleted === (change.action === 'delete')
+        ) {
+          continue;
+        }
+
+        const localOperation = pendingOperationFor(draft.sync.outbox, change);
+        if (
+          localOperation &&
+          change.entityType === ENTITY_TYPES.USER_SETTINGS &&
+          localOperation.action === 'upsert' &&
+          change.action === 'upsert'
+        ) {
+          const rebased = rebaseSettingsChange({
+            localSettings: draft.settings,
+            localOperation,
+            remoteChange: change,
+            detectedAt: pulledAt
+          });
+          draft.settings = rebased.settings;
+          const operationIndex = draft.sync.outbox.indexOf(localOperation);
+          draft.sync.outbox[operationIndex] = rebased.operation;
+          addConflict(draft, rebased.conflict);
+        } else if (localOperation) {
+          addConflict(draft, createConflictState({
+            localOperation,
+            remoteChange: change,
+            localEntity: localOperation.payload,
+            detectedAt: pulledAt
+          }));
+        } else {
+          applyRemoteDomainChange(draft, change);
+        }
+        draft.sync.replicas[key] = replicaFor(change);
+        assertSyncReplica(draft.sync.replicas[key]);
+        applied += 1;
+      }
+      draft.sync.cursor = response.nextCursor;
+      draft.sync.lastSyncedAt = pulledAt;
+      draft.sync.lastError = null;
+    }, snapshot.localRevision);
+
+    return {
+      applied,
+      replayed,
+      nextCursor: response.nextCursor,
+      hasMore: response.hasMore
     };
   }
 }
