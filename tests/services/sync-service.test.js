@@ -25,6 +25,7 @@ const {
   assertRemoteSyncProvider,
   createDeterministicRemoteSyncProvider
 } = require('../../miniprogram/services/remote-sync-provider');
+const { createSyncService } = require('../../miniprogram/services/sync-service');
 const {
   appendSyncOperation,
   applyAcceptedOperations,
@@ -647,4 +648,161 @@ test('AC2/AC3: deterministic fake provider supports idempotent push, cursor pull
     await provider.pull({ cursor: null, limit: 10 }),
     { changes: [], nextCursor: null, hasMore: false }
   );
+});
+
+function savedPlan(database, { id, trainingDate, title }) {
+  return createPlanRepository({ database, now: () => NOW }).save({
+    ...clone(planFixture()),
+    id,
+    trainingDate,
+    title,
+    templateSource: null
+  }, 0);
+}
+
+function remotePlanEnvelope(operation, { serverRevision = 7, title = 'Remote winner' } = {}) {
+  return {
+    ownerId: 'owner_fake_sync',
+    entityType: operation.entityType,
+    entityId: operation.entityId,
+    serverRevision,
+    schemaVersion: 1,
+    payload: { ...clone(operation.payload), title },
+    deleted: false,
+    deletedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW + 1,
+    sourceDeviceId: 'device_remote_sync'
+  };
+}
+
+test('AC3/AC6: push removes only exact accepted operations and preserves rejected, conflict and unknown classifications', async () => {
+  const { database } = persistentRuntime();
+  savedPlan(database, { id: 'plan_push_accepted', trainingDate: '2026-09-10', title: 'Accepted' });
+  savedPlan(database, { id: 'plan_push_rejected', trainingDate: '2026-09-11', title: 'Rejected' });
+  savedPlan(database, { id: 'plan_push_conflict', trainingDate: '2026-09-12', title: 'Conflict' });
+  savedPlan(database, { id: 'plan_push_unlisted', trainingDate: '2026-09-15', title: 'Unlisted' });
+  const before = database.load();
+  const [acceptedOperation, rejectedOperation, conflictOperation, unlistedOperation] = before.sync.outbox;
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  provider.rejectOperation(rejectedOperation.opId, 'REMOTE_POLICY_REJECTED');
+  provider.conflictOperation(conflictOperation.opId, remotePlanEnvelope(conflictOperation));
+  const fakePush = provider.push.bind(provider);
+  provider.push = async (request) => {
+    const result = await fakePush(request);
+    result.accepted = result.accepted.filter(({ opId }) => opId !== unlistedOperation.opId);
+    result.accepted.push({
+      opId: 'op_unknown_remote_receipt',
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: 'plan_unknown_remote_receipt',
+      serverRevision: 99
+    });
+    return result;
+  };
+  const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+
+  const result = await service.pushPending();
+  const after = database.load();
+
+  assert.deepEqual(result.acceptedOpIds, [acceptedOperation.opId]);
+  assert.deepEqual(result.unknownAcceptedOpIds, ['op_unknown_remote_receipt']);
+  assert.deepEqual(after.sync.outbox.map(({ opId }) => opId), [
+    rejectedOperation.opId,
+    conflictOperation.opId,
+    unlistedOperation.opId
+  ]);
+  assert.equal(after.sync.conflicts.length, 1);
+  assert.equal(after.sync.conflicts[0].local.opId, conflictOperation.opId);
+  assert.equal(after.sync.conflicts[0].remote.serverRevision, 7);
+  assert.deepEqual(after.sync.replicas[entityKey(acceptedOperation.entityType, acceptedOperation.entityId)], {
+    entityType: acceptedOperation.entityType,
+    entityId: acceptedOperation.entityId,
+    serverRevision: 1,
+    payloadHash: computeChecksum(acceptedOperation.payload),
+    deleted: false
+  });
+});
+
+test('AC3: duplicate accepted receipts fail closed without replica write or partial outbox removal', async () => {
+  const { database } = persistentRuntime();
+  savedPlan(database, { id: 'plan_push_duplicate_receipt', trainingDate: '2026-09-16', title: 'Duplicate' });
+  const original = clone(database.load().sync.outbox[0]);
+  const fake = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const provider = {
+    bootstrap: fake.bootstrap.bind(fake),
+    pull: fake.pull.bind(fake),
+    purge: fake.purge.bind(fake),
+    async push(request) {
+      const result = await fake.push(request);
+      return { ...result, accepted: [result.accepted[0], clone(result.accepted[0])] };
+    }
+  };
+  const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+
+  await assert.rejects(
+    () => service.pushPending(),
+    (error) => error && error.code === 'REMOTE_SYNC_RESPONSE_INVALID'
+  );
+  const after = database.load();
+  assert.equal(after.sync.outbox.length, 1);
+  assert.equal(after.sync.outbox[0].opId, original.opId);
+  assert.deepEqual(after.sync.outbox[0].payload, original.payload);
+  assert.equal(after.sync.outbox[0].baseServerRevision, original.baseServerRevision);
+  assert.equal(after.sync.outbox[0].attemptCount, 1);
+  assert.deepEqual(after.sync.replicas, {});
+});
+
+test('AC3: lost push response keeps semantic operation facts and retries the same opId until the exact receipt commits', async () => {
+  const { database } = persistentRuntime();
+  savedPlan(database, { id: 'plan_push_lost_response', trainingDate: '2026-09-13', title: 'Lost response' });
+  const original = clone(database.load().sync.outbox[0]);
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  provider.loseNextPushResponse();
+  let attemptNow = NOW + 5_000;
+  const service = createSyncService({ database, provider, now: () => attemptNow });
+
+  await assert.rejects(
+    () => service.pushPending(),
+    (error) => error && error.code === 'SYNC_RESPONSE_LOST'
+  );
+  const afterLost = database.load().sync.outbox[0];
+  assert.equal(afterLost.opId, original.opId);
+  assert.deepEqual(afterLost.payload, original.payload);
+  assert.equal(afterLost.baseServerRevision, original.baseServerRevision);
+  assert.equal(afterLost.attemptCount, 1);
+
+  attemptNow += 1_000;
+  const retried = await service.pushPending();
+  assert.deepEqual(retried.acceptedOpIds, [original.opId]);
+  assert.deepEqual(database.load().sync.outbox, []);
+  assert.deepEqual(
+    provider.calls.push.map(({ operations }) => operations[0].opId),
+    [original.opId, original.opId]
+  );
+  assert.deepEqual(provider.calls.push[1].operations[0].payload, original.payload);
+  assert.equal(provider.calls.push[1].operations[0].baseServerRevision, original.baseServerRevision);
+});
+
+test('AC3: accepted head rebases the next same-entity operation without changing its opId', async () => {
+  const { database } = persistentRuntime();
+  const repository = createPlanRepository({ database, now: () => NOW });
+  const first = repository.save({
+    ...clone(planFixture()),
+    id: 'plan_push_rebase',
+    trainingDate: '2026-09-14',
+    title: 'First'
+  }, 0);
+  repository.save({ ...first, title: 'Second' }, first.revision);
+  const before = database.load();
+  const [head, next] = before.sync.outbox;
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+
+  await service.pushPending();
+  const after = database.load();
+
+  assert.equal(after.sync.outbox.length, 1);
+  assert.equal(after.sync.outbox[0].opId, next.opId);
+  assert.equal(after.sync.outbox[0].baseServerRevision, 1);
+  assert.notEqual(after.sync.outbox[0].opId, head.opId);
 });
