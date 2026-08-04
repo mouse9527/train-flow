@@ -129,6 +129,144 @@ function currentDomainEntity(draft, entityType, entityId) {
   return null;
 }
 
+function currentDomainMutation(draft, entityType, entityId) {
+  const current = currentDomainEntity(draft, entityType, entityId);
+  if (entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+    return !current || current.status === 'deleted'
+      ? { entityType, entityId, action: 'delete', payload: null }
+      : { entityType, entityId, action: 'upsert', payload: cloneJson(current) };
+  }
+  if (entityType === ENTITY_TYPES.TRAINING_RECORD) {
+    return !current || isDeletedTrainingRecord(current)
+      ? { entityType, entityId, action: 'delete', payload: null }
+      : { entityType, entityId, action: 'upsert', payload: cloneJson(current) };
+  }
+  if (entityType === ENTITY_TYPES.USER_SETTINGS && entityId === 'settings') {
+    return {
+      entityType,
+      entityId,
+      action: 'upsert',
+      payload: settingsSyncPayload(current)
+    };
+  }
+  throw syncServiceError('sync conflict entity is unsupported', 'SYNC_CONFLICT_STALE');
+}
+
+function validEntityOperations(outbox, entityType, entityId) {
+  const matching = [];
+  for (let index = 0; index < outbox.length; index += 1) {
+    const candidate = outbox[index];
+    try {
+      assertSyncOperation(candidate);
+      if (candidate.entityType === entityType && candidate.entityId === entityId) {
+        matching.push({ index, operation: candidate });
+      }
+    } catch (_error) {
+      if (candidate && candidate.entityType === entityType && candidate.entityId === entityId) {
+        return null;
+      }
+    }
+  }
+  return matching;
+}
+
+function conflictSuccessorKeys(snapshot) {
+  const keys = new Set();
+  for (const conflict of snapshot.sync.conflicts) {
+    if (!conflict || conflict.status === 'resolved' || !conflict.local) continue;
+    const matching = validEntityOperations(
+      snapshot.sync.outbox,
+      conflict.entityType,
+      conflict.entityId
+    );
+    if (
+      matching && matching.length > 1 &&
+      matching.some(({ operation }) => operation.opId === conflict.local.opId)
+    ) {
+      keys.add(entityKey(conflict.entityType, conflict.entityId));
+    }
+  }
+  return keys;
+}
+
+function convergeConflictSuccessors(draft, keys, detectedAt) {
+  for (const key of keys) {
+    const unresolved = draft.sync.conflicts.filter((conflict) => (
+      conflict && conflict.status !== 'resolved' &&
+      entityKey(conflict.entityType, conflict.entityId) === key
+    ));
+    if (unresolved.length === 0) continue;
+    const exemplar = unresolved.reduce((latest, conflict) => (
+      !latest || conflict.remote.serverRevision > latest.remote.serverRevision ? conflict : latest
+    ), null);
+    const matching = validEntityOperations(
+      draft.sync.outbox,
+      exemplar.entityType,
+      exemplar.entityId
+    );
+    if (!matching || matching.length < 2) {
+      throw syncServiceError('sync conflict successor queue changed', 'SYNC_CONFLICT_STALE');
+    }
+    if (exemplar.entityType === ENTITY_TYPES.USER_SETTINGS) {
+      if (
+        exemplar.remote.action !== 'upsert' || !exemplar.remote.payload ||
+        matching.some(({ operation }) => operation.action !== 'upsert' || !operation.payload)
+      ) {
+        throw syncServiceError('settings conflict successor cannot be merged', 'SYNC_CONFLICT_STALE');
+      }
+      const nextRevision = Math.max(
+        draft.settings.revision,
+        exemplar.remote.payload.revision
+      ) + 1;
+      if (!Number.isSafeInteger(nextRevision)) {
+        throw syncServiceError(
+          'settings revision cannot advance safely during successor merge',
+          'SYNC_SETTINGS_REVISION_OVERFLOW'
+        );
+      }
+      draft.settings = matching.reduce((settings, { operation }) => ({
+        ...settings,
+        ...cloneJson(operation.payload)
+      }), {
+        ...cloneJson(exemplar.remote.payload),
+        revision: nextRevision
+      });
+      draft.settings.revision = nextRevision;
+    }
+    const survivor = matching.at(-1).operation;
+    const mutation = currentDomainMutation(draft, exemplar.entityType, exemplar.entityId);
+    if (
+      survivor.action !== mutation.action ||
+      (exemplar.entityType !== ENTITY_TYPES.USER_SETTINGS &&
+        computeChecksum(survivor.payload) !== computeChecksum(mutation.payload))
+    ) {
+      throw syncServiceError('sync conflict successor does not match current entity', 'SYNC_CONFLICT_STALE');
+    }
+    if (exemplar.entityType === ENTITY_TYPES.USER_SETTINGS) {
+      survivor.payload = cloneJson(mutation.payload);
+    }
+    survivor.baseServerRevision = exemplar.remote.serverRevision;
+    survivor.attemptCount = 0;
+    survivor.lastAttemptAt = null;
+    assertSyncOperation(survivor);
+    const removeIndexes = new Set(matching.slice(0, -1).map(({ index }) => index));
+    draft.sync.outbox = draft.sync.outbox.filter((_operation, index) => !removeIndexes.has(index));
+    draft.sync.conflicts = draft.sync.conflicts.filter((conflict) => (
+      !conflict || conflict.status === 'resolved' ||
+      entityKey(conflict.entityType, conflict.entityId) !== key
+    ));
+    draft.sync.conflicts.push(createConflictState({
+      localOperation: survivor,
+      remoteChange: exemplar.remote,
+      localEntity: mutation.payload,
+      currentEntity: currentDomainEntity(draft, exemplar.entityType, exemplar.entityId),
+      detectedAt
+    }));
+    draft.sync.replicas[key] = replicaFor(exemplar.remote);
+    assertSyncReplica(draft.sync.replicas[key]);
+  }
+}
+
 function requireCurrentConflictBinding(draft, conflict) {
   if (!conflict.local || typeof conflict.local !== 'object' || Array.isArray(conflict.local)) {
     throw syncServiceError('sync conflict binding is missing', 'SYNC_CONFLICT_STALE');
@@ -692,8 +830,28 @@ class SyncService {
   }
 
   async pushPending() {
-    const snapshot = this.database.load();
-    const selection = selectPushableOperations(snapshot.sync.outbox);
+    let snapshot = this.database.load();
+    const successorKeys = conflictSuccessorKeys(snapshot);
+    if (successorKeys.size > 0) {
+      const convergedAt = this.now();
+      if (!Number.isSafeInteger(convergedAt) || convergedAt < 0) {
+        throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+      }
+      snapshot = this.database.commit((draft) => {
+        convergeConflictSuccessors(draft, successorKeys, convergedAt);
+        draft.sync.lastError = null;
+      }, snapshot.localRevision);
+    }
+    const blockedKeys = new Set(snapshot.sync.conflicts
+      .filter((conflict) => conflict && conflict.status !== 'resolved')
+      .map((conflict) => entityKey(conflict.entityType, conflict.entityId)));
+    const selected = selectPushableOperations(snapshot.sync.outbox);
+    const selection = {
+      ...selected,
+      operations: selected.operations.filter((operation) => (
+        !blockedKeys.has(entityKey(operation.entityType, operation.entityId))
+      ))
+    };
     if (selection.operations.length === 0) {
       return {
         attemptedOpIds: [],
@@ -742,10 +900,16 @@ class SyncService {
         const operation = findOperation(draft.sync.outbox, classification.opId);
         if (!operation) continue;
         const remoteChange = mapRemoteChange(classification.remote);
+        const sameEntityOperations = validEntityOperations(
+          draft.sync.outbox,
+          operation.entityType,
+          operation.entityId
+        );
         if (
           operation.entityType === ENTITY_TYPES.USER_SETTINGS &&
           operation.action === 'upsert' &&
-          remoteChange.action === 'upsert'
+          remoteChange.action === 'upsert' &&
+          sameEntityOperations && sameEntityOperations.length === 1
         ) {
           const rebased = rebaseSettingsChange({
             localSettings: draft.settings,

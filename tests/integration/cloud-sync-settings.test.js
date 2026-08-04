@@ -876,6 +876,261 @@ test('P1: a same-entity successor makes the displayed conflict stale with zero r
     database.load().sync.outbox.filter(({ entityId }) => entityId === plan.id).length,
     2
   );
+
+  const pushCallsBeforeRetry = provider.calls.push.length;
+  const retry = await application.retry({ source: 'manual' });
+  const afterRetry = database.load();
+  const converged = application.getState().conflicts;
+  assert.equal(retry.ok, true);
+  assert.equal(provider.calls.push.length, pushCallsBeforeRetry, 'retry must not push the stale conflicted head again');
+  assert.equal(afterRetry.sync.outbox.filter(({ entityId }) => entityId === plan.id).length, 1);
+  assert.equal(converged.length, 1, 'retry must replace, not multiply, the stale conflict');
+  assert.match(converged[0].localSummary, /冲突出现后的新编辑/);
+
+  const resolved = await application.resolveConflict({
+    conflictId: converged[0].conflictId,
+    action: 'rebase'
+  });
+  const afterRebase = database.load();
+  const survivor = afterRebase.sync.outbox.find(({ entityId }) => entityId === plan.id);
+  assert.equal(resolved.action, 'rebase');
+  assert.notEqual(survivor.opId, localOperation.opId, 'superseded conflicted op must not return');
+  assert.equal(survivor.baseServerRevision, 3);
+  assert.equal(survivor.payload.title, '冲突出现后的新编辑');
+  assert.equal(repository.findById(plan.id).title, '冲突出现后的新编辑');
+  assert.equal(afterRebase.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision, 3);
+  assert.equal(application.getState().conflicts.length, 0);
+});
+
+test('P1: a successor queued before conflict detection converges on retry without losing the latest entity fact', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_successor_before_conflict',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  enableForConflict(database);
+  const staleHead = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+  const current = repository.findById(plan.id);
+  const successor = repository.save({
+    ...structuredClone(current),
+    title: '冲突检测前的最新编辑',
+    revision: current.revision + 1,
+    updatedAt: NOW + 2000
+  }, current.revision);
+  provider.conflictOperation(staleHead.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: { ...structuredClone(plan), title: '云端冲突版本', revision: plan.revision + 1 }
+  }));
+  await syncService.pushPending();
+  const visible = application.getState().conflicts[0];
+
+  await assert.rejects(
+    () => application.resolveConflict({ conflictId: visible.conflictId, action: 'rebase' }),
+    { code: 'SYNC_CONFLICT_STALE' }
+  );
+  const pushCallsBeforeRetry = provider.calls.push.length;
+  const retry = await application.retry({ source: 'manual' });
+  const afterRetry = database.load();
+  const conflicts = application.getState().conflicts;
+
+  assert.equal(retry.ok, true);
+  assert.equal(provider.calls.push.length, pushCallsBeforeRetry, 'retry must not repeat the stale head');
+  assert.equal(afterRetry.sync.outbox.filter(({ entityId }) => entityId === plan.id).length, 1);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].localSummary, /冲突检测前的最新编辑/);
+  assert.equal(repository.findById(plan.id).title, successor.title);
+
+  const resolved = await application.resolveConflict({
+    conflictId: conflicts[0].conflictId,
+    action: 'keep_local_as_copy'
+  });
+  const afterResolution = database.load();
+  assert.equal(repository.findById(plan.id).title, '云端冲突版本');
+  assert.equal(
+    afterResolution.plans.find(({ id }) => id === resolved.copyEntityId).title,
+    `${successor.title}（本机副本）`
+  );
+  assert.equal(afterResolution.sync.outbox.some(({ entityId }) => entityId === plan.id), false);
+  assert.equal(afterResolution.sync.outbox.some(({ entityId }) => entityId === resolved.copyEntityId), true);
+  assert.equal(
+    afterResolution.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision,
+    3
+  );
+  assert.equal(application.getState().conflicts.length, 0);
+});
+
+test('P1: successor convergence preserves record facts, plan tombstones, settings patches, and fails closed on mismatch', async (t) => {
+  await t.test('record full payload', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_record_successor',
+      now: () => NOW
+    });
+    const { application, database, plan, syncService } = createRuntime(provider);
+    const record = createBaselineTrainingRecord({
+      id: 'record_successor_full',
+      planSnapshot: structuredClone(plan),
+      trainingDate: plan.trainingDate,
+      status: 'completed',
+      startedAt: NOW,
+      endedAt: NOW + 1000,
+      elapsedActiveSeconds: 1,
+      stepResults: plan.steps.map((step) => ({
+        stepId: step.id,
+        status: 'completed',
+        completedAt: NOW + 1000,
+        setResults: []
+      }))
+    });
+    database.commit((draft) => {
+      draft.records.push(structuredClone(record));
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: record.id,
+        action: 'upsert',
+        payload: record
+      }, {
+        commandIdentity: 'record.successor.head',
+        createdAt: NOW,
+        deviceId: draft.install.deviceId
+      });
+    });
+    const head = database.load().sync.outbox.find(({ entityId }) => entityId === record.id);
+    const successor = structuredClone(record);
+    database.commit((draft) => {
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: record.id,
+        action: 'upsert',
+        payload: successor
+      }, {
+        commandIdentity: 'record.successor.latest',
+        createdAt: NOW + 2000,
+        deviceId: draft.install.deviceId
+      });
+    });
+    enableForConflict(database);
+    provider.conflictOperation(head.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      payload: structuredClone(record)
+    }));
+
+    await syncService.pushPending();
+    await application.retry({ source: 'manual' });
+    const after = database.load();
+    const operation = after.sync.outbox.find(({ entityId }) => entityId === record.id);
+    assert.equal(after.sync.outbox.filter(({ entityId }) => entityId === record.id).length, 1);
+    assert.deepEqual(operation.payload, successor);
+    assert.deepEqual(after.records.find(({ id }) => id === record.id), successor);
+    assert.equal(application.getState().conflicts.length, 1);
+  });
+
+  await t.test('plan delete tombstone', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_delete_successor',
+      now: () => NOW
+    });
+    const { application, database, plan, syncService } = createRuntime(provider);
+    enableForConflict(database);
+    const head = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+    const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+    repository.delete(plan.id, repository.findById(plan.id).revision);
+    provider.conflictOperation(head.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: plan.id,
+      payload: { ...structuredClone(plan), title: '云端保留计划', revision: plan.revision + 1 }
+    }));
+
+    await syncService.pushPending();
+    await application.retry({ source: 'manual' });
+    const visible = application.getState().conflicts[0];
+    const after = database.load();
+    const operation = after.sync.outbox.find(({ entityId }) => entityId === plan.id);
+    assert.equal(operation.action, 'delete');
+    assert.equal(operation.payload, null);
+    assert.equal(repository.findById(plan.id), null);
+    assert.match(visible.localSummary, /已删除/);
+    await application.resolveConflict({ conflictId: visible.conflictId, action: 'rebase' });
+    assert.equal(database.load().sync.outbox.find(({ entityId }) => entityId === plan.id).baseServerRevision, 3);
+  });
+
+  await t.test('settings successor patch merge', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_settings_successor',
+      now: () => NOW
+    });
+    const { application, database, syncService } = createRuntime(provider);
+    const settings = createSettingsApplicationService({
+      repository: createSettingsRepository({ database, now: () => NOW })
+    });
+    settings.updateSettings({ defaultRestSeconds: 90 }, database.load().settings.revision);
+    settings.updateSettings({ soundEnabled: false }, database.load().settings.revision);
+    enableForConflict(database);
+    const settingsOperations = database.load().sync.outbox.filter(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    );
+    const remote = {
+      ...structuredClone(database.load().settings),
+      defaultRestSeconds: 70,
+      soundEnabled: true,
+      vibrationEnabled: false,
+      revision: database.load().settings.revision + 2
+    };
+    provider.conflictOperation(settingsOperations[0].opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.USER_SETTINGS,
+      entityId: 'settings',
+      payload: remote
+    }));
+
+    await syncService.pushPending();
+    await application.retry({ source: 'manual' });
+    const after = database.load();
+    const operation = after.sync.outbox.find(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    );
+    assert.equal(after.sync.outbox.filter(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    ).length, 1);
+    assert.equal(operation.opId, settingsOperations[1].opId);
+    assert.equal(operation.payload.defaultRestSeconds, 90);
+    assert.equal(operation.payload.soundEnabled, false);
+    assert.equal(operation.payload.vibrationEnabled, false);
+    assert.equal(after.settings.defaultRestSeconds, 90);
+    assert.equal(after.settings.soundEnabled, false);
+    assert.equal(after.settings.vibrationEnabled, false);
+    assert.equal(application.getState().conflicts.length, 1);
+  });
+
+  await t.test('mismatched latest fact is zero-write fail closed', async () => {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: 'anonymous_mismatch_successor',
+      now: () => NOW
+    });
+    const { database, plan, syncService } = createRuntime(provider);
+    enableForConflict(database);
+    const head = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+    const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+    const current = repository.findById(plan.id);
+    repository.save({ ...current, title: '真实最新计划' }, current.revision);
+    provider.conflictOperation(head.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: plan.id,
+      payload: { ...structuredClone(plan), title: '云端版本', revision: plan.revision + 1 }
+    }));
+    await syncService.pushPending();
+    database.commit((draft) => {
+      const latest = draft.sync.outbox.filter(({ entityId }) => entityId === plan.id).at(-1);
+      latest.payload = { ...latest.payload, title: '伪造但结构合法的旧事实' };
+    });
+    const before = database.load();
+    const callsBefore = structuredClone(provider.calls);
+
+    await assert.rejects(() => syncService.pushPending(), { code: 'SYNC_CONFLICT_STALE' });
+    assert.deepEqual(database.load(), before);
+    assert.deepEqual(provider.calls, callsBefore);
+  });
 });
 
 test('AC4: record copy and settings rebase stay explicit and preserve visible conflict state until chosen', async () => {
