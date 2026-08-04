@@ -82,7 +82,7 @@ function assertPushResponseBoundToAttempt(response, attemptedOperations) {
     if (!attemptedOpIds.has(classification.opId)) {
       throw syncServiceError(
         'push response classified an operation outside the attempted request',
-        'SYNC_PUSH_RESPONSE_UNBOUND'
+        'SYNC_PUSH_UNATTEMPTED_RECEIPT'
       );
     }
   }

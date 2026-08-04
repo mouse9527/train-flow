@@ -984,7 +984,7 @@ test('Attack: push response cannot accept an outbox operation that was not in th
 
   await assert.rejects(
     () => service.pushPending(),
-    (error) => error && error.code === 'SYNC_PUSH_RESPONSE_UNBOUND'
+    (error) => error && error.code === 'SYNC_PUSH_UNATTEMPTED_RECEIPT'
   );
   assert.deepEqual(database.load(), afterAttempt, 'unbound receipt must not apply response-stage writes');
   assert.equal(storage.operations.filter(({ type }) => type === 'write').length, 2);
