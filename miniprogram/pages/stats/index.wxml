@@ -1,5 +1,101 @@
-<view class="tf-page">
-  <view class="tf-empty-state">
-    <text class="tf-caption">统计即将上线</text>
+<view class="stats-page">
+  <view class="error-card" wx:if="{{validationError}}">
+    <text class="error-card__title">统计暂时无法加载</text>
+    <text class="error-card__copy">{{validationError}}</text>
   </view>
+
+  <block wx:if="{{view}}">
+    <view class="stats-hero">
+      <text class="stats-hero__eyebrow">本周进度 · {{view.week.rangeLabel}}</text>
+      <view class="stats-hero__row">
+        <view>
+          <text class="stats-hero__value">{{view.week.completionRateLabel}}</text>
+          <text class="stats-hero__label">完成率</text>
+        </view>
+        <text class="stats-hero__count">{{view.week.completionCountLabel}}</text>
+      </view>
+    </view>
+
+    <view class="empty-card" wx:if="{{view.emptyState}}">
+      <text class="empty-card__title">{{view.emptyState.title}}</text>
+      <text class="empty-card__copy">{{view.emptyState.guidance}}</text>
+    </view>
+
+    <view class="metric-grid">
+      <view class="metric-card">
+        <text class="metric-card__value">{{view.metrics.activeMinutes.valueLabel}}</text>
+        <text class="metric-card__unit">{{view.metrics.activeMinutes.unit}}</text>
+        <text class="metric-card__label">实际活动</text>
+      </view>
+      <view class="metric-card">
+        <text class="metric-card__value">{{view.metrics.treadmillMinutes.valueLabel}}</text>
+        <text class="metric-card__unit">{{view.metrics.treadmillMinutes.unit}}</text>
+        <text class="metric-card__label">跑步机</text>
+        <text class="metric-card__note" wx:if="{{view.metrics.treadmillMinutes.note}}">{{view.metrics.treadmillMinutes.note}}</text>
+      </view>
+      <view class="metric-card">
+        <text class="metric-card__value">{{view.metrics.rowingMinutes.valueLabel}}</text>
+        <text class="metric-card__unit">{{view.metrics.rowingMinutes.unit}}</text>
+        <text class="metric-card__label">划船</text>
+        <text class="metric-card__note" wx:if="{{view.metrics.rowingMinutes.note}}">{{view.metrics.rowingMinutes.note}}</text>
+      </view>
+      <view class="metric-card">
+        <text class="metric-card__value">{{view.metrics.strengthCount.valueLabel}}</text>
+        <text class="metric-card__unit">{{view.metrics.strengthCount.unit}}</text>
+        <text class="metric-card__label">力量完成</text>
+      </view>
+      <view class="metric-card metric-card--wide">
+        <text class="metric-card__value">{{view.metrics.streak.valueLabel}}</text>
+        <text class="metric-card__unit">{{view.metrics.streak.unit}}</text>
+        <text class="metric-card__label">最近连续训练</text>
+        <text class="metric-card__note">{{view.metrics.streak.note}}</text>
+      </view>
+    </view>
+
+    <view class="section-card">
+      <text class="section-card__title">最近力量参数</text>
+      <view class="latest-grid">
+        <view class="latest-item">
+          <text class="latest-item__label">推胸</text>
+          <text class="latest-item__value">{{view.latestStrength.chest.valueLabel}}</text>
+          <text class="latest-item__date">{{view.latestStrength.chest.dateLabel}}</text>
+        </view>
+        <view class="latest-item">
+          <text class="latest-item__label">拉背</text>
+          <text class="latest-item__value">{{view.latestStrength.back.valueLabel}}</text>
+          <text class="latest-item__date">{{view.latestStrength.back.dateLabel}}</text>
+        </view>
+        <view class="latest-item">
+          <text class="latest-item__label">训练前体重</text>
+          <text class="latest-item__value">{{view.latestBodyWeight.valueLabel}}</text>
+          <text class="latest-item__date">{{view.latestBodyWeight.dateLabel}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="section-card">
+      <text class="section-card__title">最近趋势</text>
+      <text class="section-card__copy">每项最多显示最近 7 次；“未记录”不会被换成 0。</text>
+      <view class="trend" wx:for="{{view.trends}}" wx:key="key" wx:for-item="trend">
+        <view class="trend__header">
+          <text class="trend__title">{{trend.title}}</text>
+          <text class="trend__unit">{{trend.unit}}</text>
+        </view>
+        <view class="trend-bars">
+          <view class="trend-point" wx:for="{{trend.points}}" wx:key="key" wx:for-item="point">
+            <view class="trend-bar">
+              <view class="trend-bar__fill {{point.known ? '' : 'trend-bar__fill--unknown'}}" style="height: {{point.barPercent}}%"></view>
+            </view>
+            <text class="trend-point__value">{{point.valueLabel}}</text>
+            <text class="trend-point__date">{{point.dateLabel}}</text>
+          </view>
+          <text class="trend__empty" wx:if="{{trend.points.length === 0}}">还没有可展示的训练记录</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="privacy-card">
+      <text>统计只读取本机计划与训练记录，仅用于回顾训练记录，不用于诊断。</text>
+    </view>
+  </block>
 </view>

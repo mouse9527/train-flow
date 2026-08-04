@@ -69,6 +69,24 @@ non-modeled baseline by applying only the modeled-step delta, while new plans us
 the modeled total directly. Saving an edited plan only affects future workout
 starts because an active Session keeps its own deep `PlanSnapshot`.
 
+## Statistics page verification
+
+Open `pages/stats/index` to review the current Monday-to-Sunday completion rate,
+active minutes, treadmill/rowing time, completed strength actions, recent streak,
+latest chest/back weights and the last seven duration/RPE/body-weight points.
+Unknown values remain “未记录” and a week without planned workouts shows an unknown
+completion rate instead of `0%`. When a completed timed action has no persisted
+actual duration, the page labels the plan-derived duration as an estimate.
+
+WeChat DevTools `develop` builds also provide anonymous read-only fixtures:
+
+- `pages/stats/index?fixture=worked-sample&state=populated&date=2026-08-05`
+- `pages/stats/index?fixture=worked-sample&state=empty&date=2026-08-09`
+
+`trial` and `release` builds ignore these fixture parameters and read only the
+current local plans and training records. The charts use WXML/CSS only and add no
+runtime chart dependency.
+
 ## Privacy
 
 The public repository contains no real identities, health data, training
