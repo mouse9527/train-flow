@@ -5,6 +5,7 @@
   "description": "TrainFlow native WeChat Mini Program shell — no runtime npm dependencies.",
   "scripts": {
     "test": "node --test 'tests/**/*.test.js'",
-    "cloud:prepare": "node scripts/prepare-cloudfunctions.js"
+    "cloud:prepare": "node scripts/prepare-cloudfunctions.js",
+    "docs:check": "node scripts/check-docs.js"
   }
 }
