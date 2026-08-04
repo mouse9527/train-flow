@@ -22,7 +22,7 @@
 | 7 | 切到后台再回来，剩余时间基本正确 | US-EXEC-001、US-EXEC-002 / AC3 | C2 新建 runtime 恢复绝对时间；`tests/e2e/session-recovery-golden-path.test.js` 深测 hide/show/unload | DevTools hide/show 与重启后显示剩余时间的连续证据 | MANUAL-BLOCKED |
 | 8 | 力量动作可以记录当前组数 | US-EXEC-004 / AC2 | C1 完成三项力量动作；`tests/integration/strength-rest-flow.test.js` 深测组数 | 力量页当前组与已完成组截图 | MANUAL-BLOCKED |
 | 9 | 完成本组后自动开始休息倒计时 | US-EXEC-004 / AC2 | C1 通过公开命令完成组并物化休息 deadline | 力量页休息倒计时截图 | MANUAL-BLOCKED |
-| 10 | 休息结束有振动提示 | US-EXEC-005 / AC3 | C2 证明同一 expiration occurrence 只通知一次；`tests/integration/audio-service.test.js` 覆盖设备降级 | 真机验证振动；不支持振动时记录视觉降级 | MANUAL-BLOCKED |
+| 10 | 休息结束有振动提示 | US-EXEC-005 / AC3 | C2 证明同一 expiration occurrence 只通知一次；`tests/integration/timed-workout-page.test.js` 覆盖振动、视觉降级和 occurrence 去重 | 真机验证振动；不支持振动时记录视觉降级 | MANUAL-BLOCKED |
 | 11 | 可以跳过动作 | US-EXEC-003 / AC2 | `tests/e2e/timed-workout-page-golden-path.test.js` 与 `tests/integration/timed-workout-page.test.js` | DevTools 跳过动作后的进度截图 | MANUAL-BLOCKED |
 | 12 | 可以结束训练 | US-EXEC-003、US-EXEC-005 / AC2 | C2 通过公开 WorkoutApplicationService 执行终止命令 | DevTools 结束训练并进入总结页 | MANUAL-BLOCKED |
 | 13 | 训练结束可以保存记录 | US-EXEC-005、US-REC-001 / AC2 | C1 生成唯一终态记录；C2 重放终态命令不重复记录；`tests/e2e/workout-summary-golden-path.test.js` | 总结页保存反馈及记录页截图 | MANUAL-BLOCKED |

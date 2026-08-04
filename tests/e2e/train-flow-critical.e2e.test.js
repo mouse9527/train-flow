@@ -203,6 +203,8 @@ test('C2 lifecycle reconstruction emits one expiry boundary and terminal replay 
   beforeRestart.start();
   nowMs = FIXED_CLOCK.hideAt;
   beforeRestart.onHide();
+  nowMs += 1_000;
+  beforeRestart.onUnload();
   beforeRestart.destroy();
 
   nowMs = FIXED_CLOCK.restartAt;
@@ -219,6 +221,20 @@ test('C2 lifecycle reconstruction emits one expiry boundary and terminal replay 
   assert.equal(restoredAgain.state, 'expired-awaiting-confirmation');
   assert.equal(notifications, 1);
 
+  reconstructedAgain.confirmNext();
+  while (reconstructedAgain.currentStep().kind === 'timed') {
+    nowMs = reconstructedAgain.session.timer.expectedEndAt;
+    const beforeBoundary = notifications;
+    reconstructedAgain.onShow();
+    assert.equal(notifications, beforeBoundary + 1);
+    reconstructedAgain.onShow();
+    assert.equal(notifications, beforeBoundary + 1);
+    reconstructedAgain.confirmNext();
+  }
+  assert.equal(reconstructedAgain.currentStep().kind, 'strength');
+  reconstructedAgain.onUnload();
+  reconstructedAgain.destroy();
+
   const planRepository = createPlanRepository({ database, now: () => nowMs });
   const sessionRepository = createSessionRepository({ database });
   const workout = createWorkoutApplicationService({
@@ -228,7 +244,49 @@ test('C2 lifecycle reconstruction emits one expiry boundary and terminal replay 
     idFactory: () => 'unused_session_id',
     now: () => nowMs
   });
-  const active = sessionRepository.loadActive();
+  const strength = sessionRepository.loadActive();
+  const strengthStep = strength.planSnapshot.steps[strength.currentStepIndex];
+  const setCommand = {
+    type: 'complete_set',
+    expectedSessionRevision: strength.sessionRevision,
+    commandKey: 'critical:set-replay',
+    nowMs: nowMs + 1_000,
+    payload: {
+      stepId: strengthStep.id,
+      setNumber: strength.currentSet,
+      reps: strengthStep.reps,
+      weightKg: 0
+    }
+  };
+  const firstSet = workout.execute(setCommand);
+  const replayedSet = workout.execute(setCommand);
+  const strengthResult = replayedSet.session.stepResults.find(({ stepId }) => stepId === strengthStep.id);
+  assert.equal(firstSet.replayed, false);
+  assert.equal(replayedSet.replayed, true);
+  assert.equal(strengthResult.setResults.length, 1);
+
+  nowMs += 2_000;
+  const afterSetRestart = runtime('after-set-restart');
+  afterSetRestart.load();
+  const restoredStrengthResult = afterSetRestart.session.stepResults.find(
+    ({ stepId }) => stepId === strengthStep.id
+  );
+  assert.equal(restoredStrengthResult.setResults.length, 1);
+  afterSetRestart.onUnload();
+  afterSetRestart.destroy();
+
+  const beforeSkip = sessionRepository.loadActive();
+  nowMs += 1_000;
+  const skipped = workout.execute({
+    type: 'skip_step_and_start_next',
+    expectedSessionRevision: beforeSkip.sessionRevision,
+    commandKey: 'critical:skip-partial-strength',
+    nowMs,
+    payload: { stepId: strengthStep.id }
+  });
+  const skippedStrength = skipped.session.stepResults.find(({ stepId }) => stepId === strengthStep.id);
+  assert.equal(skippedStrength.setResults.length, 1);
+  const active = skipped.session;
   const terminalCommand = {
     type: 'abort',
     expectedSessionRevision: active.sessionRevision,
@@ -500,13 +558,28 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   fs.copyFileSync(path.join(ROOT, 'scripts/privacy-scan.sh'), path.join(negativeRoot, 'scripts/privacy-scan.sh'));
   fs.writeFileSync(
     path.join(negativeRoot, 'miniprogram/leak.js'),
-    "const localPath = '/Users/example/private';\n" +
-      "const appid = 'wx0123456789abcdef';\n" +
-      "const appSecret = 'non-test-private-value';\n" +
-      "const realName = 'private-person';\n" +
+    "const localPath = '/Users/example/private';\n" + // PRIVACY_SCAN_TEST_SENTINEL
+      "const appSecret = 'non-test-private-value';\n" + // PRIVACY_SCAN_TEST_SENTINEL
+      "const realName = 'private-person';\n" + // PRIVACY_SCAN_TEST_SENTINEL
       'wx.cloud.database();\n'
   );
-  fs.writeFileSync(path.join(negativeRoot, 'evidence/logs/request.log'), 'requestPayload: private\n');
+  fs.writeFileSync(
+    path.join(negativeRoot, 'project.config.json'),
+    '{"appid":"wx0123456789abcdef"}\n' // PRIVACY_SCAN_TEST_SENTINEL
+  );
+  fs.writeFileSync(
+    path.join(negativeRoot, 'miniprogram/leak.json'),
+    '{"appSecret":"private-value","realName":"private-person"}\n' // PRIVACY_SCAN_TEST_SENTINEL
+  );
+  fs.writeFileSync(
+    path.join(negativeRoot, 'evidence/logs/request.log'),
+    '{"requestPayload":"private"}\n'
+  );
+  fs.mkdirSync(path.join(negativeRoot, 'tests/e2e'), { recursive: true });
+  fs.writeFileSync(
+    path.join(negativeRoot, 'tests/e2e/train-flow-critical.e2e.test.js'),
+    "const appSecret = 'unmarked-private-value';\n" // PRIVACY_SCAN_TEST_SENTINEL
+  );
   spawnSync('git', ['init', '-q'], { cwd: negativeRoot });
   spawnSync('git', ['add', '.'], { cwd: negativeRoot });
   const rejected = spawnSync('bash', ['scripts/privacy-scan.sh'], {
@@ -516,10 +589,85 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   });
   assert.notEqual(rejected.status, 0);
   assert.match(rejected.stdout, /ABSOLUTE_USER_PATH miniprogram\/leak\.js/);
-  assert.match(rejected.stdout, /REAL_WECHAT_APPID miniprogram\/leak\.js/);
+  assert.match(rejected.stdout, /REAL_WECHAT_APPID project\.config\.json/);
   assert.match(rejected.stdout, /DIRECT_MINIPROGRAM_DATABASE miniprogram\/leak\.js/);
-  assert.match(rejected.stdout, /PII_LITERAL miniprogram\/leak\.js/);
-  assert.match(rejected.stdout, /CREDENTIAL_ASSIGNMENT miniprogram\/leak\.js/);
+  assert.match(rejected.stdout, /PII_LITERAL miniprogram\/leak\.json/);
+  assert.match(rejected.stdout, /CREDENTIAL_ASSIGNMENT miniprogram\/leak\.json/);
+  assert.match(
+    rejected.stdout,
+    /CREDENTIAL_ASSIGNMENT tests\/e2e\/train-flow-critical\.e2e\.test\.js/
+  );
   assert.match(rejected.stdout, /EVIDENCE_LOG_PRIVATE_PAYLOAD evidence\/logs\/request\.log/);
-  assert.doesNotMatch(rejected.stdout, /\/Users\/example|wx0123456789abcdef/);
+  assert.doesNotMatch( // PRIVACY_SCAN_TEST_SENTINEL
+    rejected.stdout,
+    /\/Users\/example|wx0123456789abcdef/ // PRIVACY_SCAN_TEST_SENTINEL
+  );
+
+  const emptyEvidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-empty-evidence-'));
+  fs.mkdirSync(path.join(emptyEvidenceRoot, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(emptyEvidenceRoot, 'evidence/screenshots'), { recursive: true });
+  fs.copyFileSync(
+    path.join(ROOT, 'scripts/privacy-scan.sh'),
+    path.join(emptyEvidenceRoot, 'scripts/privacy-scan.sh')
+  );
+  fs.writeFileSync(
+    path.join(emptyEvidenceRoot, 'evidence/screenshots/manifest.tsv'),
+    'route\thead\ttree\tsha256\tdata_source\tmanual_visual_verdict\tfile\n'
+  );
+  spawnSync('git', ['init', '-q'], { cwd: emptyEvidenceRoot });
+  spawnSync('git', ['add', '.'], { cwd: emptyEvidenceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'test evidence gate'
+  ], { cwd: emptyEvidenceRoot });
+  const emptyEvidence = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: emptyEvidenceRoot,
+    encoding: 'utf8',
+    env: { ...process.env, PRIVACY_SCAN_ROOT: emptyEvidenceRoot }
+  });
+  assert.notEqual(emptyEvidence.status, 0);
+  assert.match(emptyEvidence.stdout, /SCREENSHOT_MANIFEST_EMPTY evidence\/screenshots\/manifest\.tsv/);
+
+  const traversalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-evidence-path-'));
+  fs.mkdirSync(path.join(traversalRoot, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(traversalRoot, 'evidence/screenshots'), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, 'scripts/privacy-scan.sh'), path.join(traversalRoot, 'scripts/privacy-scan.sh'));
+  const outsideBytes = Buffer.from('anonymous screenshot bytes');
+  fs.writeFileSync(path.join(traversalRoot, 'evidence/outside.png'), outsideBytes);
+  fs.writeFileSync(path.join(traversalRoot, 'evidence/screenshots/capture.png'), outsideBytes);
+  const outsideDigest = createHash('sha256').update(outsideBytes).digest('hex');
+  fs.writeFileSync(
+    path.join(traversalRoot, 'evidence/screenshots/manifest.tsv'),
+    'route\thead\ttree\tsha256\tdata_source\tmanual_visual_verdict\tfile\n' +
+      `/pages/today/index\t${'0'.repeat(40)}\t${'0'.repeat(40)}\t${outsideDigest}` +
+      '\tanonymous-fixture\tPASS\tcapture.png\n' +
+      `/pages/today/index\t${'0'.repeat(40)}\t${'0'.repeat(40)}\t${outsideDigest}` +
+      '\tanonymous-fixture\tPASS\t../outside.png\n'
+  );
+  spawnSync('git', ['init', '-q'], { cwd: traversalRoot });
+  spawnSync('git', ['add', 'scripts', 'evidence/screenshots/manifest.tsv'], { cwd: traversalRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'test evidence provenance'
+  ], { cwd: traversalRoot });
+  const traversalEvidence = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: traversalRoot,
+    encoding: 'utf8',
+    env: { ...process.env, PRIVACY_SCAN_ROOT: traversalRoot }
+  });
+  assert.notEqual(traversalEvidence.status, 0);
+  assert.match(
+    traversalEvidence.stdout,
+    /SCREENSHOT_PATH_INVALID evidence\/screenshots\/manifest\.tsv/
+  );
+  assert.match(
+    traversalEvidence.stdout,
+    /SCREENSHOT_SOURCE_UNRESOLVED evidence\/screenshots\/manifest\.tsv/
+  );
+  assert.match(
+    traversalEvidence.stdout,
+    /SCREENSHOT_FILE_UNTRACKED evidence\/screenshots\/capture\.png/
+  );
 });

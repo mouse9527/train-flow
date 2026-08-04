@@ -15,31 +15,9 @@ report() {
   failed=1
 }
 
-is_scanner_sentinel() {
-  [[ "$1" == "scripts/privacy-scan.sh" || "$1" == "tests/e2e/train-flow-critical.e2e.test.js" ]]
-}
-
-is_known_test_sentinel() {
-  case "$1" in
-    tests/cloudfunctions/cloud-sync-security.test.js|\
-    tests/domain/planning/default-plan-initialization.test.js|\
-    tests/domain/sync/entity-mapper-conflicts.test.js|\
-    tests/e2e/app-shell-golden-path.test.js|\
-    tests/e2e/cloud-sync-security-golden-path.test.js|\
-    tests/e2e/train-flow-critical.e2e.test.js|\
-    tests/integration/app-shell-settings.test.js|\
-    tests/integration/settings-persistence.test.js|\
-    tests/services/local-database.test.js)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 is_scanned_path() {
   case "$1" in
+    project.config.json|package.json|package-lock.json|README.md|\
     miniprogram/*|tests/*|cloudfunctions/*|scripts/*|evidence/screenshots/*|evidence/logs/*)
       return 0
       ;;
@@ -49,44 +27,87 @@ is_scanned_path() {
   esac
 }
 
+is_allowed_sentinel_line() {
+  local file=$1
+  local line=$2
+  [[ "$line" == *PRIVACY_SCAN_RULE_DEFINITION* || "$line" == *PRIVACY_SCAN_TEST_SENTINEL* ]] && return 0
+  case "$file" in
+    tests/cloudfunctions/cloud-sync-security.test.js)
+      [[ "$line" == *test-* || "$line" == *nested-secret* ]]
+      ;;
+    tests/domain/planning/default-plan-initialization.test.js)
+      [[ "$line" == *forged-* ]]
+      ;;
+    tests/domain/sync/entity-mapper-conflicts.test.js)
+      [[ "$line" == *must-not-* ]]
+      ;;
+    tests/e2e/app-shell-golden-path.test.js)
+      [[ "$line" == *oFixtureOnly* || "$line" == *fixture-secret* ||
+        "$line" == *张三* || "$line" == *李四* || "$line" == *1380013*8000* ||
+        "$line" == *110105194*31002X* ]]
+      ;;
+    tests/e2e/cloud-sync-security-golden-path.test.js)
+      [[ "$line" == *e2e-* ]]
+      ;;
+    tests/integration/app-shell-settings.test.js)
+      [[ "$line" == *oX123* ]]
+      ;;
+    tests/integration/settings-persistence.test.js|tests/services/local-database.test.js)
+      [[ "$line" == *must-not-* || "$line" == *checksum-valid* ||
+        "$line" == *not-covered* || "$line" == *covered-by* ]]
+      ;;
+    tests/integration/data-import-export.test.js)
+      [[ "$line" == *PRIVATE_CODE_TOKEN_9ea1* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+scan_pattern() {
+  local category=$1
+  local file=$2
+  local pattern=$3
+  local match
+  local line
+  while IFS= read -r match; do
+    [[ -n "$match" ]] || continue
+    line=${match#*:}
+    if is_allowed_sentinel_line "$file" "$line"; then
+      printf '%s %s\n' TEST_ONLY_SENTINEL "$file"
+    else
+      report "$category" "$file"
+    fi
+  done < <(LC_ALL=C grep -Ein "$pattern" "$file" 2>/dev/null || true)
+}
+
+absolute_path_pattern='/Users/' # PRIVACY_SCAN_RULE_DEFINITION
+real_appid_pattern='wx[0-9a-fA-F]{16}([^0-9a-fA-F]|$)' # PRIVACY_SCAN_RULE_DEFINITION
+direct_database_pattern='wx[[:space:]]*\.[[:space:]]*cloud[[:space:]]*\.[[:space:]]*database[[:space:]]*\(' # PRIVACY_SCAN_RULE_DEFINITION
+pii_assignment_pattern='["'"'"'`]?((realName|fullName|legalName|patientName|userName))["'"'"'`]?[[:space:]]*[:=][[:space:]]*["'"'"'`][^"'"'"'`]+' # PRIVACY_SCAN_RULE_DEFINITION
+pii_number_pattern='(^|[^0-9])(1[3-9][0-9]{9}|[0-9]{17}[0-9Xx])([^0-9]|$)' # PRIVACY_SCAN_RULE_DEFINITION
+credential_pattern='["'"'"'`]?(appSecret|password|privateKey|session_key|sessionKey|authToken|accessToken|openId|openid)["'"'"'`]?[[:space:]]*[:=][[:space:]]*["'"'"'`][^"'"'"'`]+' # PRIVACY_SCAN_RULE_DEFINITION
+log_payload_pattern='["'"'"'`]?(openId|openid|ownerId|authToken|accessToken|session_key|trainingRecord|recordPayload|requestPayload|responsePayload)["'"'"'`]?[[:space:]]*[:=]' # PRIVACY_SCAN_RULE_DEFINITION
+
 while IFS= read -r -d '' file; do
   is_scanned_path "$file" || continue
   [[ -f "$file" ]] || continue
   grep -Iq . "$file" || continue
 
-  if ! is_scanner_sentinel "$file"; then
-    grep -Eq '/Users/' "$file" && report ABSOLUTE_USER_PATH "$file"
-    grep -Eq 'wx[0-9a-fA-F]{16}([^0-9a-fA-F]|$)' "$file" && report REAL_WECHAT_APPID "$file"
+  scan_pattern ABSOLUTE_USER_PATH "$file" "$absolute_path_pattern"
+  scan_pattern REAL_WECHAT_APPID "$file" "$real_appid_pattern"
+
+  if [[ "$file" == miniprogram/* ]]; then
+    scan_pattern DIRECT_MINIPROGRAM_DATABASE "$file" "$direct_database_pattern"
   fi
 
-  if [[ "$file" == miniprogram/* ]] &&
-    grep -Eq 'wx[[:space:]]*\.[[:space:]]*cloud[[:space:]]*\.[[:space:]]*database[[:space:]]*\(' "$file"; then
-    report DIRECT_MINIPROGRAM_DATABASE "$file"
-  fi
+  scan_pattern PII_LITERAL "$file" "$pii_assignment_pattern"
+  scan_pattern PII_LITERAL "$file" "$pii_number_pattern"
+  scan_pattern CREDENTIAL_ASSIGNMENT "$file" "$credential_pattern"
 
-  pii_match=0
-  credential_match=0
-  if ! is_scanner_sentinel "$file"; then
-    if grep -Eqi '(realName|fullName|legalName|patientName|userName)[[:space:]]*[:=][[:space:]]*["'"'"'`][^"'"'"'`]+' "$file" ||
-      grep -Eq '\b1[3-9][0-9]{9}\b|\b[0-9]{17}[0-9Xx]\b' "$file"; then
-      pii_match=1
-    fi
-    if grep -Eqi '(appSecret|password|privateKey|session_key|sessionKey|authToken|accessToken|openId|openid)[[:space:]]*[:=][[:space:]]*["'"'"'`][^"'"'"'`]+' "$file"; then
-      credential_match=1
-    fi
-  fi
-  if [[ "$pii_match" -eq 1 || "$credential_match" -eq 1 ]]; then
-    if is_known_test_sentinel "$file"; then
-      printf '%s %s\n' TEST_ONLY_SENTINEL "$file"
-    else
-      [[ "$pii_match" -eq 1 ]] && report PII_LITERAL "$file"
-      [[ "$credential_match" -eq 1 ]] && report CREDENTIAL_ASSIGNMENT "$file"
-    fi
-  fi
-
-  if [[ "$file" == evidence/logs/* ]] &&
-    grep -Eqi '(openId|openid|ownerId|authToken|accessToken|session_key|trainingRecord|recordPayload|requestPayload|responsePayload)[[:space:]]*[:=]' "$file"; then
-    report EVIDENCE_LOG_PRIVATE_PAYLOAD "$file"
+  if [[ "$file" == evidence/logs/* ]]; then
+    scan_pattern EVIDENCE_LOG_PRIVATE_PAYLOAD "$file" "$log_payload_pattern"
   fi
 done < <(git ls-files -z)
 
@@ -95,27 +116,54 @@ manifest=$screenshot_dir/manifest.tsv
 if [[ -d "$screenshot_dir" ]]; then
   if [[ ! -f "$manifest" ]]; then
     report SCREENSHOT_MANIFEST_MISSING "$manifest"
+  elif ! git ls-files --error-unmatch "$manifest" >/dev/null 2>&1; then
+    report SCREENSHOT_MANIFEST_UNTRACKED "$manifest"
   else
     header=$(head -n 1 "$manifest")
     expected_header=$'route\thead\ttree\tsha256\tdata_source\tmanual_visual_verdict\tfile'
     if [[ "$header" != "$expected_header" ]]; then
       report SCREENSHOT_MANIFEST_SCHEMA "$manifest"
     else
-      while IFS=$'\t' read -r route head tree digest data_source verdict image_file; do
+      row_count=0
+      while IFS=$'\t' read -r route head tree digest data_source verdict image_file extra; do
         [[ -n "$route$head$tree$digest$data_source$verdict$image_file" ]] || continue
-        if [[ -z "$route" || ! "$head" =~ ^[a-f0-9]{40}$ || ! "$tree" =~ ^[a-f0-9]{40}$ ||
-          ! "$digest" =~ ^[a-f0-9]{64}$ || -z "$data_source" ||
-          ! "$verdict" =~ ^(PASS|FAIL|BLOCKED)$ || ! -f "$screenshot_dir/$image_file" ]]; then
+        row_count=$((row_count + 1))
+        if [[ -n "$extra" || -z "$route" || ! "$head" =~ ^[a-f0-9]{40}$ ||
+          ! "$tree" =~ ^[a-f0-9]{40}$ || ! "$digest" =~ ^[a-f0-9]{64}$ ||
+          ! "$data_source" =~ ^(anonymous|synthetic|clean-local)[A-Za-z0-9._-]*$ ||
+          "$verdict" != PASS ]]; then
           report SCREENSHOT_MANIFEST_ENTRY "$manifest"
           continue
         fi
-        if command -v sha256sum >/dev/null 2>&1; then
-          actual_digest=$(sha256sum "$screenshot_dir/$image_file" | awk '{print $1}')
-        else
-          actual_digest=$(shasum -a 256 "$screenshot_dir/$image_file" | awk '{print $1}')
+        if [[ "$image_file" == /* || "$image_file" == *..* || "$image_file" == *\\* ||
+          "$image_file" != *.png ]]; then
+          report SCREENSHOT_PATH_INVALID "$manifest"
+          continue
         fi
-        [[ "$actual_digest" == "$digest" ]] || report SCREENSHOT_HASH_MISMATCH "$screenshot_dir/$image_file"
+        image_path=$screenshot_dir/$image_file
+        if [[ ! -f "$image_path" ]]; then
+          report SCREENSHOT_FILE_MISSING "$image_path"
+          continue
+        fi
+        if ! git ls-files --error-unmatch "$image_path" >/dev/null 2>&1; then
+          report SCREENSHOT_FILE_UNTRACKED "$image_path"
+        fi
+        if ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+          report SCREENSHOT_SOURCE_UNRESOLVED "$manifest"
+        else
+          source_tree=$(git rev-parse "$head^{tree}")
+          [[ "$source_tree" == "$tree" ]] || report SCREENSHOT_SOURCE_TREE_MISMATCH "$manifest"
+          git diff --quiet "$head" -- miniprogram cloudfunctions project.config.json package.json ||
+            report SCREENSHOT_SOURCE_STALE "$manifest"
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual_digest=$(sha256sum "$image_path" | awk '{print $1}')
+        else
+          actual_digest=$(shasum -a 256 "$image_path" | awk '{print $1}')
+        fi
+        [[ "$actual_digest" == "$digest" ]] || report SCREENSHOT_HASH_MISMATCH "$image_path"
       done < <(tail -n +2 "$manifest")
+      [[ "$row_count" -gt 0 ]] || report SCREENSHOT_MANIFEST_EMPTY "$manifest"
     fi
   fi
 else
