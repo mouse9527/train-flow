@@ -180,6 +180,149 @@ test('AC5: deterministic provider binds purge confirmation to the requesting dev
   ]);
 });
 
+test('P1: cloud purge atomically resets only the remote boundary and re-enable uploads every entity from base zero', async () => {
+  let clock = NOW;
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_purge_reenable',
+    now: () => clock
+  });
+  const { application, database, plan, syncService } = createRuntime(provider, { now: () => clock });
+  const record = createBaselineTrainingRecord({
+    id: 'session_purge_reenable',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    draft.sync.outbox = [];
+    draft.sync.replicas = {};
+  });
+  const firstPreview = application.prepareEnable();
+  assert.equal((await application.confirmEnable({ confirmationId: firstPreview.confirmationId })).ok, true);
+
+  clock = NOW + 2000;
+  const plans = createPlanRepository({ database, now: () => clock });
+  const currentPlan = plans.findById(plan.id);
+  plans.save({
+    ...structuredClone(currentPlan),
+    title: '删除云端前的本机编辑',
+    revision: currentPlan.revision + 1,
+    updatedAt: clock
+  }, currentPlan.revision);
+  const pendingPlanOp = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  provider.conflictOperation(pendingPlanOp.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: {
+      ...structuredClone(currentPlan),
+      title: '即将删除的云端冲突',
+      revision: currentPlan.revision + 1
+    }
+  }));
+  await syncService.pushPending();
+  database.commit((draft) => {
+    draft.sync.lastError = { code: 'RECOVERABLE_FIXTURE', failedAt: NOW };
+  });
+  const beforePurge = database.load();
+  assert.ok(beforePurge.sync.cursor);
+  assert.ok(Object.keys(beforePurge.sync.replicas).length > 0);
+  assert.ok(beforePurge.sync.conflicts.length > 0);
+  assert.ok(beforePurge.sync.outbox.length > 0);
+
+  const prepared = await application.prepareRemotePurge();
+  const receipt = await application.purgeRemote({ confirmationToken: prepared.confirmationToken });
+  const afterPurge = database.load();
+
+  assert.equal(receipt.purgedAt, clock);
+  assert.deepEqual(afterPurge.plans, beforePurge.plans);
+  assert.deepEqual(afterPurge.records, beforePurge.records);
+  for (const field of [
+    'vibrationEnabled',
+    'soundEnabled',
+    'voiceEnabled',
+    'keepScreenOn',
+    'defaultStartLocalTime',
+    'recommendedEndLocalTime',
+    'defaultRestSeconds',
+    'timezone'
+  ]) {
+    assert.equal(afterPurge.settings[field], beforePurge.settings[field]);
+  }
+  assert.equal(afterPurge.settings.cloudSyncEnabled, false);
+  assert.equal(afterPurge.sync.enabled, false);
+  assert.equal(afterPurge.sync.provider, 'none');
+  assert.equal(afterPurge.sync.cursor, null);
+  assert.equal(afterPurge.sync.lastSyncedAt, null);
+  assert.equal(afterPurge.sync.lastError, null);
+  assert.deepEqual(afterPurge.sync.outbox, []);
+  assert.deepEqual(afterPurge.sync.conflicts, []);
+  assert.deepEqual(afterPurge.sync.replicas, {});
+
+  const secondPreview = application.prepareEnable();
+  assert.deepEqual(secondPreview.scope, {
+    plans: 1,
+    records: 1,
+    settings: 1,
+    pendingOperations: 0
+  });
+  assert.equal((await application.confirmEnable({ confirmationId: secondPreview.confirmationId })).ok, true);
+  const reenableOperations = provider.calls.push.at(-1).operations;
+  assert.equal(reenableOperations.length, 3);
+  assert.equal(reenableOperations.every(({ baseServerRevision }) => baseServerRevision === 0), true);
+  assert.deepEqual(database.load().sync.outbox, []);
+  assert.equal(application.getState().code, 'synced');
+});
+
+test('P1: purge provider failure leaves local domain and sync metadata unchanged and the same token retries', async () => {
+  const fake = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_purge_retry',
+    now: () => NOW
+  });
+  const realPurge = fake.purge.bind(fake);
+  let failNextPurge = true;
+  const provider = {
+    ...fake,
+    async purge(request) {
+      if (failNextPurge) {
+        failNextPurge = false;
+        const error = new Error('temporary purge failure');
+        error.code = 'CLOUD_SYNC_UNAVAILABLE';
+        throw error;
+      }
+      return realPurge(request);
+    }
+  };
+  const { application, database } = createRuntime(provider);
+  const preview = application.prepareEnable();
+  assert.equal((await application.confirmEnable({ confirmationId: preview.confirmationId })).ok, true);
+  const prepared = await application.prepareRemotePurge();
+  const beforeFailure = database.load();
+
+  await assert.rejects(
+    () => application.purgeRemote({ confirmationToken: prepared.confirmationToken }),
+    { code: 'CLOUD_SYNC_UNAVAILABLE' }
+  );
+  assert.deepEqual(database.load(), beforeFailure);
+
+  const receipt = await application.purgeRemote({ confirmationToken: prepared.confirmationToken });
+  assert.equal(receipt.purgedAt, NOW);
+  const afterRetry = database.load();
+  assert.equal(afterRetry.sync.enabled, false);
+  assert.equal(afterRetry.settings.cloudSyncEnabled, false);
+  assert.deepEqual(afterRetry.sync.outbox, []);
+  assert.deepEqual(afterRetry.sync.replicas, {});
+});
+
 test('AC1/AC2: enabling previews only upload counts and denied cloud becomes a recoverable sanitized state', async () => {
   const privateError = 'openid-secret-allowlist-sentinel';
   const fake = createDeterministicRemoteSyncProvider({

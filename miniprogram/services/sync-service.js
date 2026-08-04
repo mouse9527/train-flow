@@ -282,6 +282,20 @@ function buildEnablePreview(snapshot) {
   };
 }
 
+function remoteBoundaryNeedsReset(snapshot) {
+  return Boolean(
+    snapshot.settings.cloudSyncEnabled ||
+    snapshot.sync.enabled ||
+    snapshot.sync.provider !== 'none' ||
+    snapshot.sync.cursor !== null ||
+    snapshot.sync.lastSyncedAt !== null ||
+    snapshot.sync.lastError !== null ||
+    snapshot.sync.outbox.length > 0 ||
+    snapshot.sync.conflicts.length > 0 ||
+    Object.keys(snapshot.sync.replicas).length > 0
+  );
+}
+
 function addConflict(draft, conflict) {
   if (!draft.sync.conflicts.some(({ conflictId }) => conflictId === conflict.conflictId)) {
     draft.sync.conflicts.push(conflict);
@@ -629,6 +643,37 @@ class SyncService {
       confirmationToken
     });
     assertPurgeResult(response);
+    if (!remoteBoundaryNeedsReset(snapshot)) return cloneJson(response);
+    try {
+      this.database.commit((draft) => {
+        if (draft.settings.cloudSyncEnabled) {
+          draft.settings = {
+            ...draft.settings,
+            cloudSyncEnabled: false,
+            revision: draft.settings.revision + 1
+          };
+        }
+        draft.sync.enabled = false;
+        draft.sync.provider = 'none';
+        draft.sync.cursor = null;
+        draft.sync.lastSyncedAt = null;
+        draft.sync.lastError = null;
+        draft.sync.outbox = [];
+        draft.sync.conflicts = [];
+        draft.sync.replicas = {};
+      }, snapshot.localRevision);
+    } catch (error) {
+      if (
+        error && typeof error.message === 'string' &&
+        /LocalDatabase revision conflict|baseline changed concurrently/.test(error.message)
+      ) {
+        throw syncServiceError(
+          'remote purge succeeded but local sync boundary changed; retry the same confirmation',
+          'SYNC_PURGE_LOCAL_STALE'
+        );
+      }
+      throw error;
+    }
     return cloneJson(response);
   }
 

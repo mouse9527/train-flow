@@ -144,5 +144,14 @@ test('golden path: settings page enables, retries, resolves a plan conflict and 
   const localBeforePurge = database.load();
   await page.onConfirmCloudPurge();
   assert.equal(Number.isSafeInteger(page.data.cloudPurgeReceipt.purgedAt), true);
-  assert.deepEqual(database.load(), localBeforePurge, 'cloud purge must not mutate local data');
+  const localAfterPurge = database.load();
+  assert.deepEqual(localAfterPurge.plans, localBeforePurge.plans);
+  assert.deepEqual(localAfterPurge.records, localBeforePurge.records);
+  assert.equal(localAfterPurge.settings.defaultRestSeconds, localBeforePurge.settings.defaultRestSeconds);
+  assert.equal(localAfterPurge.settings.cloudSyncEnabled, false);
+  assert.equal(localAfterPurge.sync.enabled, false);
+  assert.equal(localAfterPurge.sync.cursor, null);
+  assert.deepEqual(localAfterPurge.sync.outbox, []);
+  assert.deepEqual(localAfterPurge.sync.conflicts, []);
+  assert.deepEqual(localAfterPurge.sync.replicas, {});
 });
