@@ -348,10 +348,17 @@ function mapRemoteChange(envelope) {
   };
 }
 
-function createConflictState({ localOperation, remoteChange, localEntity, detectedAt }) {
+function createConflictState({
+  localOperation,
+  remoteChange,
+  localEntity,
+  currentEntity = localEntity,
+  detectedAt
+}) {
   assertPlainJson(localOperation, 'local operation');
   assertPlainJson(remoteChange, 'remote change');
   assertPlainJson(localEntity, 'local entity');
+  assertPlainJson(currentEntity, 'current local entity');
   if (!Number.isSafeInteger(detectedAt) || detectedAt < 0) {
     throw syncError('conflict detectedAt must be a non-negative safe integer', 'SYNC_CONFLICT_INVALID');
   }
@@ -365,7 +372,11 @@ function createConflictState({ localOperation, remoteChange, localEntity, detect
     opId: localOperation.opId,
     baseServerRevision: localOperation.baseServerRevision,
     action: localOperation.action,
-    payload: cloneJson(localEntity)
+    payload: cloneJson(localEntity),
+    entityRevision: currentEntity && Number.isSafeInteger(currentEntity.revision)
+      ? currentEntity.revision
+      : null,
+    entityHash: computeChecksum(currentEntity)
   };
   const remote = cloneJson(remoteChange);
   return {
@@ -425,7 +436,11 @@ function rebaseSettingsChange({ localSettings, localOperation, remoteChange, det
     overlappingFields,
     local: {
       opId: operation.opId,
-      payload: cloneJson(operation.payload)
+      baseServerRevision: operation.baseServerRevision,
+      action: operation.action,
+      payload: cloneJson(operation.payload),
+      entityRevision: settings.revision,
+      entityHash: computeChecksum(settings)
     },
     remote: cloneJson(remoteChange),
     detectedAt

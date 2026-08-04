@@ -58,7 +58,9 @@ function conflictActions(conflict) {
   if (conflict.entityType === ENTITY_TYPES.USER_SETTINGS) {
     return ['keep_remote', 'rebase'];
   }
-  return ['keep_remote', 'keep_local_as_copy', 'rebase'];
+  return conflict.local && conflict.local.action === 'upsert' && conflict.local.payload
+    ? ['keep_remote', 'keep_local_as_copy', 'rebase']
+    : ['keep_remote', 'rebase'];
 }
 
 function conflictSummary(conflict, side) {
@@ -112,6 +114,68 @@ function replicaFor(change) {
     payloadHash: change.payloadHash,
     deleted: change.action === 'delete'
   };
+}
+
+function currentDomainEntity(draft, entityType, entityId) {
+  if (entityType === ENTITY_TYPES.WORKOUT_PLAN) {
+    return draft.plans.find(({ id }) => id === entityId) || null;
+  }
+  if (entityType === ENTITY_TYPES.TRAINING_RECORD) {
+    return draft.records.find(({ id }) => id === entityId) || null;
+  }
+  if (entityType === ENTITY_TYPES.USER_SETTINGS && entityId === 'settings') {
+    return draft.settings;
+  }
+  return null;
+}
+
+function requireCurrentConflictBinding(draft, conflict) {
+  if (!conflict.local || typeof conflict.local !== 'object' || Array.isArray(conflict.local)) {
+    throw syncServiceError('sync conflict binding is missing', 'SYNC_CONFLICT_STALE');
+  }
+  const matching = [];
+  for (let index = 0; index < draft.sync.outbox.length; index += 1) {
+    const candidate = draft.sync.outbox[index];
+    try {
+      assertSyncOperation(candidate);
+      if (candidate.entityType === conflict.entityType && candidate.entityId === conflict.entityId) {
+        matching.push({ index, operation: candidate });
+      }
+    } catch (_error) {
+      // Unsupported work for the same entity cannot be safely consumed as the displayed conflict.
+      if (
+        candidate &&
+        candidate.entityType === conflict.entityType &&
+        candidate.entityId === conflict.entityId
+      ) {
+        throw syncServiceError('sync conflict no longer matches the entity queue', 'SYNC_CONFLICT_STALE');
+      }
+    }
+  }
+  if (matching.length !== 1 || matching[0].operation.opId !== conflict.local.opId) {
+    throw syncServiceError('sync conflict no longer matches the entity queue', 'SYNC_CONFLICT_STALE');
+  }
+  const { index, operation } = matching[0];
+  if (
+    operation.baseServerRevision !== conflict.local.baseServerRevision ||
+    operation.action !== conflict.local.action ||
+    computeChecksum(operation.payload) !== computeChecksum(conflict.local.payload)
+  ) {
+    throw syncServiceError('sync conflict operation facts changed', 'SYNC_CONFLICT_STALE');
+  }
+  const currentEntity = currentDomainEntity(draft, conflict.entityType, conflict.entityId);
+  const currentRevision = currentEntity && Number.isSafeInteger(currentEntity.revision)
+    ? currentEntity.revision
+    : null;
+  if (
+    !conflict.local ||
+    typeof conflict.local.entityHash !== 'string' ||
+    conflict.local.entityHash !== computeChecksum(currentEntity) ||
+    conflict.local.entityRevision !== currentRevision
+  ) {
+    throw syncServiceError('sync conflict local entity changed', 'SYNC_CONFLICT_STALE');
+  }
+  return { index, operation };
 }
 
 function settingsSyncPayload(settings) {
@@ -371,21 +435,16 @@ class SyncService {
       if (!allowedActions.includes(action)) {
         throw syncServiceError('resolution is not available for this entity', 'SYNC_CONFLICT_ACTION_UNAVAILABLE');
       }
+      const binding = requireCurrentConflictBinding(draft, conflict);
       const remote = conflict.remote;
       const key = entityKey(conflict.entityType, conflict.entityId);
       let copyEntityId = null;
 
       if (action === 'rebase') {
-        const operation = findOperation(draft.sync.outbox, conflict.local.opId);
-        if (!operation) {
-          throw syncServiceError('conflict operation is missing', 'SYNC_CONFLICT_OPERATION_MISSING');
-        }
-        operation.baseServerRevision = remote.serverRevision;
-        assertSyncOperation(operation);
+        binding.operation.baseServerRevision = remote.serverRevision;
+        assertSyncOperation(binding.operation);
       } else {
-        draft.sync.outbox = draft.sync.outbox.filter((operation) => (
-          !operation || operation.entityType !== conflict.entityType || operation.entityId !== conflict.entityId
-        ));
+        draft.sync.outbox.splice(binding.index, 1);
         applyRemoteDomainChange(draft, remote);
       }
 
@@ -662,6 +721,7 @@ class SyncService {
             localOperation: operation,
             remoteChange,
             localEntity: operation.payload,
+            currentEntity: currentDomainEntity(draft, operation.entityType, operation.entityId),
             detectedAt: attemptedAt
           }));
         }
@@ -764,6 +824,7 @@ class SyncService {
             localOperation,
             remoteChange: change,
             localEntity: localOperation.payload,
+            currentEntity: currentDomainEntity(draft, localOperation.entityType, localOperation.entityId),
             detectedAt: pulledAt
           }));
         } else {

@@ -420,6 +420,50 @@ test('AC4: plan conflict remains visible until explicit keep-local-as-copy atomi
   assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.WORKOUT_PLAN, plan.id)].serverRevision, 3);
 });
 
+test('P1: a same-entity successor makes the displayed conflict stale with zero resolution writes', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan, syncService } = createRuntime(provider);
+  enableForConflict(database);
+  const localOperation = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const remotePlan = { ...structuredClone(plan), title: '云端旧冲突', revision: plan.revision + 1 };
+  provider.conflictOperation(localOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: remotePlan
+  }));
+  await syncService.pushPending();
+  const visible = application.getState().conflicts[0];
+
+  const repository = createPlanRepository({ database, now: () => NOW + 2000 });
+  const current = repository.findById(plan.id);
+  repository.save({
+    ...structuredClone(current),
+    title: '冲突出现后的新编辑',
+    revision: current.revision + 1,
+    updatedAt: NOW + 2000
+  }, current.revision);
+  const beforeResolution = database.load();
+  const providerCallsBeforeResolution = structuredClone(provider.calls);
+
+  await assert.rejects(
+    () => application.resolveConflict({
+      conflictId: visible.conflictId,
+      action: 'keep_remote'
+    }),
+    { code: 'SYNC_CONFLICT_STALE' }
+  );
+  assert.deepEqual(database.load(), beforeResolution);
+  assert.deepEqual(provider.calls, providerCallsBeforeResolution);
+  assert.equal(application.getState().conflicts.length, 1);
+  assert.equal(
+    database.load().sync.outbox.filter(({ entityId }) => entityId === plan.id).length,
+    2
+  );
+});
+
 test('AC4: record copy and settings rebase stay explicit and preserve visible conflict state until chosen', async () => {
   const provider = createDeterministicRemoteSyncProvider({
     ownerId: 'anonymous_fixture_owner',
@@ -512,4 +556,188 @@ test('AC4: record copy and settings rebase stay explicit and preserve visible co
   assert.equal(after.settings.defaultRestSeconds, 95);
   assert.equal(rebasedSettingsOperation.baseServerRevision, 3);
   assert.equal(application.getState().conflicts.length, 0);
+});
+
+test('P1: conflict action matrix consumes only the exact operation for plan, record and settings', async (t) => {
+  async function planFixture(label) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: `anonymous_plan_${label}`,
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    enableForConflict(runtime.database);
+    const operation = runtime.database.load().sync.outbox.find(({ entityId }) => entityId === runtime.plan.id);
+    const remote = {
+      ...structuredClone(runtime.plan),
+      title: `云端计划 ${label}`,
+      revision: runtime.plan.revision + 1
+    };
+    provider.conflictOperation(operation.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.WORKOUT_PLAN,
+      entityId: runtime.plan.id,
+      payload: remote
+    }));
+    await runtime.syncService.pushPending();
+    return { ...runtime, operation, remote, conflict: runtime.application.getState().conflicts[0] };
+  }
+
+  async function recordFixture(label) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: `anonymous_record_${label}`,
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    const record = createBaselineTrainingRecord({
+      id: `session_record_${label}`,
+      planSnapshot: structuredClone(runtime.plan),
+      trainingDate: runtime.plan.trainingDate,
+      status: 'completed',
+      startedAt: NOW,
+      endedAt: NOW + 1000,
+      elapsedActiveSeconds: 1,
+      stepResults: runtime.plan.steps.map((step) => ({
+        stepId: step.id,
+        status: 'completed',
+        completedAt: NOW + 1000,
+        setResults: []
+      }))
+    });
+    runtime.database.commit((draft) => {
+      draft.records.push(structuredClone(record));
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: record.id,
+        action: 'upsert',
+        payload: record
+      }, {
+        commandIdentity: `record.matrix.${label}`,
+        createdAt: NOW,
+        deviceId: draft.install.deviceId
+      });
+    });
+    enableForConflict(runtime.database);
+    const operation = runtime.database.load().sync.outbox.find(({ entityId }) => entityId === record.id);
+    const remote = {
+      ...structuredClone(record),
+      feedback: {
+        rpe: 6,
+        weightBeforeKg: null,
+        pain: { knee: false, lowerBack: false, ankleOrToe: false, dizziness: false },
+        note: `云端记录 ${label}`
+      }
+    };
+    provider.conflictOperation(operation.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      payload: remote
+    }));
+    await runtime.syncService.pushPending();
+    const conflict = runtime.application.getState().conflicts.find(
+      ({ entityType }) => entityType === ENTITY_TYPES.TRAINING_RECORD
+    );
+    return { ...runtime, operation, record, remote, conflict };
+  }
+
+  async function settingsFixture(label) {
+    const provider = createDeterministicRemoteSyncProvider({
+      ownerId: `anonymous_settings_${label}`,
+      now: () => NOW
+    });
+    const runtime = createRuntime(provider);
+    const settings = createSettingsApplicationService({
+      repository: createSettingsRepository({ database: runtime.database, now: () => NOW })
+    });
+    settings.updateSettings({ defaultRestSeconds: 95 }, runtime.database.load().settings.revision);
+    enableForConflict(runtime.database);
+    const before = runtime.database.load();
+    const operation = before.sync.outbox.find(({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS);
+    const remote = {
+      ...structuredClone(before.settings),
+      defaultRestSeconds: 80,
+      cloudSyncEnabled: true,
+      revision: before.settings.revision + 2
+    };
+    provider.conflictOperation(operation.opId, remoteEnvelope({
+      entityType: ENTITY_TYPES.USER_SETTINGS,
+      entityId: 'settings',
+      payload: remote
+    }));
+    await runtime.syncService.pushPending();
+    const conflict = runtime.application.getState().conflicts.find(
+      ({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS
+    );
+    return { ...runtime, operation, remote, conflict };
+  }
+
+  await t.test('plan keep_remote consumes the exact op and applies remote', async () => {
+    const fixture = await planFixture('keep_remote');
+    assert.deepEqual(fixture.conflict.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'keep_remote'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.plans.find(({ id }) => id === fixture.plan.id).title, fixture.remote.title);
+    assert.equal(after.sync.outbox.some(({ opId }) => opId === fixture.operation.opId), false);
+  });
+
+  await t.test('plan rebase preserves local and exact opId at the remote base', async () => {
+    const fixture = await planFixture('rebase');
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'rebase'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.plans.find(({ id }) => id === fixture.plan.id).title, fixture.plan.title);
+    const operation = after.sync.outbox.find(({ opId }) => opId === fixture.operation.opId);
+    assert.equal(operation.baseServerRevision, 3);
+  });
+
+  await t.test('record keep_remote consumes the exact op and applies remote', async () => {
+    const fixture = await recordFixture('keep_remote');
+    assert.deepEqual(fixture.conflict.actions, ['keep_remote', 'keep_local_as_copy', 'rebase']);
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'keep_remote'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.records.find(({ id }) => id === fixture.record.id).feedback.note, '云端记录 keep_remote');
+    assert.equal(after.sync.outbox.some(({ opId }) => opId === fixture.operation.opId), false);
+  });
+
+  await t.test('record rebase preserves local and exact opId at the remote base', async () => {
+    const fixture = await recordFixture('rebase');
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'rebase'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.records.find(({ id }) => id === fixture.record.id).feedback, null);
+    const operation = after.sync.outbox.find(({ opId }) => opId === fixture.operation.opId);
+    assert.equal(operation.baseServerRevision, 3);
+  });
+
+  await t.test('settings keep_remote consumes the exact op and applies remote', async () => {
+    const fixture = await settingsFixture('keep_remote');
+    assert.deepEqual(fixture.conflict.actions, ['keep_remote', 'rebase']);
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'keep_remote'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.settings.defaultRestSeconds, 80);
+    assert.equal(after.sync.outbox.some(({ opId }) => opId === fixture.operation.opId), false);
+  });
+
+  await t.test('settings rebase preserves the local field on the exact op', async () => {
+    const fixture = await settingsFixture('rebase');
+    await fixture.application.resolveConflict({
+      conflictId: fixture.conflict.conflictId,
+      action: 'rebase'
+    });
+    const after = fixture.database.load();
+    assert.equal(after.settings.defaultRestSeconds, 95);
+    const operation = after.sync.outbox.find(({ opId }) => opId === fixture.operation.opId);
+    assert.equal(operation.baseServerRevision, 3);
+  });
 });
