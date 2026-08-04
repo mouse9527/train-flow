@@ -2,19 +2,60 @@ const { createSettingsApplicationService } = require('../../application/settings
 const { createSettingsRepository } = require('../../domain/identity-settings/settings-repository');
 const { createLocalDatabase } = require('../../services/local-database');
 
+const database = createLocalDatabase();
 const settingsService = createSettingsApplicationService({
-  repository: createSettingsRepository({ database: createLocalDatabase() })
+  repository: createSettingsRepository({ database }),
+  database,
+  wx: typeof wx === 'undefined' ? null : wx,
+  clipboard: typeof wx === 'undefined' ? null : wx
 });
+
+function safeErrorCode(error) {
+  return error && error.code ? error.code : 'DATA_OPERATION_FAILED';
+}
+
+function getWxApi() {
+  return typeof wx === 'undefined' ? null : wx;
+}
+
+function isActiveLifecycle(page, epoch) {
+  return !page._isUnloaded && page._lifecycleEpoch === epoch;
+}
+
+function clearServiceSensitiveData() {
+  if (typeof settingsService.clearSensitiveData === 'function') {
+    settingsService.clearSensitiveData();
+  }
+}
 
 Page({
   data: {
     section: 'preferences',
-    settings: null
+    settings: null,
+    exportSummary: null,
+    exportReady: false,
+    importBytes: 0,
+    importPreview: null,
+    clearPreview: null,
+    dataError: '',
+    dataNotice: ''
   },
 
+  _exportConfirmationId: '',
+  _importJsonText: '',
+  _importConfirmationId: '',
+  _clearConfirmationId: '',
+  _isUnloaded: false,
+  _lifecycleEpoch: 0,
+
   onLoad(query) {
+    this._isUnloaded = false;
+    this._lifecycleEpoch += 1;
+    const requestedSection = query && query.section;
     this.setData({
-      section: query && query.section === 'about' ? 'about' : 'preferences',
+      section: requestedSection === 'about' || requestedSection === 'data'
+        ? requestedSection
+        : 'preferences',
       settings: settingsService.getSettings()
     });
   },
@@ -49,5 +90,198 @@ Page({
 
   onSwitchSection(event) {
     this.setData({ section: event.currentTarget.dataset.section });
+  },
+
+  onGenerateBackup() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
+    const epoch = this._lifecycleEpoch;
+    this.setData({ dataError: '', dataNotice: '' });
+    return Promise.resolve(settingsService.createExportPreview()).then((preview) => {
+      if (!isActiveLifecycle(this, epoch)) {
+        clearServiceSensitiveData();
+        return { cancelled: true };
+      }
+      this._exportConfirmationId = preview.confirmationId;
+      this.setData({
+        exportSummary: preview.summary,
+        exportReady: true,
+        dataNotice: preview.privacyWarning
+      });
+      return preview;
+    }, (error) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this.setData({ dataError: safeErrorCode(error) });
+      throw error;
+    });
+  },
+
+  onCopyBackup() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
+    const epoch = this._lifecycleEpoch;
+    const confirmationId = this._exportConfirmationId;
+    return Promise.resolve(
+      settingsService.copyExportToClipboard(confirmationId)
+    ).then((result) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this._exportConfirmationId = '';
+      this.setData({ exportReady: false, dataNotice: '备份 JSON 已复制，请妥善保管。' });
+      return result;
+    }, (error) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this.setData({ dataError: safeErrorCode(error) });
+      throw error;
+    });
+  },
+
+  onImportInput(event) {
+    if (this._isUnloaded) return;
+    this._importJsonText = event && event.detail ? String(event.detail.value || '') : '';
+    this._importConfirmationId = '';
+    this.setData({
+      importBytes: settingsService.measureJsonBytes
+        ? settingsService.measureJsonBytes(this._importJsonText)
+        : this._importJsonText.length,
+      importPreview: null,
+      dataError: '',
+      dataNotice: ''
+    });
+  },
+
+  onPreviewImport() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
+    const epoch = this._lifecycleEpoch;
+    const jsonText = this._importJsonText;
+    return Promise.resolve(settingsService.previewImport(jsonText)).then((preview) => {
+      if (!isActiveLifecycle(this, epoch)) {
+        clearServiceSensitiveData();
+        return { cancelled: true };
+      }
+      this._importConfirmationId = preview.confirmationId;
+      this.setData({ importPreview: preview, dataError: '', dataNotice: '预览完成，尚未写入本机。' });
+      return preview;
+    }, (error) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this.setData({ dataError: safeErrorCode(error), importPreview: null });
+      throw error;
+    });
+  },
+
+  onConfirmImport() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
+    const epoch = this._lifecycleEpoch;
+    const jsonText = this._importJsonText;
+    const confirmationId = this._importConfirmationId;
+    return Promise.resolve(settingsService.confirmImport(jsonText, confirmationId)).then((result) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this._importJsonText = '';
+      this._importConfirmationId = '';
+      this.setData({
+        importBytes: 0,
+        importPreview: null,
+        dataError: '',
+        dataNotice: result.applied === false ? '本机数据已是该备份版本。' : '备份已恢复到本机。',
+        settings: settingsService.getSettings()
+      });
+      return result;
+    }, (error) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this.setData({ dataError: safeErrorCode(error) });
+      throw error;
+    });
+  },
+
+  onPrepareLocalClear() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
+    const epoch = this._lifecycleEpoch;
+    return Promise.resolve(settingsService.prepareLocalClear()).then((preview) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this._clearConfirmationId = preview.confirmationId;
+      this.setData({ clearPreview: preview, dataError: '', dataNotice: '' });
+      return preview;
+    }, (error) => {
+      if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+      this.setData({ dataError: safeErrorCode(error) });
+      throw error;
+    });
+  },
+
+  onConfirmLocalClear() {
+    if (this._isUnloaded) return Promise.resolve({ cancelled: true });
+    const epoch = this._lifecycleEpoch;
+    const confirmationId = this._clearConfirmationId;
+    const apply = () => {
+      if (!isActiveLifecycle(this, epoch)) return Promise.resolve({ cancelled: true });
+      return Promise.resolve(settingsService.confirmLocalClear(confirmationId)).then((result) => {
+        if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+        this._clearConfirmationId = '';
+        this._importJsonText = '';
+        this.setData({
+          clearPreview: null,
+          importPreview: null,
+          importBytes: 0,
+          exportReady: false,
+          settings: settingsService.getSettings(),
+          dataError: '',
+          dataNotice: result.cleanupPending
+            ? '本机数据已清除，旧槽物理清理将在下次启动重试。'
+            : '本机数据已清除；不会删除云端数据。'
+        });
+        return result;
+      }, (error) => {
+        if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
+        this.setData({ dataError: safeErrorCode(error) });
+        throw error;
+      });
+    };
+    const wxApi = getWxApi();
+    if (!wxApi || typeof wxApi.showModal !== 'function') return apply();
+    const pendingSyncWarning = this.data.clearPreview && this.data.clearPreview.hasPendingSync
+      ? '未同步变更会从本机移除并丢失。'
+      : '';
+    return new Promise((resolve, reject) => {
+      wxApi.showModal({
+        title: '再次确认清除',
+        content: `仅清除本机数据，不会删除云端数据。${pendingSyncWarning}此操作会移除本机计划、记录与设置。`,
+        confirmText: '清除本机',
+        confirmColor: '#B42318',
+        success: ({ confirm }) => {
+          if (!isActiveLifecycle(this, epoch)) {
+            resolve({ cancelled: true });
+            return;
+          }
+          if (!confirm) {
+            resolve({ cancelled: true });
+            return;
+          }
+          apply().then(resolve, reject);
+        },
+        fail: (error) => {
+          if (!isActiveLifecycle(this, epoch)) {
+            resolve({ cancelled: true });
+            return;
+          }
+          reject(error);
+        }
+      });
+    });
+  },
+
+  onUnload() {
+    this._isUnloaded = true;
+    this._lifecycleEpoch += 1;
+    this._exportConfirmationId = '';
+    this._importJsonText = '';
+    this._importConfirmationId = '';
+    this._clearConfirmationId = '';
+    this.setData({
+      exportSummary: null,
+      exportReady: false,
+      importBytes: 0,
+      importPreview: null,
+      clearPreview: null,
+      dataError: '',
+      dataNotice: ''
+    });
+    clearServiceSensitiveData();
   }
 });

@@ -69,6 +69,17 @@ non-modeled baseline by applying only the modeled-step delta, while new plans us
 the modeled total directly. Saving an edited plan only affects future workout
 starts because an active Session keeps its own deep `PlanSnapshot`.
 
+## Local backup and restore
+
+Open `pages/settings/index?section=data` to generate a canonical JSON backup,
+preview a restore, or clear this device. The backup contains only portable
+profile/settings/plans/records data; it excludes device identity, OpenID,
+authentication material, synchronization cursors/outbox/conflicts and runtime
+projections. Imports are limited to 5 MiB, validated before any write, and bound
+to the previewed package plus the exact local database revision. Confirmed
+restores and clears use one strict A/B commit. Local clear always says what it
+does: it removes this device's data and never claims that cloud data was deleted.
+
 ## Statistics page verification
 
 Open `pages/stats/index` to review the current Monday-to-Sunday completion rate,
