@@ -29,6 +29,21 @@ function assertSessionIdAvailable(records, sessionId) {
   }
 }
 
+function ensureTerminalRecordAndInvalidate(draft, session, nowMs) {
+  const existed = findTrainingRecords(draft.records, session.id).length > 0;
+  const record = ensureTerminalTrainingRecord(draft.records, session);
+  if (!existed) {
+    draft.statisticsProjection = {
+      dirty: true,
+      reason: 'training-record-changed',
+      recordId: record.id,
+      recordRevision: record.revision,
+      invalidatedAt: nowMs
+    };
+  }
+  return record;
+}
+
 class SessionRepository {
   constructor({ database }) {
     assertDatabase(database);
@@ -76,7 +91,7 @@ class SessionRepository {
         if (!isTerminal(draft.activeSession)) {
           throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
         }
-        ensureTerminalTrainingRecord(draft.records, draft.activeSession);
+        ensureTerminalRecordAndInvalidate(draft, draft.activeSession, nowMs);
       }
       assertSessionIdAvailable(draft.records, candidate.id);
       draft.activeSession = cloneWorkoutSession(candidate);
@@ -113,7 +128,7 @@ class SessionRepository {
       }
       draft.activeSession = cloneWorkoutSession(applied.session);
       if (isTerminal(applied.session)) {
-        ensureTerminalTrainingRecord(draft.records, applied.session);
+        ensureTerminalRecordAndInvalidate(draft, applied.session, command.nowMs);
       }
     }, snapshot.localRevision);
     assertWorkoutSession(committed.activeSession);
