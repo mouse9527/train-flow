@@ -1351,10 +1351,14 @@ test('AC2: application commands use closed schemas before invoking SyncService',
   const application = createSyncApplicationService({
     syncService: {
       async bootstrap() { calls.push('bootstrap'); return { cursor: null, serverTime: NOW }; },
+      getSanitizedState() { return { enabled: true, code: 'waiting' }; },
+      previewEnable() { return { baselineLocalRevision: 1, scope: {} }; },
       async pushPending() { calls.push('pushPending'); return {}; },
       async pullNextPage() { calls.push('pullNextPage'); return { hasMore: false, nextCursor: null }; },
       async prepareRemotePurge() { calls.push('prepareRemotePurge'); return { confirmationToken: 'purge_test', expiresAt: NOW + 300000 }; },
-      async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; }
+      async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; },
+      recordFailure() { return { enabled: true, code: 'failure' }; },
+      setEnabled() {}
     }
   });
 
@@ -1396,10 +1400,14 @@ test('AC2: application facade rejects overlapping remote commands and releases i
   const application = createSyncApplicationService({
     syncService: {
       async bootstrap() { calls.push('bootstrap'); return { cursor: null, serverTime: NOW }; },
+      getSanitizedState() { return { enabled: true, code: 'waiting' }; },
+      previewEnable() { return { baselineLocalRevision: 1, scope: {} }; },
       async pushPending() { calls.push('pushPending'); return pushGate; },
       async pullNextPage() { calls.push('pullNextPage'); return { hasMore: false, nextCursor: null }; },
       async prepareRemotePurge() { calls.push('prepareRemotePurge'); return { confirmationToken: 'purge_test', expiresAt: NOW + 300000 }; },
-      async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; }
+      async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; },
+      recordFailure() { return { enabled: true, code: 'failure' }; },
+      setEnabled() {}
     }
   });
 

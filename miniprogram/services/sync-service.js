@@ -5,9 +5,11 @@ const {
   rebaseSettingsChange
 } = require('../domain/sync/entity-mapper');
 const {
+  appendRepositorySyncMutation,
   applyAcceptedOperations,
   assertSyncOperation,
   assertSyncReplica,
+  createRepositoryDeviceIdFactory,
   entityKey,
   selectPushableOperations
 } = require('../domain/sync/sync-operation');
@@ -29,6 +31,21 @@ function syncServiceError(message, code) {
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+const STATUS_LABELS = Object.freeze({
+  disabled: '未启用',
+  synced: '已同步',
+  waiting: '等待同步',
+  syncing: '同步中',
+  conflict: '冲突',
+  failure: '失败可重试'
+});
+
+function safeErrorCode(error) {
+  return error && typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code)
+    ? error.code
+    : 'CLOUD_SYNC_UNAVAILABLE';
 }
 
 function assertDatabase(database) {
@@ -139,15 +156,121 @@ function applyRemoteDomainChange(draft, change) {
 }
 
 class SyncService {
-  constructor({ database, provider, now = Date.now }) {
+  constructor({
+    database,
+    provider,
+    now = Date.now,
+    deviceIdFactory = createRepositoryDeviceIdFactory()
+  }) {
     assertDatabase(database);
     assertRemoteSyncProvider(provider);
     if (typeof now !== 'function') {
       throw syncServiceError('SyncService now must be a function', 'SYNC_SERVICE_INVALID');
     }
+    if (typeof deviceIdFactory !== 'function') {
+      throw syncServiceError('SyncService deviceIdFactory must be a function', 'SYNC_SERVICE_INVALID');
+    }
     this.database = database;
     this.provider = provider;
     this.now = now;
+    this.deviceIdFactory = deviceIdFactory;
+  }
+
+  getSanitizedState({ phase = 'idle' } = {}) {
+    if (!['idle', 'syncing'].includes(phase)) {
+      throw syncServiceError('sync state phase is invalid', 'SYNC_STATE_INVALID');
+    }
+    const snapshot = this.database.load();
+    const enabled = Boolean(snapshot.sync.enabled && snapshot.settings.cloudSyncEnabled);
+    const conflicts = snapshot.sync.conflicts.filter(({ status }) => status !== 'resolved');
+    const pendingCount = snapshot.sync.outbox.length;
+    const storedError = snapshot.sync.lastError;
+    const errorCode = storedError && typeof storedError === 'object'
+      ? storedError.code
+      : typeof storedError === 'string'
+        ? storedError
+        : null;
+    let code = 'waiting';
+    if (!enabled) code = 'disabled';
+    else if (phase === 'syncing') code = 'syncing';
+    else if (conflicts.length > 0) code = 'conflict';
+    else if (errorCode) code = 'failure';
+    else if (pendingCount > 0 || snapshot.sync.lastSyncedAt === null) code = 'waiting';
+    else code = 'synced';
+    return {
+      code,
+      label: code === 'waiting' ? `等待 ${pendingCount} 项` : STATUS_LABELS[code],
+      enabled,
+      pendingCount,
+      lastSyncedAt: snapshot.sync.lastSyncedAt,
+      errorCode: errorCode || null,
+      conflicts: conflicts.map((conflict) => ({
+        conflictId: conflict.conflictId,
+        entityType: conflict.entityType,
+        entityId: conflict.entityId,
+        status: conflict.status
+      }))
+    };
+  }
+
+  previewEnable() {
+    const snapshot = this.database.load();
+    return {
+      baselineLocalRevision: snapshot.localRevision,
+      scope: {
+        plans: snapshot.plans.filter(({ status }) => status !== 'deleted').length,
+        records: snapshot.records.length,
+        settings: 1,
+        pendingOperations: snapshot.sync.outbox.length
+      }
+    };
+  }
+
+  setEnabled({ enabled, expectedLocalRevision }) {
+    if (typeof enabled !== 'boolean' || !Number.isSafeInteger(expectedLocalRevision) || expectedLocalRevision < 0) {
+      throw syncServiceError('cloud sync preference command is invalid', 'SYNC_PREFERENCE_INVALID');
+    }
+    const changedAt = this.now();
+    if (!Number.isSafeInteger(changedAt) || changedAt < 0) {
+      throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+    }
+    return this.database.commit((draft) => {
+      const current = draft.settings.cloudSyncEnabled;
+      if (current !== enabled) {
+        const expectedSettingsRevision = draft.settings.revision;
+        draft.settings = {
+          ...draft.settings,
+          cloudSyncEnabled: enabled,
+          revision: expectedSettingsRevision + 1
+        };
+        appendRepositorySyncMutation(draft, {
+          entityType: ENTITY_TYPES.USER_SETTINGS,
+          entityId: 'settings',
+          action: 'upsert',
+          payload: { cloudSyncEnabled: enabled }
+        }, {
+          commandIdentity: `sync.preference:${expectedSettingsRevision}`,
+          createdAt: changedAt,
+          deviceId: draft.install ? draft.install.deviceId : null,
+          deviceIdFactory: this.deviceIdFactory
+        });
+      }
+      draft.sync.enabled = enabled;
+      draft.sync.provider = enabled ? 'cloudbase' : 'none';
+      if (!enabled) draft.sync.lastError = null;
+    }, expectedLocalRevision);
+  }
+
+  recordFailure(error) {
+    const failedAt = this.now();
+    if (!Number.isSafeInteger(failedAt) || failedAt < 0) {
+      throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
+    }
+    const code = safeErrorCode(error);
+    this.database.commit((draft) => {
+      draft.sync.lastError = { code, failedAt };
+    });
+    return this.getSanitizedState();
   }
 
   async bootstrap() {

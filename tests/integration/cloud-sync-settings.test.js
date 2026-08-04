@@ -2,6 +2,22 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  createSyncApplicationService
+} = require('../../miniprogram/application/sync-application-service');
+const {
+  createPlanRepository
+} = require('../../miniprogram/domain/planning/plan-repository');
+const {
+  createDefaultPlans
+} = require('../../miniprogram/domain/planning/default-plan-factory');
+const {
+  createLocalDatabase
+} = require('../../miniprogram/services/local-database');
+const {
+  createSyncService
+} = require('../../miniprogram/services/sync-service');
+const { StorageDouble } = require('../helpers/storage-double');
+const {
   assertPurgePreparationResult,
   createCloudBaseSyncProvider
 } = require('../../miniprogram/services/cloudbase-sync-provider');
@@ -10,6 +26,29 @@ const {
 } = require('../../miniprogram/services/remote-sync-provider');
 
 const NOW = 1785719340000;
+
+function createRuntime(provider, { now = () => NOW } = {}) {
+  const storage = new StorageDouble();
+  const database = createLocalDatabase({ storage, now });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'device_cloud_settings', createdAt: NOW - 1000 };
+  });
+  const plan = {
+    ...structuredClone(createDefaultPlans({ now })[0]),
+    id: 'plan_cloud_settings',
+    trainingDate: '2026-08-10',
+    templateSource: null
+  };
+  createPlanRepository({ database, now }).save(plan, 0);
+  const syncService = createSyncService({ database, provider, now });
+  return {
+    application: createSyncApplicationService({ syncService }),
+    database,
+    plan,
+    storage,
+    syncService
+  };
+}
 
 test('AC1/AC5: CloudBase provider uses only callable functions and a server-issued purge confirmation', async () => {
   const calls = [];
@@ -98,4 +137,77 @@ test('AC5: deterministic provider binds purge confirmation to the requesting dev
     { deviceId: 'device_fixture_one', confirmationToken: '[redacted]' },
     { deviceId: 'device_fixture_one', confirmationToken: '[redacted]' }
   ]);
+});
+
+test('AC1/AC2: enabling previews only upload counts and denied cloud becomes a recoverable sanitized state', async () => {
+  const privateError = 'openid-secret-allowlist-sentinel';
+  const fake = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const provider = {
+    ...fake,
+    async bootstrap() {
+      const error = new Error(privateError);
+      error.code = 'CLOUD_SYNC_UNAVAILABLE';
+      throw error;
+    }
+  };
+  const { application, database, plan } = createRuntime(provider);
+  const preview = application.prepareEnable();
+
+  assert.deepEqual(preview.scope, {
+    plans: 1,
+    records: 0,
+    settings: 1,
+    pendingOperations: 1
+  });
+  assert.equal(JSON.stringify(preview).includes(plan.title), false, 'preview must not expose local payloads');
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const snapshot = database.load();
+
+  assert.equal(result.ok, false);
+  assert.equal(snapshot.settings.cloudSyncEnabled, true);
+  assert.equal(snapshot.sync.enabled, true);
+  assert.equal(snapshot.plans[0].title, plan.title, 'cloud denial must not block or mutate local plans');
+  assert.equal(application.getState().code, 'failure');
+  assert.equal(application.getState().label, '失败可重试');
+  assert.equal(application.getState().errorCode, 'CLOUD_SYNC_UNAVAILABLE');
+  assert.equal(JSON.stringify(application.getState()).includes(privateError), false);
+  assert.equal(JSON.stringify(application.getState()).includes('openid'), false);
+});
+
+test('AC1/AC3: manual and automatic retry share the same outbox and a lost response creates no remote duplicate', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database } = createRuntime(provider);
+  const preview = application.prepareEnable();
+  provider.loseNextPushResponse();
+
+  const enabled = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  assert.equal(enabled.ok, false);
+  const afterLost = database.load();
+  const pendingOpIds = afterLost.sync.outbox.map(({ opId }) => opId);
+  assert.ok(pendingOpIds.length >= 2, 'plan and cloud preference remain queued after lost response');
+
+  const manual = await application.retry({ source: 'manual' });
+  assert.equal(manual.ok, true);
+  assert.deepEqual(database.load().sync.outbox, []);
+  assert.deepEqual(
+    provider.calls.push.slice(0, 2).map(({ operations }) => operations.map(({ opId }) => opId)),
+    [pendingOpIds, pendingOpIds],
+    'lost response retry must send the exact same operation identities'
+  );
+  const afterManualPushCount = provider.calls.push.length;
+  const automatic = await application.retry({ source: 'automatic' });
+  assert.equal(automatic.ok, true);
+  assert.equal(provider.calls.push.length, afterManualPushCount, 'empty automatic retry must not invent work');
+  assert.equal(application.getState().code, 'synced');
+  assert.equal(application.getState().label, '已同步');
+
+  const remote = await provider.pull({ cursor: null, limit: 100 });
+  assert.equal(remote.changes.length, 2, 'remote contains one plan and one settings entity only');
+  assert.equal(new Set(remote.changes.map(({ entityId }) => entityId)).size, 2);
 });
