@@ -1,4 +1,11 @@
 const { cloneAppDatabase, createAppDatabase } = require('../domain/sync/app-database');
+const {
+  buildImportedFields,
+  createPortableBackup,
+  diffCollection,
+  importFieldsEqual,
+  parsePortableBackup
+} = require('../domain/identity-settings/portable-backup');
 const { canonicalize, computeChecksum } = require('../utils/checksum');
 const { assertAppDatabaseSnapshot, assertInstallMetadata } = require('../utils/validation');
 
@@ -8,7 +15,28 @@ const SLOT_KEYS = Object.freeze({
 });
 const ACTIVE_KEY = 'train_flow:v1:db:active';
 const INSTALL_KEY = 'train_flow:v1:install';
+const IMPORT_INTENT_KEY = 'train_flow:v1:db:import-intent';
+const CLEANUP_PENDING_KEY = 'train_flow:v1:db:cleanup-pending';
 const fallbackValues = new Map();
+
+const IMPORT_INTENT_FIELDS = Object.freeze([
+  'schema',
+  'phase',
+  'operation',
+  'baselineSlot',
+  'baselineRevision',
+  'baselineChecksum',
+  'targetSlot',
+  'candidateChecksum'
+]);
+const CLEANUP_MARKER_FIELDS = Object.freeze([
+  'schema',
+  'phase',
+  'emptySlot',
+  'emptyRevision',
+  'emptyChecksum',
+  'oldSlot'
+]);
 
 function createDefaultStorage() {
   if (typeof wx !== 'undefined') {
@@ -103,12 +131,90 @@ function assertWritableState(state) {
   throw new Error(`LocalDatabase commit is unsafe while a slot is unreadable: ${details}`);
 }
 
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function assertExactMarkerFields(marker, fields, label) {
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) {
+    throw new Error(`${label} marker identity is incomplete or unsafe`);
+  }
+  const keys = Object.keys(marker);
+  if (
+    keys.length !== fields.length ||
+    fields.some((field) => !Object.prototype.hasOwnProperty.call(marker, field))
+  ) {
+    throw new Error(`${label} marker identity is incomplete or unsafe`);
+  }
+}
+
+function isSlot(value, nullable = false) {
+  return value === 'a' || value === 'b' || (nullable && value === null);
+}
+
+function isChecksum(value, nullable = false) {
+  return (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) || (nullable && value === null);
+}
+
+function validateImportIntent(marker) {
+  assertExactMarkerFields(marker, IMPORT_INTENT_FIELDS, 'Import intent');
+  if (marker.schema !== 'trainflow.strict-transaction/v1') {
+    throw new Error('Import intent marker schema is unsafe');
+  }
+  if (marker.phase !== 'prepared') {
+    throw new Error(`Import intent marker phase ${marker.phase} is unsafe`);
+  }
+  if (!['import', 'purge'].includes(marker.operation)) {
+    throw new Error('Import intent marker operation is unsafe');
+  }
+  if (
+    !isSlot(marker.baselineSlot, true) ||
+    !isSlot(marker.targetSlot) ||
+    marker.targetSlot === marker.baselineSlot ||
+    !Number.isSafeInteger(marker.baselineRevision) ||
+    marker.baselineRevision < 0 ||
+    !isChecksum(marker.baselineChecksum, marker.baselineSlot === null) ||
+    !isChecksum(marker.candidateChecksum)
+  ) {
+    throw new Error('Import intent marker identity is incomplete or unsafe');
+  }
+  return marker;
+}
+
+function validateCleanupMarker(marker) {
+  assertExactMarkerFields(marker, CLEANUP_MARKER_FIELDS, 'Cleanup');
+  if (marker.schema !== 'trainflow.purge-cleanup/v1') {
+    throw new Error('Cleanup marker schema is unsafe');
+  }
+  if (marker.phase !== 'cleanup-pending') {
+    throw new Error(`Cleanup marker phase ${marker.phase} is unsafe`);
+  }
+  if (
+    !isSlot(marker.emptySlot) ||
+    !isSlot(marker.oldSlot, true) ||
+    marker.emptySlot === marker.oldSlot ||
+    !Number.isSafeInteger(marker.emptyRevision) ||
+    marker.emptyRevision < 1 ||
+    !isChecksum(marker.emptyChecksum)
+  ) {
+    throw new Error('Cleanup marker identity is incomplete or unsafe');
+  }
+  return marker;
+}
+
 class LocalDatabase {
   constructor({
     storage = createDefaultStorage(),
     now = Date.now,
     currentSchemaVersion = 1,
-    migrations = {}
+    migrations = {},
+    portableMigrations = {},
+    packageMigrations = portableMigrations,
+    portableAppMigrations = {},
+    appMigrations = portableAppMigrations,
+    confirmationTtlMs = 5 * 60 * 1000
   } = {}) {
     if (!storage || typeof storage.getStorageSync !== 'function' || typeof storage.setStorageSync !== 'function') {
       throw new Error('LocalDatabase requires synchronous getStorageSync/setStorageSync storage');
@@ -120,6 +226,11 @@ class LocalDatabase {
     this.now = now;
     this.currentSchemaVersion = currentSchemaVersion;
     this.migrations = migrations;
+    this.packageMigrations = packageMigrations;
+    this.portableAppMigrations = appMigrations;
+    this.confirmationTtlMs = confirmationTtlMs;
+    this.confirmations = new Map();
+    this.confirmationSequence = 0;
   }
 
   readSlot(slot) {
@@ -145,7 +256,7 @@ class LocalDatabase {
     }
   }
 
-  readState() {
+  readStateBase() {
     const candidates = ['a', 'b'].map((slot) => this.readSlot(slot));
     const readFailures = candidates.filter((candidate) => candidate && candidate.readError);
     const unsafeSettingsCandidate = candidates.find(
@@ -221,6 +332,211 @@ class LocalDatabase {
     return { activeSlot: selected.slot, pointer, snapshot: selected.snapshot, readFailures };
   }
 
+  readMarker(key, validator) {
+    let stored;
+    try {
+      stored = this.storage.getStorageSync(key);
+    } catch (error) {
+      throw new Error(`Unable to read durable marker ${key}: ${error.message}`);
+    }
+    if (stored === undefined) return null;
+    let marker;
+    try {
+      marker = decodeStored(stored);
+    } catch (error) {
+      throw new Error(`Durable marker ${key} is unsafe: ${error.message}`);
+    }
+    return validator(marker);
+  }
+
+  readImportIntent() {
+    return this.readMarker(IMPORT_INTENT_KEY, validateImportIntent);
+  }
+
+  readCleanupMarker() {
+    return this.readMarker(CLEANUP_PENDING_KEY, validateCleanupMarker);
+  }
+
+  readIntentBaseline(marker) {
+    if (marker.baselineSlot === null) {
+      if (marker.baselineRevision !== 0 || marker.baselineChecksum !== null) {
+        throw new Error('Import intent baseline identity is unsafe');
+      }
+      return { activeSlot: null, snapshot: this.createInitialSnapshot(), readFailures: [] };
+    }
+    const candidate = this.readSlot(marker.baselineSlot);
+    if (
+      !candidate ||
+      !candidate.snapshot ||
+      candidate.snapshot.localRevision !== marker.baselineRevision ||
+      candidate.snapshot.checksum !== marker.baselineChecksum
+    ) {
+      throw new Error('Import intent baseline identity is unavailable or unsafe');
+    }
+    return {
+      activeSlot: marker.baselineSlot,
+      pointer: this.storage.getStorageSync(ACTIVE_KEY),
+      snapshot: candidate.snapshot,
+      readFailures: []
+    };
+  }
+
+  readCleanupSnapshot(marker) {
+    const candidate = this.readSlot(marker.emptySlot);
+    if (
+      !candidate ||
+      !candidate.snapshot ||
+      candidate.snapshot.localRevision !== marker.emptyRevision ||
+      candidate.snapshot.checksum !== marker.emptyChecksum
+    ) {
+      throw new Error('Cleanup empty snapshot checksum or identity is unsafe');
+    }
+    const pointer = this.storage.getStorageSync(ACTIVE_KEY);
+    if (pointer !== marker.emptySlot) {
+      throw new Error('Cleanup pointer no longer identifies the empty snapshot');
+    }
+    return {
+      activeSlot: marker.emptySlot,
+      pointer,
+      snapshot: candidate.snapshot,
+      readFailures: []
+    };
+  }
+
+  readCommittedPurgeState(intent) {
+    if (!intent || intent.operation !== 'purge') {
+      throw new Error('Purge recovery requires a durable purge intent');
+    }
+    const pointer = this.storage.getStorageSync(ACTIVE_KEY);
+    if (pointer !== intent.targetSlot) {
+      throw new Error('Purge transaction has not reached the empty-truth pointer');
+    }
+    const candidate = this.readSlot(intent.targetSlot);
+    if (
+      !candidate ||
+      !candidate.snapshot ||
+      candidate.snapshot.checksum !== intent.candidateChecksum ||
+      candidate.snapshot.localRevision !== intent.baselineRevision + 1
+    ) {
+      throw new Error('Purge empty candidate identity is unavailable or unsafe');
+    }
+    const baseline = this.readIntentBaseline(intent);
+    const expected = createAppDatabase({
+      now: () => candidate.snapshot.committedAt,
+      install: baseline.snapshot.install,
+      schemaVersion: this.currentSchemaVersion
+    });
+    expected.localRevision = intent.baselineRevision + 1;
+    const actual = cloneAppDatabase(candidate.snapshot);
+    delete actual.checksum;
+    if (canonicalize(actual) !== canonicalize(expected)) {
+      throw new Error('Purge candidate is not the canonical empty local snapshot');
+    }
+    return {
+      state: {
+        activeSlot: intent.targetSlot,
+        pointer,
+        snapshot: candidate.snapshot,
+        readFailures: []
+      },
+      marker: {
+        schema: 'trainflow.purge-cleanup/v1',
+        phase: 'cleanup-pending',
+        emptySlot: intent.targetSlot,
+        emptyRevision: candidate.snapshot.localRevision,
+        emptyChecksum: candidate.snapshot.checksum,
+        oldSlot: intent.baselineSlot
+      }
+    };
+  }
+
+  persistCleanupMarker(marker) {
+    this.storage.setStorageSync(CLEANUP_PENDING_KEY, marker);
+    const readBack = decodeStored(this.storage.getStorageSync(CLEANUP_PENDING_KEY));
+    validateCleanupMarker(readBack);
+    if (canonicalize(readBack) !== canonicalize(marker)) {
+      throw new Error('Purge cleanup marker read-back mismatch');
+    }
+    return marker;
+  }
+
+  recoverCommittedPurge(intent) {
+    const recovery = this.readCommittedPurgeState(intent);
+    this.persistCleanupMarker(recovery.marker);
+    return this.completePendingCleanup(recovery.marker);
+  }
+
+  restoreStoredValue(key, value) {
+    if (value === undefined) {
+      if (typeof this.storage.removeStorageSync !== 'function') {
+        throw new Error(`Rollback cannot remove ${key}`);
+      }
+      this.storage.removeStorageSync(key);
+      return;
+    }
+    this.storage.setStorageSync(key, value);
+  }
+
+  rollbackImportIntent(marker, targetPreimage) {
+    const baseline = this.readIntentBaseline(marker);
+    try {
+      if (marker.baselineSlot === null) {
+        this.restoreStoredValue(ACTIVE_KEY, undefined);
+      } else {
+        this.storage.setStorageSync(ACTIVE_KEY, marker.baselineSlot);
+      }
+      this.restoreStoredValue(SLOT_KEYS[marker.targetSlot], targetPreimage);
+      this.storage.removeStorageSync(IMPORT_INTENT_KEY);
+    } catch (error) {
+      throw new Error(`Import rollback failed and remains pending: ${error.message}`);
+    }
+    return baseline;
+  }
+
+  completePendingCleanup(marker) {
+    const state = this.readCleanupSnapshot(marker);
+    const importIntent = this.readImportIntent();
+    if (
+      importIntent &&
+      (
+        importIntent.operation !== 'purge' ||
+        importIntent.targetSlot !== marker.emptySlot ||
+        importIntent.candidateChecksum !== marker.emptyChecksum
+      )
+    ) {
+      throw new Error('Purge intent does not match cleanup identity');
+    }
+    try {
+      if (importIntent) {
+        this.storage.removeStorageSync(IMPORT_INTENT_KEY);
+      }
+      if (marker.oldSlot !== null) {
+        const oldKey = SLOT_KEYS[marker.oldSlot];
+        if (typeof this.storage.removeStorageSync === 'function') {
+          this.storage.removeStorageSync(oldKey);
+        } else {
+          this.storage.setStorageSync(oldKey, state.snapshot);
+        }
+      }
+      this.storage.removeStorageSync(CLEANUP_PENDING_KEY);
+      return { state, cleanupPending: false };
+    } catch (_error) {
+      return { state, cleanupPending: true };
+    }
+  }
+
+  readState() {
+    const cleanup = this.readCleanupMarker();
+    if (cleanup) {
+      this.readCleanupSnapshot(cleanup);
+      throw new Error('LocalDatabase cleanup is pending and generic commit is unsafe');
+    }
+    if (this.readImportIntent()) {
+      throw new Error('LocalDatabase import intent rollback is pending and generic commit is unsafe');
+    }
+    return this.readStateBase();
+  }
+
   createInitialSnapshot() {
     let storedInstall;
     try {
@@ -251,7 +567,18 @@ class LocalDatabase {
   }
 
   load() {
-    const state = this.readState();
+    const intent = this.readImportIntent();
+    if (intent) {
+      if (intent.operation === 'purge') {
+        return cloneAppDatabase(this.recoverCommittedPurge(intent).state.snapshot);
+      }
+      this.rollbackImportIntent(intent);
+    }
+    const cleanup = this.readCleanupMarker();
+    if (cleanup) {
+      return cloneAppDatabase(this.completePendingCleanup(cleanup).state.snapshot);
+    }
+    const state = this.readStateBase();
     if (
       state.activeSlot &&
       state.pointer !== state.activeSlot &&
@@ -263,6 +590,309 @@ class LocalDatabase {
       return this.migrate(state);
     }
     return cloneAppDatabase(state.snapshot);
+  }
+
+  loadReadOnly() {
+    const intent = this.readImportIntent();
+    let state;
+    if (intent) {
+      if (intent.operation === 'purge') {
+        state = this.readCommittedPurgeState(intent).state;
+      } else {
+        state = this.readIntentBaseline(intent);
+      }
+    } else {
+      const cleanup = this.readCleanupMarker();
+      state = cleanup ? this.readCleanupSnapshot(cleanup) : this.readStateBase();
+    }
+    const snapshot = state.snapshot.schemaVersion < this.currentSchemaVersion
+      ? this.migrateDraft(state.snapshot)
+      : state.snapshot;
+    return cloneAppDatabase(snapshot);
+  }
+
+  registerConfirmation(action, details) {
+    this.confirmationSequence += 1;
+    const confirmationId = `${action}_${this.confirmationSequence}_${computeChecksum({
+      action,
+      sequence: this.confirmationSequence,
+      expiresAt: this.now() + this.confirmationTtlMs,
+      ...details
+    }).slice(0, 20)}`;
+    const confirmation = {
+      action,
+      expiresAt: this.now() + this.confirmationTtlMs,
+      consumed: false,
+      ...details
+    };
+    this.confirmations.set(confirmationId, confirmation);
+    return { confirmationId, confirmation };
+  }
+
+  requireConfirmation(confirmationId, action) {
+    const codePrefix = action.toUpperCase();
+    if (typeof confirmationId !== 'string' || confirmationId.length === 0) {
+      throw codedError(`${codePrefix}_CONFIRMATION_MISSING`, `${action} confirmation is required`);
+    }
+    const confirmation = this.confirmations.get(confirmationId);
+    if (!confirmation) {
+      throw codedError(
+        `${codePrefix}_CONFIRMATION_MISSING`,
+        `${action} confirmation is missing or invalid`
+      );
+    }
+    if (confirmation.action !== action) {
+      throw codedError(
+        `${codePrefix}_CONFIRMATION_ACTION_MISMATCH`,
+        `${action} confirmation belongs to a different action`
+      );
+    }
+    if (confirmation.consumed) {
+      throw codedError(
+        `${codePrefix}_CONFIRMATION_CONSUMED`,
+        `${action} confirmation was already consumed and is single-use`
+      );
+    }
+    if (this.now() > confirmation.expiresAt) {
+      throw codedError(`${codePrefix}_CONFIRMATION_EXPIRED`, `${action} confirmation expired`);
+    }
+    return confirmation;
+  }
+
+  exportPortableBackup() {
+    return createPortableBackup(this.loadReadOnly(), {
+      now: this.now,
+      appSchemaVersion: this.currentSchemaVersion
+    });
+  }
+
+  parsePortableBackup(jsonText) {
+    return parsePortableBackup(jsonText, {
+      currentAppSchemaVersion: this.currentSchemaVersion,
+      packageMigrations: this.packageMigrations,
+      appMigrations: this.portableAppMigrations
+    });
+  }
+
+  previewPortableImport(jsonText) {
+    const snapshot = this.loadReadOnly();
+    if (snapshot.activeSession !== null) {
+      const error = new Error('Active training session must finish before import');
+      error.code = 'IMPORT_ACTIVE_SESSION';
+      throw error;
+    }
+    const parsed = this.parsePortableBackup(jsonText);
+    const { confirmationId, confirmation } = this.registerConfirmation('import', {
+      packageDigest: parsed.packageDigest,
+      candidateDigest: parsed.candidateDigest,
+      baselineLocalRevision: snapshot.localRevision
+    });
+    return {
+      confirmationId,
+      packageVersion: parsed.envelope.packageVersion,
+      appSchemaVersion: parsed.envelope.appSchemaVersion,
+      checksumPrefix: parsed.envelope.checksum.slice(0, 8),
+      expiresAt: confirmation.expiresAt,
+      baselineLocalRevision: snapshot.localRevision,
+      counts: {
+        plans: parsed.data.plans.length,
+        records: parsed.data.records.length
+      },
+      changes: {
+        plans: diffCollection(snapshot.plans, parsed.data.plans),
+        records: diffCollection(snapshot.records, parsed.data.records)
+      },
+      warnings: [
+        '恢复会替换本机计划、记录与偏好。',
+        '导入只影响本机；不会删除云端数据，同步将保持关闭。'
+      ]
+    };
+  }
+
+  applyPortableImport(jsonText, confirmationId) {
+    const parsed = this.parsePortableBackup(jsonText);
+    const confirmation = this.requireConfirmation(confirmationId, 'import');
+    if (
+      confirmation.packageDigest !== parsed.packageDigest ||
+      confirmation.candidateDigest !== parsed.candidateDigest
+    ) {
+      throw new Error('Import confirmation digest mismatch');
+    }
+    const snapshot = this.loadReadOnly();
+    if (snapshot.activeSession !== null) {
+      const error = new Error('Active training session must finish before import');
+      error.code = 'IMPORT_ACTIVE_SESSION';
+      throw error;
+    }
+    if (snapshot.localRevision !== confirmation.baselineLocalRevision) {
+      throw new Error('Import confirmation baseline revision changed');
+    }
+    const fields = buildImportedFields(snapshot, parsed);
+    confirmation.consumed = true;
+    if (importFieldsEqual(snapshot, fields)) {
+      return { applied: false, reason: 'already_current' };
+    }
+    const committed = this.commitStrictFields(fields, snapshot.localRevision, 'import').snapshot;
+    return { applied: true, snapshot: committed };
+  }
+
+  prepareLocalPurge() {
+    const snapshot = this.loadReadOnly();
+    if (snapshot.activeSession !== null) {
+      throw new Error('Active session must finish before local data can be cleared');
+    }
+    const counts = { plans: snapshot.plans.length, records: snapshot.records.length };
+    const hasPendingSync = Boolean(
+      snapshot.sync &&
+      (snapshot.sync.enabled || (Array.isArray(snapshot.sync.outbox) && snapshot.sync.outbox.length > 0))
+    );
+    const { confirmationId, confirmation } = this.registerConfirmation('purge', {
+      baselineLocalRevision: snapshot.localRevision,
+      baselineChecksum: snapshot.checksum || null,
+      candidateDigest: computeChecksum({ counts, hasPendingSync })
+    });
+    const warnings = ['仅清除本机数据；不会删除云端数据。'];
+    if (hasPendingSync) warnings.unshift('未同步变更会从本机移除。');
+    return {
+      confirmationId,
+      expiresAt: confirmation.expiresAt,
+      counts,
+      hasPendingSync,
+      warnings
+    };
+  }
+
+  applyLocalPurge(confirmationId) {
+    const confirmation = this.requireConfirmation(confirmationId, 'purge');
+    const snapshot = this.loadReadOnly();
+    if (snapshot.activeSession !== null) {
+      throw new Error('Active session must finish before local data can be cleared');
+    }
+    const counts = { plans: snapshot.plans.length, records: snapshot.records.length };
+    const hasPendingSync = Boolean(
+      snapshot.sync &&
+      (snapshot.sync.enabled || (Array.isArray(snapshot.sync.outbox) && snapshot.sync.outbox.length > 0))
+    );
+    if (
+      snapshot.localRevision !== confirmation.baselineLocalRevision ||
+      (snapshot.checksum || null) !== confirmation.baselineChecksum ||
+      computeChecksum({ counts, hasPendingSync }) !== confirmation.candidateDigest
+    ) {
+      throw codedError('PURGE_BASELINE_CHANGED', 'Local purge confirmation baseline changed');
+    }
+    confirmation.consumed = true;
+    const empty = createAppDatabase({
+      now: this.now,
+      install: snapshot.install,
+      schemaVersion: this.currentSchemaVersion
+    });
+    const fields = {
+      profile: empty.profile,
+      settings: empty.settings,
+      plans: empty.plans,
+      activeSession: empty.activeSession,
+      notifications: empty.notifications,
+      records: empty.records,
+      statisticsProjection: empty.statisticsProjection,
+      sync: empty.sync
+    };
+    const committed = this.commitStrictFields(fields, snapshot.localRevision, 'purge');
+    const marker = this.readCleanupMarker();
+    const cleanup = this.completePendingCleanup(marker);
+    return {
+      purged: true,
+      snapshot: committed.snapshot,
+      cleanupPending: cleanup.cleanupPending
+    };
+  }
+
+  commitStrictFields(fields, expectedRevision, operation) {
+    const state = this.readState();
+    assertWritableState(state);
+    if (state.snapshot.localRevision !== expectedRevision) {
+      throw new Error(`LocalDatabase revision conflict: expected ${expectedRevision}, actual ${state.snapshot.localRevision}`);
+    }
+    const latestState = this.readStateBase();
+    assertWritableState(latestState);
+    if (!sameBaseline(state, latestState)) {
+      throw new Error('LocalDatabase strict transaction baseline changed concurrently');
+    }
+    const targetSlot = state.activeSlot === 'a' ? 'b' : 'a';
+    const targetKey = SLOT_KEYS[targetSlot];
+    const targetPreimage = this.storage.getStorageSync(targetKey);
+    const draft = cloneAppDatabase(state.snapshot);
+    Object.assign(draft, cloneAppDatabase(fields));
+    assertAppDatabaseSnapshot(draft, { checksumRequired: false });
+    const payload = {
+      ...draft,
+      localRevision: state.snapshot.localRevision + 1,
+      committedAt: this.now()
+    };
+    delete payload.checksum;
+    assertAppDatabaseSnapshot(payload, { checksumRequired: false });
+    const candidate = { ...payload, checksum: computeChecksum(payload) };
+    const intent = {
+      schema: 'trainflow.strict-transaction/v1',
+      phase: 'prepared',
+      operation,
+      baselineSlot: state.activeSlot,
+      baselineRevision: state.snapshot.localRevision,
+      baselineChecksum: state.activeSlot === null ? null : state.snapshot.checksum,
+      targetSlot,
+      candidateChecksum: candidate.checksum
+    };
+    let pointerWritten = false;
+    try {
+      this.storage.setStorageSync(IMPORT_INTENT_KEY, intent);
+      if (canonicalize(decodeStored(this.storage.getStorageSync(IMPORT_INTENT_KEY))) !== canonicalize(intent)) {
+        throw new Error('Strict transaction intent read-back mismatch');
+      }
+      this.storage.setStorageSync(targetKey, candidate);
+      const readBack = decodeStored(this.storage.getStorageSync(targetKey));
+      validateStoredSnapshot(readBack);
+      if (canonicalize(readBack) !== canonicalize(candidate)) {
+        throw new Error('Strict transaction candidate read-back mismatch');
+      }
+      this.storage.setStorageSync(ACTIVE_KEY, targetSlot);
+      pointerWritten = true;
+      if (this.storage.getStorageSync(ACTIVE_KEY) !== targetSlot) {
+        throw new Error('Strict transaction pointer read-back mismatch');
+      }
+      if (operation === 'purge') {
+        const cleanup = {
+          schema: 'trainflow.purge-cleanup/v1',
+          phase: 'cleanup-pending',
+          emptySlot: targetSlot,
+          emptyRevision: candidate.localRevision,
+          emptyChecksum: candidate.checksum,
+          oldSlot: state.activeSlot
+        };
+        this.persistCleanupMarker(cleanup);
+      }
+      this.storage.removeStorageSync(IMPORT_INTENT_KEY);
+      return { snapshot: cloneAppDatabase(candidate), oldSlot: state.activeSlot };
+    } catch (error) {
+      if (operation === 'purge') {
+        let pointerIsEmptyTruth = pointerWritten;
+        if (!pointerIsEmptyTruth) {
+          try {
+            pointerIsEmptyTruth = this.storage.getStorageSync(ACTIVE_KEY) === targetSlot;
+          } catch (_readError) {
+            throw error;
+          }
+        }
+        if (pointerIsEmptyTruth) throw error;
+      }
+      try {
+        this.rollbackImportIntent(intent, targetPreimage);
+      } catch (rollbackError) {
+        throw new Error(`${error.message}; ${rollbackError.message}`);
+      }
+      if (pointerWritten) {
+        throw new Error(`Strict transaction pointer failed and rolled back: ${error.message}`);
+      }
+      throw error;
+    }
   }
 
   migrate(state) {
