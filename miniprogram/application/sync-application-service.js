@@ -273,14 +273,28 @@ function createSyncApplicationService({ syncService } = {}) {
 
     purgeRemote(command) {
       const validated = assertPurgeCommand(command);
-      return runExclusive(() => syncService.purgeRemote({
-        confirmationToken: validated.confirmationToken
-      }));
+      return runExclusive(async () => {
+        try {
+          return await syncService.purgeRemote({
+            confirmationToken: validated.confirmationToken
+          });
+        } catch (error) {
+          syncService.recordFailure(error);
+          throw error;
+        }
+      });
     },
 
     prepareRemotePurge(command) {
       assertEmptyCommand(command, 'prepareRemotePurge');
-      return runExclusive(() => syncService.prepareRemotePurge());
+      return runExclusive(async () => {
+        try {
+          return await syncService.prepareRemotePurge();
+        } catch (error) {
+          syncService.recordFailure(error);
+          throw error;
+        }
+      });
     },
 
     synchronizeOnce(command) {

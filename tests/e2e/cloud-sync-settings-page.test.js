@@ -216,6 +216,61 @@ test('an in-flight retry immediately renders the sanitized syncing state', async
   assert.equal(page.data.syncState.code, 'waiting');
 });
 
+test('cloud sync renders only the closed status codes with Chinese labels and disable returns to 未启用', async () => {
+  const { createSettingsPageDefinition } = require('../../miniprogram/pages/settings/index');
+  const statuses = [
+    ['disabled', '未启用', 0],
+    ['waiting', '等待 3 项', 3],
+    ['syncing', '同步中', 3],
+    ['conflict', '冲突', 1],
+    ['failure', '失败可重试', 2],
+    ['synced', '已同步', 0]
+  ];
+
+  for (const [code, label, pendingCount] of statuses) {
+    const sync = syncApplication({
+      enabled: code !== 'disabled',
+      code,
+      label,
+      pendingCount,
+      lastSyncedAt: code === 'synced' ? 1785799900000 : null,
+      errorCode: code === 'failure' ? 'CLOUD_SYNC_UNAVAILABLE' : null,
+      conflicts: []
+    });
+    const page = pageHarness(createSettingsPageDefinition({
+      settingsApplication: settingsApplication(),
+      syncApplicationFactory: () => sync,
+      getWx: () => wxDouble('release')
+    }));
+
+    page.onLoad({ section: 'cloud-sync' });
+    assert.equal(page.data.syncState.code, code);
+    assert.equal(page.data.syncState.label, label);
+  }
+
+  const enabledSync = syncApplication({
+    enabled: true,
+    code: 'waiting',
+    label: '等待 2 项',
+    pendingCount: 2,
+    lastSyncedAt: null,
+    errorCode: null,
+    conflicts: []
+  });
+  const enabledPage = pageHarness(createSettingsPageDefinition({
+    settingsApplication: settingsApplication(),
+    syncApplicationFactory: () => enabledSync,
+    getWx: () => wxDouble('release')
+  }));
+  enabledPage.onLoad({ section: 'cloud-sync' });
+  await enabledPage.onDisableCloudSync();
+
+  assert.deepEqual(enabledSync.calls.find(([name]) => name === 'disable'), ['disable']);
+  assert.equal(enabledPage.data.syncState.code, 'disabled');
+  assert.equal(enabledPage.data.syncState.label, '未启用');
+  assert.equal(enabledPage.data.syncState.enabled, false);
+});
+
 test('developer fixtures are anonymous and develop-only while trial and release use production state', () => {
   const {
     createSettingsPageDefinition,

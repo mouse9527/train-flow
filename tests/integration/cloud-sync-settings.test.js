@@ -67,6 +67,88 @@ function createRuntime(provider, { now = () => NOW } = {}) {
   };
 }
 
+function createFaultableProvider({ now }) {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_stage_failure',
+    now
+  });
+  let nextFailure = null;
+  function fail(stage) {
+    if (nextFailure !== stage) return;
+    nextFailure = null;
+    const error = new Error(`private ${stage} failure sentinel`);
+    error.code = 'CLOUD_SYNC_UNAVAILABLE';
+    throw error;
+  }
+  return {
+    ...provider,
+    failNext(stage) {
+      nextFailure = stage;
+    },
+    async bootstrap(request) {
+      fail('bootstrap');
+      return provider.bootstrap(request);
+    },
+    async push(request) {
+      fail('push');
+      return provider.push(request);
+    },
+    async pull(request) {
+      fail('pull');
+      return provider.pull(request);
+    },
+    async preparePurge(request) {
+      fail('preparePurge');
+      return provider.preparePurge(request);
+    },
+    async purge(request) {
+      fail('purge');
+      return provider.purge(request);
+    }
+  };
+}
+
+function addReadableRecord(database, plan, id) {
+  const record = createBaselineTrainingRecord({
+    id,
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+  });
+  return record;
+}
+
+function assertLocalDomainWritable({ database, plan, recordId, now, marker }) {
+  const planRepository = createPlanRepository({ database, now });
+  const currentPlan = planRepository.findById(plan.id);
+  const savedPlan = planRepository.save({
+    ...currentPlan,
+    title: `${currentPlan.title}-${marker}`
+  }, currentPlan.revision);
+  const settingsRepository = createSettingsRepository({ database, now });
+  const settingsApplication = createSettingsApplicationService({ repository: settingsRepository });
+  const currentSettings = settingsApplication.getSettings();
+  const savedSettings = settingsApplication.updateSettings({
+    defaultRestSeconds: currentSettings.defaultRestSeconds === 75 ? 80 : 75
+  }, currentSettings.revision);
+
+  assert.equal(planRepository.findById(plan.id).title, savedPlan.title);
+  assert.equal(savedSettings.revision, currentSettings.revision + 1);
+  assert.equal(database.load().records.some(({ id }) => id === recordId), true);
+}
+
 function remoteEnvelope({ entityType, entityId, payload, serverRevision = 3 }) {
   return {
     ownerId: 'anonymous_fixture_owner',
@@ -312,7 +394,17 @@ test('P1: purge provider failure leaves local domain and sync metadata unchanged
     () => application.purgeRemote({ confirmationToken: prepared.confirmationToken }),
     { code: 'CLOUD_SYNC_UNAVAILABLE' }
   );
-  assert.deepEqual(database.load(), beforeFailure);
+  const afterFailure = database.load();
+  assert.deepEqual(afterFailure.plans, beforeFailure.plans);
+  assert.deepEqual(afterFailure.records, beforeFailure.records);
+  assert.deepEqual(afterFailure.settings, beforeFailure.settings);
+  assert.deepEqual(
+    { ...afterFailure.sync, lastError: null },
+    { ...beforeFailure.sync, lastError: null }
+  );
+  assert.equal(afterFailure.sync.lastError.code, 'CLOUD_SYNC_UNAVAILABLE');
+  assert.equal(application.getState().code, 'failure');
+  assert.equal(application.getState().label, '失败可重试');
 
   const receipt = await application.purgeRemote({ confirmationToken: prepared.confirmationToken });
   assert.equal(receipt.purgedAt, NOW);
@@ -359,6 +451,84 @@ test('AC1/AC2: enabling previews only upload counts and denied cloud becomes a r
   assert.equal(application.getState().errorCode, 'CLOUD_SYNC_UNAVAILABLE');
   assert.equal(JSON.stringify(application.getState()).includes(privateError), false);
   assert.equal(JSON.stringify(application.getState()).includes('openid'), false);
+});
+
+test('P1: every provider stage failure is sanitized, leaves local domains writable, and retries', async (t) => {
+  for (const stage of ['bootstrap', 'push', 'pull', 'preparePurge', 'purge']) {
+    await t.test(stage, async () => {
+      let clock = NOW;
+      const provider = createFaultableProvider({ now: () => clock });
+      const { application, database, plan } = createRuntime(provider, { now: () => clock });
+      const record = addReadableRecord(database, plan, `record_stage_${stage}`);
+      let retry;
+
+      if (['bootstrap', 'push', 'pull'].includes(stage)) {
+        provider.failNext(stage);
+        const preview = application.prepareEnable();
+        const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+        assert.equal(result.ok, false);
+        assert.equal(result.state.code, 'failure');
+        assert.equal(result.state.label, '失败可重试');
+        assert.equal(result.state.errorCode, 'CLOUD_SYNC_UNAVAILABLE');
+
+        clock += 10000;
+        assertLocalDomainWritable({
+          database,
+          plan,
+          recordId: record.id,
+          now: () => clock,
+          marker: stage
+        });
+        retry = await application.retry({ source: 'manual' });
+        assert.equal(retry.ok, true);
+        if (retry.state.code === 'waiting') {
+          retry = await application.retry({ source: 'automatic' });
+          assert.equal(retry.ok, true);
+        }
+        assert.equal(retry.state.code, 'synced');
+      } else {
+        const preview = application.prepareEnable();
+        assert.equal((await application.confirmEnable({ confirmationId: preview.confirmationId })).ok, true);
+        let prepared = null;
+        if (stage === 'purge') prepared = await application.prepareRemotePurge();
+        provider.failNext(stage);
+        await assert.rejects(
+          () => stage === 'preparePurge'
+            ? application.prepareRemotePurge()
+            : application.purgeRemote({ confirmationToken: prepared.confirmationToken }),
+          { code: 'CLOUD_SYNC_UNAVAILABLE' }
+        );
+        assert.equal(application.getState().code, 'failure');
+        assert.equal(application.getState().label, '失败可重试');
+        assert.equal(application.getState().errorCode, 'CLOUD_SYNC_UNAVAILABLE');
+
+        clock += 10000;
+        assertLocalDomainWritable({
+          database,
+          plan,
+          recordId: record.id,
+          now: () => clock,
+          marker: stage
+        });
+        if (stage === 'preparePurge') {
+          retry = await application.retry({ source: 'manual' });
+          assert.equal(retry.ok, true);
+          prepared = await application.prepareRemotePurge();
+          assert.match(prepared.confirmationToken, /^purge_fixture_/);
+        } else {
+          const receipt = await application.purgeRemote({
+            confirmationToken: prepared.confirmationToken
+          });
+          assert.equal(receipt.purgedAt, clock);
+          assert.equal(application.getState().code, 'disabled');
+          assert.equal(database.load().plans[0].title.endsWith(`-${stage}`), true);
+          assert.equal(database.load().records.some(({ id }) => id === record.id), true);
+        }
+      }
+
+      assert.equal(JSON.stringify(application.getState()).includes('private'), false);
+    });
+  }
 });
 
 test('P1: empty outbox enable preview atomically enqueues every missing active local entity before sync', async () => {
@@ -503,24 +673,125 @@ test('AC1/AC3: manual and automatic retry share the same outbox and a lost respo
   const pendingOpIds = afterLost.sync.outbox.map(({ opId }) => opId);
   assert.ok(pendingOpIds.length >= 2, 'plan and cloud preference remain queued after lost response');
 
+  provider.loseNextPushResponse();
   const manual = await application.retry({ source: 'manual' });
-  assert.equal(manual.ok, true);
-  assert.deepEqual(database.load().sync.outbox, []);
-  assert.deepEqual(
-    provider.calls.push.slice(0, 2).map(({ operations }) => operations.map(({ opId }) => opId)),
-    [pendingOpIds, pendingOpIds],
-    'lost response retry must send the exact same operation identities'
-  );
-  const afterManualPushCount = provider.calls.push.length;
+  assert.equal(manual.ok, false);
+  assert.deepEqual(database.load().sync.outbox.map(({ opId }) => opId), pendingOpIds);
+  assert.equal(manual.state.code, 'failure');
   const automatic = await application.retry({ source: 'automatic' });
   assert.equal(automatic.ok, true);
-  assert.equal(provider.calls.push.length, afterManualPushCount, 'empty automatic retry must not invent work');
+  assert.deepEqual(database.load().sync.outbox, []);
+  assert.deepEqual(
+    provider.calls.push.slice(0, 3).map(({ operations }) => operations.map(({ opId }) => opId)),
+    [pendingOpIds, pendingOpIds, pendingOpIds],
+    'manual and automatic lost-response retries must send the exact same operation identities'
+  );
   assert.equal(application.getState().code, 'synced');
   assert.equal(application.getState().label, '已同步');
 
   const remote = await provider.pull({ cursor: null, limit: 100 });
   assert.equal(remote.changes.length, 2, 'remote contains one plan and one settings entity only');
   assert.equal(new Set(remote.changes.map(({ entityId }) => entityId)).size, 2);
+});
+
+test('AC3: rejected operations stay visible and retain their exact pending identity', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_rejected_visibility',
+    now: () => NOW
+  });
+  const { application, database, plan } = createRuntime(provider);
+  const rejected = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  provider.rejectOperation(rejected.opId, 'REMOTE_VALIDATION_REJECTED');
+
+  const preview = application.prepareEnable();
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const state = application.getState();
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.result.push.rejected, [{
+    opId: rejected.opId,
+    code: 'REMOTE_VALIDATION_REJECTED'
+  }]);
+  assert.equal(state.code, 'waiting');
+  assert.equal(state.label, '等待 1 项');
+  assert.equal(state.pendingCount, 1);
+  assert.equal(database.load().sync.outbox[0].opId, rejected.opId);
+});
+
+test('AC3/AC4: one mixed push removes accepted work while rejected and conflict operations stay actionable', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_mixed_classification',
+    now: () => NOW
+  });
+  const { application, database, plan } = createRuntime(provider);
+  const record = createBaselineTrainingRecord({
+    id: 'record_mixed_classification',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    appendRepositorySyncMutation(draft, {
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      action: 'upsert',
+      payload: record
+    }, {
+      commandIdentity: 'record.mixed-classification.fixture',
+      createdAt: NOW,
+      deviceId: draft.install.deviceId
+    });
+  });
+  const before = database.load();
+  const planOperation = before.sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const recordOperation = before.sync.outbox.find(({ entityId }) => entityId === record.id);
+  provider.rejectOperation(recordOperation.opId, 'REMOTE_VALIDATION_REJECTED');
+  provider.conflictOperation(planOperation.opId, remoteEnvelope({
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    payload: {
+      ...structuredClone(plan),
+      title: '云端混合分类计划',
+      revision: plan.revision + 1
+    }
+  }));
+
+  const preview = application.prepareEnable();
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const after = database.load();
+  const state = application.getState();
+  const acceptedSettings = result.result.push.acceptedOpIds.find((opId) => (
+    ![planOperation.opId, recordOperation.opId].includes(opId)
+  ));
+
+  assert.equal(result.ok, true);
+  assert.equal(typeof acceptedSettings, 'string');
+  assert.deepEqual(result.result.push.rejected, [{
+    opId: recordOperation.opId,
+    code: 'REMOTE_VALIDATION_REJECTED'
+  }]);
+  assert.equal(result.result.push.conflicts[0].opId, planOperation.opId);
+  assert.equal(after.sync.outbox.some(({ opId }) => opId === acceptedSettings), false);
+  assert.deepEqual(
+    after.sync.outbox.map(({ opId }) => opId).sort(),
+    [planOperation.opId, recordOperation.opId].sort()
+  );
+  assert.equal(state.code, 'conflict');
+  assert.equal(state.label, '冲突');
+  assert.equal(state.pendingCount, 2);
+  assert.equal(state.conflicts.length, 1);
+  assert.equal(state.conflicts[0].conflictId.length > 0, true);
+  assert.equal(state.conflicts[0].actions.includes('rebase'), true, 'conflict must expose an explicit retry action');
 });
 
 test('AC4: plan conflict remains visible until explicit keep-local-as-copy atomically preserves both sides', async () => {

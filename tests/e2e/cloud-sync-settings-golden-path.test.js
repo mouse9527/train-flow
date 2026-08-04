@@ -155,3 +155,63 @@ test('golden path: settings page enables, retries, resolves a plan conflict and 
   assert.deepEqual(localAfterPurge.sync.conflicts, []);
   assert.deepEqual(localAfterPurge.sync.replicas, {});
 });
+
+test('local clear through the real settings page/application path never purges or mutates remote copies', async () => {
+  const storage = new StorageDouble();
+  const database = createLocalDatabase({ storage, now: () => NOW });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'anonymous_local_clear_device', createdAt: NOW - 1000 };
+  });
+  const planRepository = createPlanRepository({ database, now: () => NOW });
+  const plan = {
+    ...structuredClone(createDefaultPlans({ now: () => NOW })[0]),
+    id: 'plan_local_clear_boundary',
+    trainingDate: '2026-08-11',
+    templateSource: null
+  };
+  planRepository.save(plan, 0);
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_local_clear_owner',
+    now: () => NOW
+  });
+  const syncApplication = createSyncApplicationService({
+    syncService: createSyncService({ database, provider, now: () => NOW })
+  });
+  const settingsApplication = createSettingsApplicationService({
+    repository: createSettingsRepository({ database, now: () => NOW }),
+    database
+  });
+  const wxApi = {
+    getAccountInfoSync() {
+      return { miniProgram: { envVersion: 'release' } };
+    },
+    showModal(options) {
+      options.success({ confirm: true });
+    }
+  };
+  const page = pageHarness(createSettingsPageDefinition({
+    settingsApplication,
+    syncApplicationFactory: () => syncApplication,
+    getWx: () => wxApi
+  }));
+
+  page.onLoad({ section: 'cloud-sync' });
+  await page.onPrepareSyncEnable();
+  await page.onConfirmSyncEnable();
+  const remoteBefore = await provider.pull({ cursor: null, limit: 100 });
+  assert.equal(remoteBefore.changes.length, 2, 'plan and settings must exist remotely before local clear');
+
+  await page.onPrepareLocalClear();
+  const cleared = await page.onConfirmLocalClear();
+  const localAfter = database.load();
+  const remoteAfter = await provider.pull({ cursor: null, limit: 100 });
+
+  assert.equal(cleared.purged, true);
+  assert.deepEqual(localAfter.plans, []);
+  assert.deepEqual(localAfter.records, []);
+  assert.equal(provider.calls.preparePurge.length, 0);
+  assert.equal(provider.calls.purge.length, 0);
+  assert.deepEqual(remoteAfter.changes, remoteBefore.changes);
+  assert.match(page.data.dataNotice, /本机数据已清除/);
+  assert.match(page.data.dataNotice, /不会删除云端数据/);
+});
