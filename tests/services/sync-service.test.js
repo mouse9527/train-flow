@@ -266,12 +266,14 @@ test('AC3: accepted receipt removes only its exact operation, records replica re
     opId: first.opId,
     entityType: first.entityType,
     entityId: first.entityId,
-    serverRevision: 12
+    serverRevision: 12,
+    payloadHash: computeChecksum(first.payload)
   }, {
     opId: 'op_unknown',
     entityType: ENTITY_TYPES.WORKOUT_PLAN,
     entityId: first.entityId,
-    serverRevision: 13
+    serverRevision: 13,
+    payloadHash: 'b'.repeat(64)
   }]);
 
   assert.deepEqual(result, {
@@ -319,7 +321,8 @@ test('AC3: a legacy predecessor prevents a forged accepted receipt from skipping
       opId: valid.opId,
       entityType: valid.entityType,
       entityId: valid.entityId,
-      serverRevision: 1
+      serverRevision: 1,
+      payloadHash: computeChecksum(null)
     }]),
     (error) => error && error.code === 'SYNC_RECEIPT_ORDER_INVALID'
   );
@@ -345,7 +348,8 @@ test('AC3: accepted server revision must advance beyond the operation base revis
       opId: operation.opId,
       entityType: operation.entityType,
       entityId: operation.entityId,
-      serverRevision: 11
+      serverRevision: 11,
+      payloadHash: computeChecksum(operation.payload)
     }]),
     (error) => error && error.code === 'SYNC_RECEIPT_REVISION_INVALID'
   );
@@ -721,6 +725,39 @@ test('AC2/AC3: deterministic fake provider supports idempotent push, cursor pull
   );
 });
 
+test('AC2/AC3: settings patch push materializes one canonical remote entity and same-revision pull replays its hash', async () => {
+  const { database } = persistentRuntime();
+  const settings = createSettingsApplicationService({
+    repository: createSettingsRepository({ database, now: () => NOW })
+  });
+  settings.updateSettings({ soundEnabled: false, defaultRestSeconds: 95 }, 1);
+  const localOperation = clone(database.load().sync.outbox[0]);
+  assert.deepEqual(localOperation.payload, { defaultRestSeconds: 95, soundEnabled: false });
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+
+  await service.pushPending();
+  const afterPush = database.load();
+  const remotePage = await provider.pull({ cursor: null, limit: 10 });
+  const remoteSettings = remotePage.changes[0];
+
+  assert.deepEqual(remoteSettings.payload, {
+    ...DEFAULT_USER_SETTINGS,
+    soundEnabled: false,
+    defaultRestSeconds: 95,
+    revision: 2
+  });
+  assert.equal(
+    afterPush.sync.replicas[entityKey(ENTITY_TYPES.USER_SETTINGS, 'settings')].payloadHash,
+    computeChecksum(remoteSettings.payload)
+  );
+
+  const pull = await service.pullNextPage({ limit: 10 });
+  assert.equal(pull.replayed, 1);
+  assert.equal(database.load().sync.cursor, 'cursor_1');
+  assert.deepEqual(database.load().settings, remoteSettings.payload);
+});
+
 function savedPlan(database, { id, trainingDate, title }) {
   return createPlanRepository({ database, now: () => NOW }).save({
     ...clone(planFixture()),
@@ -899,12 +936,14 @@ test('Attack: push response cannot accept an outbox operation that was not in th
           opId: head.opId,
           entityType: head.entityType,
           entityId: head.entityId,
-          serverRevision: 1
+          serverRevision: 1,
+          payloadHash: computeChecksum(head.payload)
         }, {
           opId: unattemptedNext.opId,
           entityType: unattemptedNext.entityType,
           entityId: unattemptedNext.entityId,
-          serverRevision: 2
+          serverRevision: 2,
+          payloadHash: computeChecksum(unattemptedNext.payload)
         }],
         rejected: [],
         conflicts: []

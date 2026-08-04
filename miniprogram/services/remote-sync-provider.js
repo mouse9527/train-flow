@@ -1,12 +1,19 @@
-const { mapRemoteChange } = require('../domain/sync/entity-mapper');
+const { ENTITY_TYPES, mapRemoteChange } = require('../domain/sync/entity-mapper');
 const { assertSyncOperation, entityKey } = require('../domain/sync/sync-operation');
+const { DEFAULT_USER_SETTINGS } = require('../utils/constants');
 
 const PROVIDER_METHODS = Object.freeze(['bootstrap', 'push', 'pull', 'purge']);
 const BOOTSTRAP_RESULT_FIELDS = Object.freeze(['cursor', 'serverTime']);
 const PUSH_RESULT_FIELDS = Object.freeze(['accepted', 'rejected', 'conflicts']);
 const PULL_RESULT_FIELDS = Object.freeze(['changes', 'nextCursor', 'hasMore']);
 const PURGE_RESULT_FIELDS = Object.freeze(['purgedAt']);
-const ACCEPTED_FIELDS = Object.freeze(['opId', 'entityType', 'entityId', 'serverRevision']);
+const ACCEPTED_FIELDS = Object.freeze([
+  'opId',
+  'entityType',
+  'entityId',
+  'serverRevision',
+  'payloadHash'
+]);
 const REJECTED_FIELDS = Object.freeze(['opId', 'code']);
 const CONFLICT_FIELDS = Object.freeze(['opId', 'remote']);
 
@@ -79,7 +86,8 @@ function assertAccepted(receipt) {
     typeof receipt.opId !== 'string' || receipt.opId.length === 0 ||
     typeof receipt.entityType !== 'string' || receipt.entityType.length === 0 ||
     typeof receipt.entityId !== 'string' || receipt.entityId.length === 0 ||
-    !Number.isSafeInteger(receipt.serverRevision) || receipt.serverRevision < 1
+    !Number.isSafeInteger(receipt.serverRevision) || receipt.serverRevision < 1 ||
+    typeof receipt.payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.payloadHash)
   ) {
     throw providerError('accepted receipt fields are invalid');
   }
@@ -190,6 +198,7 @@ function createDeterministicRemoteSyncProvider({
   const receipts = new Map();
   const identities = new Map();
   const revisions = new Map();
+  const entities = new Map();
   const dispositions = new Map();
   const calls = { bootstrap: [], push: [], pull: [], purge: [] };
   let loseNextPush = false;
@@ -252,29 +261,44 @@ function createDeterministicRemoteSyncProvider({
         const key = entityKey(operation.entityType, operation.entityId);
         const serverRevision = (revisions.get(key) || 0) + 1;
         revisions.set(key, serverRevision);
-        const receipt = {
-          opId: operation.opId,
-          entityType: operation.entityType,
-          entityId: operation.entityId,
-          serverRevision
-        };
         const timestamp = now();
+        const previous = entities.get(key) || null;
+        let payload = operation.action === 'delete' ? null : cloneJson(operation.payload);
+        if (operation.entityType === ENTITY_TYPES.USER_SETTINGS && operation.action === 'upsert') {
+          const previousSettings = previous && !previous.deleted
+            ? previous.payload
+            : DEFAULT_USER_SETTINGS;
+          payload = {
+            ...cloneJson(previousSettings),
+            ...cloneJson(operation.payload),
+            schemaVersion: DEFAULT_USER_SETTINGS.schemaVersion,
+            revision: previousSettings.revision + 1
+          };
+        }
         const remote = {
           ownerId,
           entityType: operation.entityType,
           entityId: operation.entityId,
           serverRevision,
           schemaVersion: 1,
-          payload: operation.action === 'delete' ? null : cloneJson(operation.payload),
+          payload,
           deleted: operation.action === 'delete',
           deletedAt: operation.action === 'delete' ? timestamp : null,
-          createdAt: timestamp,
+          createdAt: previous ? previous.createdAt : timestamp,
           updatedAt: timestamp,
           sourceDeviceId: operation.deviceId
         };
-        mapRemoteChange(remote);
+        const mapped = mapRemoteChange(remote);
+        const receipt = {
+          opId: operation.opId,
+          entityType: operation.entityType,
+          entityId: operation.entityId,
+          serverRevision,
+          payloadHash: mapped.payloadHash
+        };
         identities.set(operation.opId, identity);
         receipts.set(operation.opId, cloneJson(receipt));
+        entities.set(key, cloneJson(remote));
         changes.push(cloneJson(remote));
         result.accepted.push(receipt);
       }
@@ -314,6 +338,7 @@ function createDeterministicRemoteSyncProvider({
       receipts.clear();
       identities.clear();
       revisions.clear();
+      entities.clear();
       dispositions.clear();
       const result = { purgedAt: now() };
       assertPurgeResult(result);

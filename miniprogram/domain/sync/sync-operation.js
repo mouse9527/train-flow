@@ -24,7 +24,8 @@ const RECEIPT_FIELDS = Object.freeze([
   'opId',
   'entityType',
   'entityId',
-  'serverRevision'
+  'serverRevision',
+  'payloadHash'
 ]);
 const LEGACY_ENTITY_ALIASES = Object.freeze({
   'training-record': ENTITY_TYPES.TRAINING_RECORD,
@@ -369,6 +370,9 @@ function assertAcceptedReceipt(receipt) {
   if (!Number.isSafeInteger(receipt.serverRevision) || receipt.serverRevision < 1) {
     throw operationError('accepted receipt serverRevision is invalid', 'SYNC_RECEIPT_INVALID');
   }
+  if (typeof receipt.payloadHash !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.payloadHash)) {
+    throw operationError('accepted receipt payloadHash is invalid', 'SYNC_RECEIPT_INVALID');
+  }
 }
 
 function applyAcceptedOperations(draft, receipts) {
@@ -424,7 +428,7 @@ function applyAcceptedOperations(draft, receipts) {
       entityType: operation.entityType,
       entityId: operation.entityId,
       serverRevision: receipt.serverRevision,
-      payloadHash: computeChecksum(operation.payload),
+      payloadHash: receipt.payloadHash,
       deleted: operation.action === 'delete'
     };
     assertSyncReplica(draft.sync.replicas[operationKey]);
