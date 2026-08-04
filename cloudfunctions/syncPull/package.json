@@ -1,0 +1,13 @@
+{
+  "name": "trainflow-sync-pull",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "4.0.2"
+  },
+  "overrides": {
+    "axios": "1.19.0",
+    "lodash.unset": "4.18.0"
+  }
+}
