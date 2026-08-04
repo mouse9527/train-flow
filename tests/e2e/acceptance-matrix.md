@@ -78,7 +78,19 @@ route	head	tree	sha256	data_source	manual_visual_verdict	file
 kind	head	tree	sha256	redaction_verdict	file
 ```
 
-日志文件和 manifest 必须 tracked、非符号链接、哈希一致、人工去敏结论为 `PASS`，且 source head/tree 与本次证据运行绑定值一致；任何未列入 manifest 的 tracked `.log` 都会阻断。
+三个 kind 必须各出现一次并分别绑定不同的 `.log` 文件，不能以一份输出冒充多类命令证据。日志文件和 manifest 必须 tracked、非符号链接、非空纯文本、哈希一致、人工去敏结论为 `PASS`；source head 必须能解析为 commit，tree 必须属于该 commit，并与本次证据运行绑定值一致。任何未列入 manifest 的 tracked `.log`、NUL/二进制内容或来源过期都会阻断。
+
+每份日志采用相同的最小 provenance 包装，命令输出置于 source-tree 与 exit-code 之间；首行命令必须与 kind 精确对应，末行只允许成功退出：
+
+```text
+command: <critical-e2e、full-suite 或 privacy-scan 对应的固定命令>
+source-head: <40 位 commit>
+source-tree: <该 commit 的 40 位 tree>
+<去敏后的命令输出>
+exit-code: 0
+```
+
+`critical-e2e` 还必须包含 `# tests 4`、`# pass 4`、`# fail 0`；`full-suite` 的 tests/pass 必须是相同的正整数且 fail 为 0；`privacy-scan` 必须包含扫描器成功标记 `PRIVACY_SCAN_PASS tracked-content`。这些结构检查用于拒绝空白、任意文本或只有包装行而没有命令结果的伪证据。
 
 ## 已知限制、Unsupported 与 Deferred
 

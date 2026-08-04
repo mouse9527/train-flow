@@ -18,6 +18,10 @@ report() {
   failed=1
 }
 
+has_nul_byte() {
+  LC_ALL=C od -An -tx1 "$1" | grep -Eq '(^|[[:space:]])00([[:space:]]|$)'
+}
+
 is_scanned_path() {
   case "$1" in
     project.config.json|package.json|package-lock.json|README.md|\
@@ -102,6 +106,11 @@ log_payload_pattern='["'"'"'`]?(openId|openid|ownerId|authToken|accessToken|sess
 while IFS= read -r -d '' file; do
   is_scanned_path "$file" || continue
   [[ -f "$file" ]] || continue
+  if [[ "$file" == evidence/logs/*.log && -s "$file" ]] &&
+    { has_nul_byte "$file" || ! grep -Iq . "$file"; }; then
+    report EVIDENCE_LOG_BINARY "$file"
+    continue
+  fi
   grep -Iq . "$file" || continue
 
   scan_pattern ABSOLUTE_USER_PATH "$file" "$absolute_path_pattern"
@@ -225,6 +234,7 @@ if [[ "$require_logs" == 1 ]]; then
       full_log=0
       privacy_log=0
       manifest_logs=()
+      manifest_kinds=()
       while IFS=$'\t' read -r kind head tree digest verdict log_file extra; do
         [[ -n "$kind$head$tree$digest$verdict$log_file" ]] || continue
         log_row_count=$((log_row_count + 1))
@@ -234,20 +244,45 @@ if [[ "$require_logs" == 1 ]]; then
           report LOG_MANIFEST_ENTRY "$log_manifest"
           continue
         fi
-        [[ "$head" == "$expected_head" ]] || report LOG_SOURCE_HEAD_MISMATCH "$log_manifest"
-        [[ "$tree" == "$expected_tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
-        case "$kind" in
-          critical-e2e) critical_log=1 ;;
-          full-suite) full_log=1 ;;
-          privacy-scan) privacy_log=1 ;;
-        esac
-        if [[ "$log_file" == /* || "$log_file" == *..* || "$log_file" == *\\* ||
-          "$log_file" != *.log ]]; then
+        if [[ ! "$log_file" =~ ^[A-Za-z0-9._-]+\.log$ ]]; then
           report LOG_PATH_INVALID "$log_manifest"
           continue
         fi
+        unique_binding=1
+        for declared_kind in "${manifest_kinds[@]}"; do
+          if [[ "$declared_kind" == "$kind" ]]; then
+            report LOG_DUPLICATE_KIND "$log_manifest"
+            unique_binding=0
+            break
+          fi
+        done
         log_path=$log_dir/$log_file
+        for declared_log in "${manifest_logs[@]}"; do
+          if [[ "$declared_log" == "$log_path" ]]; then
+            report LOG_DUPLICATE_FILE "$log_manifest"
+            unique_binding=0
+            break
+          fi
+        done
+        manifest_kinds[${#manifest_kinds[@]}]=$kind
         manifest_logs[${#manifest_logs[@]}]=$log_path
+        [[ "$head" == "$expected_head" ]] || report LOG_SOURCE_HEAD_MISMATCH "$log_manifest"
+        [[ "$tree" == "$expected_tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
+        if ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+          report LOG_SOURCE_UNRESOLVED "$log_manifest"
+        else
+          log_source_tree=$(git rev-parse "$head^{tree}")
+          [[ "$log_source_tree" == "$tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
+          git diff --quiet "$head" -- miniprogram cloudfunctions project.config.json package.json ||
+            report LOG_SOURCE_STALE "$log_manifest"
+        fi
+        if [[ "$unique_binding" -eq 1 ]]; then
+          case "$kind" in
+            critical-e2e) critical_log=1 ;;
+            full-suite) full_log=1 ;;
+            privacy-scan) privacy_log=1 ;;
+          esac
+        fi
         if [[ ! -f "$log_path" ]]; then
           report LOG_FILE_MISSING "$log_path"
           continue
@@ -259,6 +294,51 @@ if [[ "$require_logs" == 1 ]]; then
         if ! git ls-files --error-unmatch "$log_path" >/dev/null 2>&1; then
           report LOG_FILE_UNTRACKED "$log_path"
         fi
+        if [[ ! -s "$log_path" ]]; then
+          report LOG_FILE_EMPTY "$log_path"
+          continue
+        fi
+        if has_nul_byte "$log_path" || ! grep -Iq . "$log_path"; then
+          report LOG_FILE_BINARY "$log_path"
+          continue
+        fi
+        case "$kind" in
+          critical-e2e)
+            expected_command='command: node --test tests/e2e/train-flow-critical.e2e.test.js'
+            ;;
+          full-suite)
+            expected_command='command: npm test'
+            ;;
+          privacy-scan)
+            expected_command='command: PRIVACY_SCAN_REQUIRE_SCREENSHOTS=0 PRIVACY_SCAN_REQUIRE_LOGS=0 bash scripts/privacy-scan.sh'
+            ;;
+        esac
+        command_line=$(sed -n '1p' "$log_path")
+        head_line=$(sed -n '2p' "$log_path")
+        tree_line=$(sed -n '3p' "$log_path")
+        exit_line=$(tail -n 1 "$log_path")
+        if [[ "$command_line" != "$expected_command" ||
+          "$head_line" != "source-head: $head" ||
+          "$tree_line" != "source-tree: $tree" ||
+          "$exit_line" != 'exit-code: 0' ]]; then
+          report LOG_CONTENT_INVALID "$log_path"
+        fi
+        case "$kind" in
+          critical-e2e|full-suite)
+            tests_count=$(sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
+            pass_count=$(sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
+            fail_count=$(sed -n 's/^# fail \([0-9][0-9]*\)$/\1/p' "$log_path" | tail -n 1)
+            if [[ -z "$tests_count" || -z "$pass_count" || "$fail_count" != 0 ||
+              "$tests_count" -ne "$pass_count" ||
+              ( "$kind" == critical-e2e && "$tests_count" -ne 4 ) ]]; then
+              report LOG_RESULT_INVALID "$log_path"
+            fi
+            ;;
+          privacy-scan)
+            grep -Fxq 'PRIVACY_SCAN_PASS tracked-content' "$log_path" ||
+              report LOG_RESULT_INVALID "$log_path"
+            ;;
+        esac
         if command -v sha256sum >/dev/null 2>&1; then
           actual_log_digest=$(sha256sum "$log_path" | awk '{print $1}')
         else
@@ -287,4 +367,7 @@ if [[ "$require_logs" == 1 ]]; then
   fi
 fi
 
+if [[ "$failed" -eq 0 ]]; then
+  printf '%s %s\n' PRIVACY_SCAN_PASS tracked-content
+fi
 exit "$failed"

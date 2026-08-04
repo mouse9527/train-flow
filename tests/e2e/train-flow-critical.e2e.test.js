@@ -497,6 +497,15 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   await sync.resolveConflict({ conflictId: conflict.conflictId, action: 'keep_remote' });
   await sync.retry({ source: 'manual' });
   assert.equal(planRepository.findById(changed.id).title, '匿名云端调整');
+  const converged = sync.getState();
+  assert.equal(converged.code, 'synced');
+  assert.equal(converged.pendingCount, 0);
+  assert.deepEqual(converged.conflicts, []);
+  assert.deepEqual(database.load().sync.outbox, []);
+  assert.equal(
+    database.load().sync.conflicts.some(({ status }) => status !== 'resolved'),
+    false
+  );
   const purgePreview = await sync.prepareRemotePurge();
   const purgeReceipt = await sync.purgeRemote({
     confirmationToken: purgePreview.confirmationToken
@@ -572,6 +581,166 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   });
   assert.notEqual(strictLogScan.status, 0);
   assert.match(strictLogScan.stdout, /LOG_EVIDENCE_ABSENT evidence\/logs/);
+
+  const logCommands = {
+    'critical-e2e': 'node --test tests/e2e/train-flow-critical.e2e.test.js',
+    'full-suite': 'npm test',
+    'privacy-scan': 'PRIVACY_SCAN_REQUIRE_SCREENSHOTS=0 PRIVACY_SCAN_REQUIRE_LOGS=0 bash scripts/privacy-scan.sh'
+  };
+  const validLogSummaries = {
+    'critical-e2e': '# tests 4\n# pass 4\n# fail 0',
+    'full-suite': '# tests 737\n# pass 737\n# fail 0',
+    'privacy-scan': 'PRIVACY_SCAN_PASS tracked-content'
+  };
+  const commandLog = (kind, head, tree, summary = 'summary: anonymous pass') => (
+    `command: ${logCommands[kind]}\n` +
+      `source-head: ${head}\n` +
+      `source-tree: ${tree}\n` +
+      `${summary}\n` +
+      'exit-code: 0\n'
+  );
+  const digestOf = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const initializeEvidenceRepository = (prefix) => {
+    const repositoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    temporaryRoots.push(repositoryRoot);
+    fs.mkdirSync(path.join(repositoryRoot, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(repositoryRoot, 'evidence/logs'), { recursive: true });
+    fs.copyFileSync(
+      path.join(ROOT, 'scripts/privacy-scan.sh'),
+      path.join(repositoryRoot, 'scripts/privacy-scan.sh')
+    );
+    spawnSync('git', ['init', '-q'], { cwd: repositoryRoot });
+    spawnSync('git', ['add', 'scripts'], { cwd: repositoryRoot });
+    spawnSync('git', [
+      '-c', 'user.name=Anonymous QA',
+      '-c', 'user.email=qa@example.invalid',
+      'commit', '-qm', 'capture source under test'
+    ], { cwd: repositoryRoot });
+    return {
+      repositoryRoot,
+      sourceHead: spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repositoryRoot,
+        encoding: 'utf8'
+      }).stdout.trim(),
+      sourceTree: spawnSync('git', ['rev-parse', 'HEAD^{tree}'], {
+        cwd: repositoryRoot,
+        encoding: 'utf8'
+      }).stdout.trim()
+    };
+  };
+
+  const validLogRepository = initializeEvidenceRepository('train-flow-valid-logs-');
+  const validLogRows = [];
+  for (const [kind, file] of [
+    ['critical-e2e', 'critical-e2e.log'],
+    ['full-suite', 'full-suite.log'],
+    ['privacy-scan', 'privacy-scan.log']
+  ]) {
+    const content = commandLog(
+      kind,
+      validLogRepository.sourceHead,
+      validLogRepository.sourceTree,
+      validLogSummaries[kind]
+    );
+    fs.writeFileSync(path.join(validLogRepository.repositoryRoot, 'evidence/logs', file), content);
+    validLogRows.push(
+      `${kind}\t${validLogRepository.sourceHead}\t${validLogRepository.sourceTree}` +
+        `\t${digestOf(content)}\tPASS\t${file}`
+    );
+  }
+  fs.writeFileSync(
+    path.join(validLogRepository.repositoryRoot, 'evidence/logs/manifest.tsv'),
+    'kind\thead\ttree\tsha256\tredaction_verdict\tfile\n' +
+      `${validLogRows.join('\n')}\n`
+  );
+  spawnSync('git', ['add', 'evidence/logs'], { cwd: validLogRepository.repositoryRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'attach valid command logs'
+  ], { cwd: validLogRepository.repositoryRoot });
+  const acceptedLogs = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: validLogRepository.repositoryRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_ROOT: validLogRepository.repositoryRoot,
+      PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0',
+      PRIVACY_SCAN_REQUIRE_LOGS: '1',
+      PRIVACY_SCAN_EXPECTED_HEAD: validLogRepository.sourceHead,
+      PRIVACY_SCAN_EXPECTED_TREE: validLogRepository.sourceTree
+    }
+  });
+  assert.equal(acceptedLogs.status, 0, acceptedLogs.stdout || acceptedLogs.stderr);
+
+  const invalidLogRepository = initializeEvidenceRepository('train-flow-invalid-logs-');
+  const invalidLogDir = path.join(invalidLogRepository.repositoryRoot, 'evidence/logs');
+  const sharedLog = commandLog(
+    'critical-e2e',
+    invalidLogRepository.sourceHead,
+    invalidLogRepository.sourceTree
+  );
+  const binaryLog = Buffer.concat([
+    Buffer.from(commandLog(
+      'critical-e2e',
+      invalidLogRepository.sourceHead,
+      invalidLogRepository.sourceTree,
+      'requestPayload: must-remain-private'
+    )),
+    Buffer.from([0])
+  ]);
+  const arbitraryLog = 'arbitrary text without command provenance\n';
+  fs.writeFileSync(path.join(invalidLogDir, 'shared.log'), sharedLog);
+  fs.writeFileSync(path.join(invalidLogDir, 'empty.log'), '');
+  fs.writeFileSync(path.join(invalidLogDir, 'binary.log'), binaryLog);
+  fs.writeFileSync(path.join(invalidLogDir, 'arbitrary.log'), arbitraryLog);
+  const unresolvedHead = '0'.repeat(40);
+  const unresolvedTree = '1'.repeat(40);
+  fs.writeFileSync(
+    path.join(invalidLogDir, 'manifest.tsv'),
+    'kind\thead\ttree\tsha256\tredaction_verdict\tfile\n' +
+      `critical-e2e\t${invalidLogRepository.sourceHead}\t${invalidLogRepository.sourceTree}` +
+      `\t${digestOf(sharedLog)}\tPASS\tshared.log\n` +
+      `full-suite\t${invalidLogRepository.sourceHead}\t${invalidLogRepository.sourceTree}` +
+      `\t${digestOf(sharedLog)}\tPASS\tshared.log\n` +
+      `privacy-scan\t${invalidLogRepository.sourceHead}\t${invalidLogRepository.sourceTree}` +
+      `\t${digestOf(sharedLog)}\tPASS\tshared.log\n` +
+      `critical-e2e\t${invalidLogRepository.sourceHead}\t${invalidLogRepository.sourceTree}` +
+      `\t${digestOf('')}\tPASS\tempty.log\n` +
+      `critical-e2e\t${invalidLogRepository.sourceHead}\t${invalidLogRepository.sourceTree}` +
+      `\t${digestOf(binaryLog)}\tPASS\tbinary.log\n` +
+      `critical-e2e\t${unresolvedHead}\t${unresolvedTree}` +
+      `\t${digestOf(arbitraryLog)}\tPASS\tarbitrary.log\n`
+  );
+  spawnSync('git', ['add', 'evidence/logs'], { cwd: invalidLogRepository.repositoryRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'attach invalid command logs'
+  ], { cwd: invalidLogRepository.repositoryRoot });
+  const rejectedLogs = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: invalidLogRepository.repositoryRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_ROOT: invalidLogRepository.repositoryRoot,
+      PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0',
+      PRIVACY_SCAN_REQUIRE_LOGS: '1',
+      PRIVACY_SCAN_EXPECTED_HEAD: invalidLogRepository.sourceHead,
+      PRIVACY_SCAN_EXPECTED_TREE: invalidLogRepository.sourceTree
+    }
+  });
+  assert.notEqual(rejectedLogs.status, 0);
+  assert.match(rejectedLogs.stdout, /LOG_DUPLICATE_KIND evidence\/logs\/manifest\.tsv/);
+  assert.match(rejectedLogs.stdout, /LOG_DUPLICATE_FILE evidence\/logs\/manifest\.tsv/);
+  assert.match(rejectedLogs.stdout, /LOG_FILE_EMPTY evidence\/logs\/empty\.log/);
+  assert.match(rejectedLogs.stdout, /LOG_FILE_BINARY evidence\/logs\/binary\.log/);
+  assert.match(rejectedLogs.stdout, /EVIDENCE_LOG_BINARY evidence\/logs\/binary\.log/);
+  assert.match(rejectedLogs.stdout, /LOG_CONTENT_INVALID evidence\/logs\/arbitrary\.log/);
+  assert.match(rejectedLogs.stdout, /LOG_RESULT_INVALID evidence\/logs\/shared\.log/);
+  assert.match(rejectedLogs.stdout, /LOG_SOURCE_UNRESOLVED evidence\/logs\/manifest\.tsv/);
+  assert.match(rejectedLogs.stdout, /LOG_REQUIRED_KIND_MISSING evidence\/logs\/manifest\.tsv/);
+  assert.doesNotMatch(rejectedLogs.stdout, /must-remain-private/);
 
   const negativeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-privacy-'));
   temporaryRoots.push(negativeRoot);
