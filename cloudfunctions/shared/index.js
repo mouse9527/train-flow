@@ -5,6 +5,7 @@ const {
   createHmac,
   timingSafeEqual
 } = require('node:crypto');
+const { assertWirePayload } = require('./wire-validation');
 
 const GENERIC_AUTH_CODE = 'CLOUD_SYNC_UNAVAILABLE';
 const GENERIC_AUTH_MESSAGE = 'Cloud sync is unavailable';
@@ -168,6 +169,10 @@ function genericAuthError() {
   return cloudError(GENERIC_AUTH_CODE, GENERIC_AUTH_MESSAGE);
 }
 
+function hasOwn(value, field) {
+  return Object.prototype.hasOwnProperty.call(value, field);
+}
+
 function assertPlainJson(value, ancestors = new Set()) {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
   if (typeof value === 'number') {
@@ -185,8 +190,32 @@ function assertPlainJson(value, ancestors = new Set()) {
   ) {
     throw cloudError('SYNC_PAYLOAD_INVALID', 'Sync payload is invalid');
   }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw cloudError('SYNC_PAYLOAD_INVALID', 'Sync payload is invalid');
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      if (!hasOwn(value, index)) {
+        throw cloudError('SYNC_PAYLOAD_INVALID', 'Sync payload is invalid');
+      }
+    }
+    const extraField = Object.getOwnPropertyNames(value).find(
+      (field) => field !== 'length' && !/^(0|[1-9]\d*)$/.test(field)
+    );
+    if (extraField) throw cloudError('SYNC_PAYLOAD_INVALID', 'Sync payload is invalid');
+  }
   ancestors.add(value);
-  for (const key of Object.keys(value)) assertPlainJson(value[key], ancestors);
+  for (const field of Object.getOwnPropertyNames(value)) {
+    if (Array.isArray(value) && field === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (
+      !descriptor.enumerable || !hasOwn(descriptor, 'value') ||
+      descriptor.value === undefined
+    ) {
+      throw cloudError('SYNC_PAYLOAD_INVALID', 'Sync payload is invalid');
+    }
+    assertPlainJson(descriptor.value, ancestors);
+  }
   ancestors.delete(value);
 }
 
@@ -258,6 +287,16 @@ function normalizeOperation(input) {
       (!operation.payload || operation.payload.id !== operation.entityId)
     ) {
       throw cloudError('SYNC_ENTITY_ID_MISMATCH', 'Sync operation is invalid');
+    }
+    try {
+      assertWirePayload(
+        operation.entityType,
+        operation.entityType === 'user_settings'
+          ? operation.payload
+          : { ...operation.payload, createdAt: 0, updatedAt: 0 }
+      );
+    } catch (_error) {
+      throw cloudError('SYNC_PAYLOAD_INVALID', 'Sync payload is invalid');
     }
     assertPayloadSize(operation.payload);
   }
@@ -451,9 +490,16 @@ function createCloudSyncHandlers({
         if (typeof store.runTransaction !== 'function') {
           throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
         }
+        const operations = event.operations.map(normalizeOperation);
+        const operationIds = new Set();
+        for (const operation of operations) {
+          if (operationIds.has(operation.opId)) {
+            throw cloudError('SYNC_OPERATION_INVALID', 'Sync operation is invalid');
+          }
+          operationIds.add(operation.opId);
+        }
         const result = { accepted: [], rejected: [], conflicts: [] };
-        for (const input of event.operations) {
-          const operation = normalizeOperation(input);
+        for (const operation of operations) {
           const classification = await applyOperation({
             store,
             ownerId,

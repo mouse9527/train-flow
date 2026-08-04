@@ -37,7 +37,9 @@ function documentId(scope, ...parts) {
 }
 
 function dataFrom(result) {
-  return result && result.data ? result.data : null;
+  if (!result || !result.data) return null;
+  const { _id: _documentId, ...data } = result.data;
+  return data;
 }
 
 function isMissingDocument(error) {

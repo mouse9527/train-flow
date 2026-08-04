@@ -8,7 +8,7 @@ const FUNCTION_NAMES = Object.freeze([
   'syncPull',
   'syncPush'
 ]);
-const SHARED_FILES = Object.freeze(['cloudbase-runtime.js', 'index.js']);
+const SHARED_FILES = Object.freeze(['cloudbase-runtime.js', 'index.js', 'wire-validation.js']);
 
 function digest(buffer) {
   return createHash('sha256').update(buffer).digest('hex');

@@ -7,11 +7,18 @@ const test = require('node:test');
 
 const { createDefaultPlans } = require('../../miniprogram/domain/planning/default-plan-factory');
 const {
-  createCloudSyncHandlers
+  createBaselineTrainingRecord
+} = require('../../miniprogram/domain/execution/training-record');
+const {
+  createCloudSyncHandlers,
+  hmacSha256
 } = require('../../cloudfunctions/shared');
 const {
+  COLLECTIONS,
   createCloudBaseStore
 } = require('../../cloudfunctions/shared/cloudbase-runtime');
+const { assertWirePayload } = require('../../cloudfunctions/shared/wire-validation');
+const { mapLocalMutation } = require('../../miniprogram/domain/sync/entity-mapper');
 const {
   materializeCloudFunctions
 } = require('../../scripts/prepare-cloudfunctions');
@@ -66,6 +73,25 @@ function syncOperation({
   };
 }
 
+function validTrainingRecord() {
+  const planSnapshot = createDefaultPlans({ now: () => NOW })[0];
+  return createBaselineTrainingRecord({
+    id: 'session_cloud_security',
+    planSnapshot,
+    trainingDate: planSnapshot.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: planSnapshot.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+}
+
 function createHandlers({
   openId = ALLOWED_OPENID,
   allowedOpenId = ALLOWED_OPENID,
@@ -105,49 +131,108 @@ function captureError(invoke) {
 }
 
 function createCloudBaseDatabaseDouble() {
-  const collections = new Map();
-  function documents(collectionName) {
-    if (!collections.has(collectionName)) collections.set(collectionName, new Map());
-    return collections.get(collectionName);
+  let collections = new Map();
+  let failBeforeCommit = 0;
+  const queryLog = [];
+
+  function cloneCollections(source) {
+    return new Map([...source.entries()].map(([collectionName, documents]) => [
+      collectionName,
+      new Map([...documents.entries()].map(([id, value]) => [id, structuredClone(value)]))
+    ]));
   }
-  const database = {
-    command: { gt(value) { return { value }; } },
-    collection(collectionName) {
-      return {
-        doc(id) {
-          return {
-            async get() {
-              const value = documents(collectionName).get(id);
-              if (!value) {
-                const error = new Error('document not found');
-                error.code = 'DATABASE_DOCUMENT_NOT_FOUND';
-                throw error;
+
+  function documents(state, collectionName) {
+    if (!state.has(collectionName)) state.set(collectionName, new Map());
+    return state.get(collectionName);
+  }
+
+  function matchesFilter(document, filter) {
+    return Object.entries(filter).every(([field, expected]) => {
+      if (expected && expected.operator === 'gt') return document[field] > expected.value;
+      return document[field] === expected;
+    });
+  }
+
+  function createApi(state) {
+    return {
+      command: { gt(value) { return { operator: 'gt', value }; } },
+      collection(collectionName) {
+        return {
+          doc(id) {
+            return {
+              async get() {
+                const value = documents(state, collectionName).get(id);
+                if (!value) {
+                  const error = new Error('document not found');
+                  error.code = 'DATABASE_DOCUMENT_NOT_FOUND';
+                  throw error;
+                }
+                return { data: structuredClone(value) };
+              },
+              async set({ data }) {
+                if (Object.prototype.hasOwnProperty.call(data, '_id')) {
+                  throw new Error('CloudBase data cannot write _id');
+                }
+                documents(state, collectionName).set(id, structuredClone({ ...data, _id: id }));
+              },
+              async remove() {
+                documents(state, collectionName).delete(id);
               }
-              return { data: structuredClone(value) };
-            },
-            async set({ data }) {
-              documents(collectionName).set(id, structuredClone({ ...data, _id: id }));
-            },
-            async remove() {
-              documents(collectionName).delete(id);
-            }
-          };
-        },
-        where(filter) {
-          const matches = () => [...documents(collectionName).values()]
-            .filter((document) => Object.entries(filter).every(([key, value]) => document[key] === value));
-          return {
-            limit() {
-              return { async get() { return { data: structuredClone(matches()) }; } };
-            }
-          };
-        }
-      };
-    },
-    runTransaction(work) {
-      return work(database);
+            };
+          },
+          where(filter) {
+            let order = null;
+            let maximum = Number.MAX_SAFE_INTEGER;
+            const query = {
+              orderBy(field, direction) {
+                order = { field, direction };
+                return query;
+              },
+              limit(value) {
+                maximum = value;
+                return query;
+              },
+              async get() {
+                queryLog.push({ collectionName, filter: structuredClone(filter) });
+                const result = [...documents(state, collectionName).values()]
+                  .filter((document) => matchesFilter(document, filter));
+                if (order) {
+                  const direction = order.direction === 'desc' ? -1 : 1;
+                  result.sort((left, right) => direction * (left[order.field] - right[order.field]));
+                }
+                return { data: structuredClone(result.slice(0, maximum)) };
+              }
+            };
+            return query;
+          }
+        };
+      }
+    };
+  }
+
+  const database = createApi(collections);
+  database.runTransaction = async (work) => {
+    const draft = cloneCollections(collections);
+    const result = await work(createApi(draft));
+    if (failBeforeCommit > 0) {
+      failBeforeCommit -= 1;
+      throw new Error('injected CloudBase transaction failure');
     }
+    collections.clear();
+    for (const [collectionName, stored] of draft.entries()) {
+      collections.set(collectionName, stored);
+    }
+    return structuredClone(result);
   };
+  database.failNextCommit = () => { failBeforeCommit += 1; };
+  database.queryLog = queryLog;
+  database.snapshot = () => Object.fromEntries(
+    [...collections.entries()].map(([collectionName, stored]) => [
+      collectionName,
+      [...stored.values()].map((value) => structuredClone(value))
+    ])
+  );
   return database;
 }
 
@@ -291,6 +376,135 @@ test('AC3: duplicate opId replays one receipt, excludes retry metadata from iden
   assert.equal(Object.keys(snapshot.entities).length, 1);
   assert.equal(Object.keys(snapshot.operations).length, 1);
   assert.equal(snapshot.changes.length, 1);
+});
+
+test('P1: one syncPush request rejects duplicate opIds before any transaction or response classification', async () => {
+  const store = createMemoryStore();
+  const { handlers } = createHandlers({ store });
+  const operation = syncOperation();
+  const error = await captureError(() => handlers.syncPush({
+    operations: [operation, structuredClone(operation)]
+  }));
+
+  assert.equal(error.code, 'SYNC_OPERATION_INVALID');
+  assert.equal(error.message, 'Sync operation is invalid');
+  assert.deepEqual(store.snapshot(), {
+    accounts: {}, entities: {}, operations: {}, changes: [],
+    purgeConfirmations: {}, purgeReceipts: {}
+  });
+});
+
+test('P1: malformed closed wire payloads fail before writes for every synced entity type', async () => {
+  const plan = createDefaultPlans({ now: () => NOW })[0];
+  const record = validTrainingRecord();
+  let getterReads = 0;
+  const accessorPlan = structuredClone(plan);
+  Object.defineProperty(accessorPlan, 'title', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'must not execute';
+    }
+  });
+  const sparsePlan = structuredClone(plan);
+  sparsePlan.steps[0].alternatives = new Array(1);
+  const symbolPlan = structuredClone(plan);
+  symbolPlan[Symbol('private')] = true;
+  const cases = [
+    ['plan nested unknown', syncOperation({
+      payload: { ...plan, steps: [{ ...plan.steps[0], unexpected: true }, ...plan.steps.slice(1)] }
+    })],
+    ['plan invalid bound', syncOperation({
+      payload: { ...plan, estimatedDurationSeconds: -1 }
+    })],
+    ['plan accessor field', syncOperation({
+      opId: `op_${'2'.repeat(64)}`,
+      payload: accessorPlan
+    })],
+    ['plan sparse nested array', syncOperation({
+      opId: `op_${'3'.repeat(64)}`,
+      payload: sparsePlan
+    })],
+    ['plan symbol field', syncOperation({
+      opId: `op_${'4'.repeat(64)}`,
+      payload: symbolPlan
+    })],
+    ['record nested unknown', syncOperation({
+      opId: `op_${'d'.repeat(64)}`,
+      entityType: 'training_record',
+      entityId: record.id,
+      payload: {
+        ...record,
+        stepResults: [{ ...record.stepResults[0], unexpected: true }, ...record.stepResults.slice(1)]
+      }
+    })],
+    ['record invalid feedback bound', syncOperation({
+      opId: `op_${'e'.repeat(64)}`,
+      entityType: 'training_record',
+      entityId: record.id,
+      payload: {
+        ...record,
+        feedback: {
+          rpe: 11,
+          weightBeforeKg: null,
+          pain: { knee: false, lowerBack: false, ankleOrToe: false, dizziness: false },
+          note: ''
+        }
+      }
+    })],
+    ['settings unknown field', syncOperation({
+      opId: `op_${'f'.repeat(64)}`,
+      entityType: 'user_settings',
+      entityId: 'settings',
+      payload: { soundEnabled: false, unexpected: true }
+    })],
+    ['settings invalid type', syncOperation({
+      opId: `op_${'0'.repeat(64)}`,
+      entityType: 'user_settings',
+      entityId: 'settings',
+      payload: { defaultRestSeconds: '75' }
+    })]
+  ];
+
+  for (const [label, operation] of cases) {
+    const store = createMemoryStore();
+    const { handlers } = createHandlers({ store });
+    const error = await captureError(() => handlers.syncPush({ operations: [operation] }));
+    assert.equal(error.code, 'SYNC_PAYLOAD_INVALID', label);
+    assert.equal(error.message, 'Sync payload is invalid', label);
+    assert.deepEqual(store.snapshot(), {
+      accounts: {}, entities: {}, operations: {}, changes: [],
+      purgeConfirmations: {}, purgeReceipts: {}
+    }, label);
+  }
+  assert.equal(getterReads, 0);
+});
+
+test('P1: deployable wire validation stays aligned with client mutation validators', () => {
+  const plan = createDefaultPlans({ now: () => NOW })[0];
+  const record = validTrainingRecord();
+  const validCases = [
+    ['workout_plan', plan.id, plan],
+    ['training_record', record.id, record],
+    ['user_settings', 'settings', { soundEnabled: false, defaultRestSeconds: 90 }]
+  ];
+  for (const [entityType, entityId, payload] of validCases) {
+    assert.doesNotThrow(() => mapLocalMutation({ entityType, entityId, action: 'upsert', payload }));
+    assert.doesNotThrow(() => assertWirePayload(entityType, payload));
+  }
+
+  const malformedCases = [
+    ['workout_plan', plan.id, { ...plan, unknown: true }],
+    ['workout_plan', plan.id, { ...plan, steps: [{ ...plan.steps[0], order: 0 }, ...plan.steps.slice(1)] }],
+    ['training_record', record.id, { ...record, stepResults: [{ ...record.stepResults[0], unknown: true }, ...record.stepResults.slice(1)] }],
+    ['training_record', record.id, { ...record, completedStepCount: -1 }],
+    ['user_settings', 'settings', { timezone: 'not a timezone' }],
+    ['user_settings', 'settings', { defaultRestSeconds: 601 }]
+  ];
+  for (const [entityType, entityId, payload] of malformedCases) {
+    assert.throws(() => mapLocalMutation({ entityType, entityId, action: 'upsert', payload }));
+    assert.throws(() => assertWirePayload(entityType, payload));
+  }
 });
 
 test('AC3: concurrent same-base writes accept exactly one and return one owner-scoped conflict', async () => {
@@ -564,6 +778,97 @@ test('AC4: CloudBase purge receipts enforce device binding and exact-expiry sema
   assert.equal(wrongDeviceReplay.code, 'PURGE_CONFIRMATION_INVALID');
 });
 
+test('QA: production CloudBase adapter preserves transactions, owner filters, tombstones and purge isolation', async () => {
+  const database = createCloudBaseDatabaseDouble();
+  const store = createCloudBaseStore(database);
+  const ownerOne = createHandlers({ store });
+  const ownerTwo = createHandlers({
+    store,
+    openId: DENIED_OPENID,
+    allowedOpenId: DENIED_OPENID,
+    randomBytes: (size) => Buffer.alloc(size, 0x66)
+  });
+  await ownerOne.handlers.authBootstrap({ deviceId: 'device-one', schemaVersion: 1 });
+  await ownerTwo.handlers.authBootstrap({ deviceId: 'device-two', schemaVersion: 1 });
+
+  const firstPlan = createDefaultPlans({ now: () => NOW })[0];
+  const secondPlan = {
+    ...structuredClone(firstPlan),
+    id: 'plan_cloudbase_owner_two',
+    title: 'Owner two plan'
+  };
+  assert.equal((await ownerOne.handlers.syncPush({
+    operations: [syncOperation({ payload: firstPlan })]
+  })).accepted.length, 1);
+  assert.equal((await ownerTwo.handlers.syncPush({
+    operations: [syncOperation({
+      opId: `op_${'a'.repeat(64)}`,
+      entityId: secondPlan.id,
+      payload: secondPlan
+    })]
+  })).accepted.length, 1);
+
+  const ownerOnePage = await ownerOne.handlers.syncPull({ cursor: null, limit: 10 });
+  assert.equal(ownerOnePage.changes.length, 1);
+  assert.equal(ownerOnePage.changes[0].entityId, firstPlan.id);
+  assert.match(ownerOnePage.nextCursor, /^cursor_v1\./);
+
+  database.failNextCommit();
+  const rollbackPlan = { ...structuredClone(firstPlan), id: 'plan_cloudbase_rollback' };
+  const rollback = await captureError(() => ownerOne.handlers.syncPush({
+    operations: [syncOperation({
+      opId: `op_${'b'.repeat(64)}`,
+      entityId: rollbackPlan.id,
+      payload: rollbackPlan
+    })]
+  }));
+  assert.match(rollback.message, /injected CloudBase transaction failure/);
+  assert.equal((await ownerOne.handlers.syncPull({ cursor: null, limit: 10 })).changes.length, 1);
+
+  const deleted = await ownerOne.handlers.syncPush({
+    operations: [syncOperation({
+      opId: `op_${'c'.repeat(64)}`,
+      action: 'delete',
+      payload: null,
+      baseServerRevision: 1
+    })]
+  });
+  assert.equal(deleted.accepted[0].serverRevision, 2);
+  const tombstonePage = await ownerOne.handlers.syncPull({ cursor: null, limit: 10 });
+  assert.equal(tombstonePage.changes.length, 1);
+  assert.equal(tombstonePage.changes[0].deleted, true);
+  assert.equal(tombstonePage.changes[0].payload, null);
+
+  const prepared = await ownerOne.handlers.accountPurge({
+    action: 'prepare',
+    deviceId: 'device-one'
+  });
+  await ownerOne.handlers.accountPurge({
+    action: 'confirm',
+    deviceId: 'device-one',
+    confirmationToken: prepared.confirmationToken
+  });
+
+  const ownerTwoPage = await ownerTwo.handlers.syncPull({ cursor: null, limit: 10 });
+  assert.equal(ownerTwoPage.changes.length, 1);
+  assert.equal(ownerTwoPage.changes[0].entityId, secondPlan.id);
+  const ownerOneId = `owner_${hmacSha256('test-only-owner-hmac-key-with-32-bytes', ALLOWED_OPENID)}`;
+  const ownerTwoId = `owner_${hmacSha256('test-only-owner-hmac-key-with-32-bytes', DENIED_OPENID)}`;
+  const snapshot = database.snapshot();
+  for (const collectionName of [COLLECTIONS.entities, COLLECTIONS.operations, COLLECTIONS.changes]) {
+    assert.equal((snapshot[collectionName] || []).some(({ ownerId }) => ownerId === ownerOneId), false);
+    assert.equal((snapshot[collectionName] || []).some(({ ownerId }) => ownerId === ownerTwoId), true);
+  }
+  const ownerAccounts = new Map(snapshot[COLLECTIONS.accounts].map((account) => [account.ownerId, account]));
+  assert.equal(ownerAccounts.get(ownerOneId).status, 'purged');
+  assert.equal(ownerAccounts.get(ownerTwoId).status, 'active');
+  for (const query of database.queryLog.filter(({ collectionName }) => (
+    [COLLECTIONS.entities, COLLECTIONS.operations, COLLECTIONS.changes].includes(collectionName)
+  ))) {
+    assert.equal(typeof query.filter.ownerId, 'string', query.collectionName);
+  }
+});
+
 test('AC1/AC5: all four public cloud entrypoints lazily obtain trusted runtime and expose only their named handler', async () => {
   for (const functionName of ['authBootstrap', 'syncPush', 'syncPull', 'accountPurge']) {
     const entry = require(`../../cloudfunctions/${functionName}`);
@@ -587,6 +892,56 @@ test('AC1/AC5: all four public cloud entrypoints lazily obtain trusted runtime a
     assert.deepEqual(await main({ requestId: 'public-entry' }), { functionName });
     assert.equal(loads, 1);
     assert.deepEqual(calls, [{ requestId: 'public-entry' }]);
+  }
+});
+
+test('QA: public push, pull and purge handlers expose one auth failure shape without touching storage', async () => {
+  const publicHandlers = [
+    ['syncPush', require('../../cloudfunctions/syncPush'), { operations: [] }],
+    ['syncPull', require('../../cloudfunctions/syncPull'), { cursor: null, limit: 1 }],
+    ['accountPurge', require('../../cloudfunctions/accountPurge'), { action: 'prepare', deviceId: 'device-auth' }]
+  ];
+  const scenarios = [
+    ['denied', () => ({ OPENID: DENIED_OPENID }), sha256(ALLOWED_OPENID)],
+    ['missing', () => ({}), sha256(ALLOWED_OPENID)],
+    ['misconfigured', () => ({ OPENID: ALLOWED_OPENID }), 'not-a-valid-hash']
+  ];
+  const observed = [];
+
+  for (const [functionName, entry, event] of publicHandlers) {
+    for (const [scenario, getTrustedContext, allowedHashes] of scenarios) {
+      let storageTouches = 0;
+      const store = new Proxy({}, {
+        get() {
+          storageTouches += 1;
+          return async () => { throw new Error('storage must not be reached'); };
+        }
+      });
+      const handlers = createCloudSyncHandlers({
+        getTrustedContext,
+        store,
+        env: {
+          TRAINFLOW_ALLOWED_OPENID_SHA256: allowedHashes,
+          TRAINFLOW_OWNER_HMAC_KEY: 'test-only-owner-hmac-key-with-32-bytes',
+          TRAINFLOW_CURSOR_HMAC_KEY: 'test-only-cursor-hmac-key-with-32-bytes',
+          TRAINFLOW_PURGE_HMAC_KEY: 'test-only-purge-hmac-key-with-32-bytes',
+          TRAINFLOW_PURGE_TTL_SECONDS: '300'
+        },
+        now: () => NOW,
+        randomBytes: (size) => Buffer.alloc(size, 0x55),
+        logger: { info() {}, warn() {}, error() {} }
+      });
+      const main = entry.createMain(() => ({ createHandlers: () => handlers }));
+      const error = await captureError(() => main(event));
+      observed.push({ functionName, scenario, code: error.code, message: error.message });
+      assert.equal(storageTouches, 0, `${functionName}/${scenario}`);
+      assert.doesNotMatch(JSON.stringify(error), /openid|allowlist|hash|owner|device-auth/i);
+    }
+  }
+  assert.equal(observed.length, 9);
+  for (const result of observed) {
+    assert.equal(result.code, 'CLOUD_SYNC_UNAVAILABLE');
+    assert.equal(result.message, 'Cloud sync is unavailable');
   }
 });
 
@@ -629,6 +984,10 @@ test('AC5: materialized CloudBase function packages are self-contained and match
         sha256(fs.readFileSync(path.join(packageRoot, '_shared', 'cloudbase-runtime.js'))),
         report.fileDigests['cloudbase-runtime.js']
       );
+      assert.equal(
+        sha256(fs.readFileSync(path.join(packageRoot, '_shared', 'wire-validation.js'))),
+        report.fileDigests['wire-validation.js']
+      );
     }
   } finally {
     fs.rmSync(targetRoot, { recursive: true, force: true });
@@ -648,8 +1007,13 @@ test('AC5: client source cannot bypass cloud functions with direct sensitive col
     }
   }
   const combined = sources.join('\n');
+  const sensitiveCollectionPattern = new RegExp(
+    `collection\\s*\\(\\s*['"](?:${Object.values(COLLECTIONS)
+      .map((collectionName) => collectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|')})['"]\\s*\\)`
+  );
   assert.doesNotMatch(combined, /wx\.cloud\.database\s*\(/);
-  assert.doesNotMatch(combined, /collection\s*\(\s*['"]tf_(?:accounts|entities|operations|changes|purge_receipts)['"]\s*\)/);
+  assert.doesNotMatch(combined, sensitiveCollectionPattern);
 
   const cloudRoot = path.resolve(__dirname, '../../cloudfunctions');
   const cloudStack = [cloudRoot];
@@ -673,14 +1037,7 @@ test('AC5: database rules deny every sensitive collection and example env contai
     'utf8'
   ));
   assert.equal(rules.schema, 'trainflow.cloudbase-database-rules/v1');
-  const expectedCollections = [
-    'tf_accounts',
-    'tf_changes',
-    'tf_entities',
-    'tf_operations',
-    'tf_purge_confirmations',
-    'tf_purge_receipts'
-  ];
+  const expectedCollections = Object.values(COLLECTIONS).sort();
   assert.deepEqual(Object.keys(rules.collections).sort(), expectedCollections);
   for (const collectionName of expectedCollections) {
     assert.deepEqual(rules.collections[collectionName], { read: false, write: false });

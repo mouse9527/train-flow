@@ -69,9 +69,11 @@ deployment.
 
 - `authBootstrap({ deviceId, schemaVersion: 1 })` returns the current server time
   and a null initial cursor, causing a new device to pull authoritative history.
-- `syncPush({ operations })` runs one transaction per operation. The same
-  `ownerId + opId` and semantic request replays its receipt; a changed request is
-  rejected. Entity/tombstone, receipt and change feed are all-or-nothing.
+- `syncPush({ operations })` first validates closed V1 plan/record/settings wire
+  schemas and rejects duplicate request `opId` values before any write, then runs
+  one transaction per operation. The same `ownerId + opId` and semantic request
+  replays its receipt; a changed request is rejected. Entity/tombstone, receipt
+  and change feed are all-or-nothing.
 - `syncPull({ cursor, limit })` queries `ownerId + epoch + sequence`, coalesces
   repeated entity revisions in the raw page and returns a new opaque cursor.
 - `accountPurge` is two-stage. `prepare` creates a short-lived confirmation bound
