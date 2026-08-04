@@ -10,12 +10,70 @@ cd "$scan_root" || exit 2
 failed=0
 require_screenshots=${PRIVACY_SCAN_REQUIRE_SCREENSHOTS:-1}
 require_logs=${PRIVACY_SCAN_REQUIRE_LOGS:-$require_screenshots}
-expected_head=${PRIVACY_SCAN_EXPECTED_HEAD:-$(git rev-parse HEAD 2>/dev/null || true)}
-expected_tree=${PRIVACY_SCAN_EXPECTED_TREE:-$(git rev-parse HEAD^{tree} 2>/dev/null || true)}
+expected_head=${PRIVACY_SCAN_EXPECTED_HEAD:-}
+expected_tree=${PRIVACY_SCAN_EXPECTED_TREE:-}
+source_binding_origin=manifest
 
 report() {
   printf '%s %s\n' "$1" "$2"
   failed=1
+}
+
+if [[ -n "$expected_head$expected_tree" ]]; then
+  if [[ -z "$expected_head" || -z "$expected_tree" ]]; then
+    report EVIDENCE_SOURCE_CONFIG_INCOMPLETE manifest
+  else
+    source_binding_origin=environment
+  fi
+fi
+
+bind_evidence_source() {
+  local row_head=$1
+  local row_tree=$2
+  local category=$3
+  local source_manifest=$4
+  local mixed=0
+  if [[ -z "$expected_head" && -z "$expected_tree" ]]; then
+    expected_head=$row_head
+    expected_tree=$row_tree
+    return
+  fi
+  if [[ "$row_head" != "$expected_head" ]]; then
+    report "${category}_SOURCE_HEAD_MISMATCH" "$source_manifest"
+    mixed=1
+  fi
+  if [[ "$row_tree" != "$expected_tree" ]]; then
+    report "${category}_SOURCE_TREE_MISMATCH" "$source_manifest"
+    mixed=1
+  fi
+  if [[ "$mixed" -eq 1 && "$source_binding_origin" == manifest ]]; then
+    report EVIDENCE_SOURCE_MIXED "$source_manifest"
+  fi
+}
+
+verify_evidence_source() {
+  local row_head=$1
+  local row_tree=$2
+  local category=$3
+  local source_manifest=$4
+  local resolved_tree
+  if ! git cat-file -e "$row_head^{commit}" 2>/dev/null; then
+    report "${category}_SOURCE_UNRESOLVED" "$source_manifest"
+    return
+  fi
+  resolved_tree=$(git rev-parse "$row_head^{tree}")
+  [[ "$resolved_tree" == "$row_tree" ]] ||
+    report "${category}_SOURCE_TREE_MISMATCH" "$source_manifest"
+  git merge-base --is-ancestor "$row_head" HEAD 2>/dev/null ||
+    report "${category}_SOURCE_NOT_ANCESTOR" "$source_manifest"
+  git diff --quiet "$row_head" -- . \
+    ':(exclude)evidence/screenshots/**' \
+    ':(exclude)evidence/logs/**' ||
+    report "${category}_SOURCE_STALE" "$source_manifest"
+  if git ls-files --others --exclude-standard | \
+    LC_ALL=C grep -Ev '^evidence/(screenshots|logs)/' | grep -q .; then
+    report "${category}_SOURCE_STALE" "$source_manifest"
+  fi
 }
 
 has_nul_byte() {
@@ -130,6 +188,11 @@ while IFS= read -r -d '' file; do
       tail -n +2 "$file" | cut -f1,5,6 | LC_ALL=C grep -Eq "$pii_number_pattern" &&
         report PII_LITERAL "$file"
       ;;
+    evidence/logs/*.log)
+      sed -e '/^source-head: [a-f0-9]\{40\}$/d' \
+        -e '/^source-tree: [a-f0-9]\{40\}$/d' "$file" | \
+        LC_ALL=C grep -Eq "$pii_number_pattern" && report PII_LITERAL "$file"
+      ;;
     *)
       scan_pattern PII_LITERAL "$file" "$pii_number_pattern"
       ;;
@@ -186,16 +249,8 @@ if [[ -d "$screenshot_dir" ]]; then
         fi
         signature=$(LC_ALL=C od -An -tx1 -N8 "$image_path" | tr -d ' \n')
         [[ "$signature" == 89504e470d0a1a0a ]] || report SCREENSHOT_SIGNATURE_INVALID "$image_path"
-        [[ "$head" == "$expected_head" ]] || report SCREENSHOT_SOURCE_HEAD_MISMATCH "$manifest"
-        [[ "$tree" == "$expected_tree" ]] || report SCREENSHOT_SOURCE_TREE_MISMATCH "$manifest"
-        if ! git cat-file -e "$head^{commit}" 2>/dev/null; then
-          report SCREENSHOT_SOURCE_UNRESOLVED "$manifest"
-        else
-          source_tree=$(git rev-parse "$head^{tree}")
-          [[ "$source_tree" == "$tree" ]] || report SCREENSHOT_SOURCE_TREE_MISMATCH "$manifest"
-          git diff --quiet "$head" -- miniprogram cloudfunctions project.config.json package.json ||
-            report SCREENSHOT_SOURCE_STALE "$manifest"
-        fi
+        bind_evidence_source "$head" "$tree" SCREENSHOT "$manifest"
+        verify_evidence_source "$head" "$tree" SCREENSHOT "$manifest"
         if command -v sha256sum >/dev/null 2>&1; then
           actual_digest=$(sha256sum "$image_path" | awk '{print $1}')
         else
@@ -278,22 +333,8 @@ if [[ "$require_logs" == 1 ]]; then
         done
         manifest_kinds[${#manifest_kinds[@]}]=$kind
         manifest_logs[${#manifest_logs[@]}]=$log_path
-        [[ "$head" == "$expected_head" ]] || report LOG_SOURCE_HEAD_MISMATCH "$log_manifest"
-        [[ "$tree" == "$expected_tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
-        if ! git cat-file -e "$head^{commit}" 2>/dev/null; then
-          report LOG_SOURCE_UNRESOLVED "$log_manifest"
-        else
-          log_source_tree=$(git rev-parse "$head^{tree}")
-          [[ "$log_source_tree" == "$tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
-          git diff --quiet "$head" -- . \
-            ':(exclude)evidence/screenshots/**' \
-            ':(exclude)evidence/logs/**' ||
-            report LOG_SOURCE_STALE "$log_manifest"
-          if git ls-files --others --exclude-standard | \
-            LC_ALL=C grep -Ev '^evidence/(screenshots|logs)/' | grep -q .; then
-            report LOG_SOURCE_STALE "$log_manifest"
-          fi
-        fi
+        bind_evidence_source "$head" "$tree" LOG "$log_manifest"
+        verify_evidence_source "$head" "$tree" LOG "$log_manifest"
         if [[ "$unique_binding" -eq 1 ]]; then
           case "$kind" in
             critical-e2e) critical_log=1 ;;

@@ -672,6 +672,143 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
     }
   });
   assert.equal(acceptedLogs.status, 0, acceptedLogs.stdout || acceptedLogs.stderr);
+
+  const strictEvidenceRepository = initializeEvidenceRepository('train-flow-plain-strict-');
+  const strictEvidenceRoot = strictEvidenceRepository.repositoryRoot;
+  const strictPngBytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x00
+  ]);
+  fs.mkdirSync(path.join(strictEvidenceRoot, 'evidence/screenshots'), { recursive: true });
+  const writeStrictEvidence = ({ screenshotSource, logSources }) => {
+    fs.writeFileSync(
+      path.join(strictEvidenceRoot, 'evidence/screenshots/today.png'),
+      strictPngBytes
+    );
+    fs.writeFileSync(
+      path.join(strictEvidenceRoot, 'evidence/screenshots/manifest.tsv'),
+      'route\thead\ttree\tsha256\tdata_source\tmanual_visual_verdict\tfile\n' +
+        `/pages/today/index\t${screenshotSource.head}\t${screenshotSource.tree}` +
+        `\t${digestOf(strictPngBytes)}\tanonymous-fixture\tPASS\ttoday.png\n`
+    );
+    const rows = [];
+    for (const [kind, file] of [
+      ['critical-e2e', 'critical-e2e.log'],
+      ['full-suite', 'full-suite.log'],
+      ['privacy-scan', 'privacy-scan.log']
+    ]) {
+      const source = logSources[kind];
+      const content = commandLog(kind, source.head, source.tree, validLogSummaries[kind]);
+      fs.writeFileSync(path.join(strictEvidenceRoot, 'evidence/logs', file), content);
+      rows.push(
+        `${kind}\t${source.head}\t${source.tree}\t${digestOf(content)}\tPASS\t${file}`
+      );
+    }
+    fs.writeFileSync(
+      path.join(strictEvidenceRoot, 'evidence/logs/manifest.tsv'),
+      'kind\thead\ttree\tsha256\tredaction_verdict\tfile\n' + `${rows.join('\n')}\n`
+    );
+  };
+  const strictSource = {
+    head: strictEvidenceRepository.sourceHead,
+    tree: strictEvidenceRepository.sourceTree
+  };
+  writeStrictEvidence({
+    screenshotSource: strictSource,
+    logSources: {
+      'critical-e2e': strictSource,
+      'full-suite': strictSource,
+      'privacy-scan': strictSource
+    }
+  });
+  spawnSync('git', ['add', 'evidence'], { cwd: strictEvidenceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'attach evidence only'
+  ], { cwd: strictEvidenceRoot });
+  const plainStrictEnv = { ...process.env };
+  delete plainStrictEnv.PRIVACY_SCAN_ROOT;
+  delete plainStrictEnv.PRIVACY_SCAN_REQUIRE_SCREENSHOTS;
+  delete plainStrictEnv.PRIVACY_SCAN_REQUIRE_LOGS;
+  delete plainStrictEnv.PRIVACY_SCAN_EXPECTED_HEAD;
+  delete plainStrictEnv.PRIVACY_SCAN_EXPECTED_TREE;
+  const plainStrict = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: strictEvidenceRoot,
+    encoding: 'utf8',
+    env: plainStrictEnv
+  });
+  assert.equal(plainStrict.status, 0, plainStrict.stdout || plainStrict.stderr);
+
+  const evidenceOnlySource = {
+    head: spawnSync('git', ['rev-parse', 'HEAD'], {
+      cwd: strictEvidenceRoot,
+      encoding: 'utf8'
+    }).stdout.trim(),
+    tree: spawnSync('git', ['rev-parse', 'HEAD^{tree}'], {
+      cwd: strictEvidenceRoot,
+      encoding: 'utf8'
+    }).stdout.trim()
+  };
+  writeStrictEvidence({
+    screenshotSource: strictSource,
+    logSources: {
+      'critical-e2e': strictSource,
+      'full-suite': strictSource,
+      'privacy-scan': evidenceOnlySource
+    }
+  });
+  spawnSync('git', ['add', 'evidence/logs'], { cwd: strictEvidenceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'mix evidence sources'
+  ], { cwd: strictEvidenceRoot });
+  const mixedSources = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: strictEvidenceRoot,
+    encoding: 'utf8',
+    env: plainStrictEnv
+  });
+  assert.notEqual(mixedSources.status, 0);
+  assert.match(mixedSources.stdout, /EVIDENCE_SOURCE_MIXED evidence\/logs\/manifest\.tsv/);
+
+  writeStrictEvidence({
+    screenshotSource: strictSource,
+    logSources: {
+      'critical-e2e': strictSource,
+      'full-suite': strictSource,
+      'privacy-scan': strictSource
+    }
+  });
+  spawnSync('git', ['add', 'evidence/logs'], { cwd: strictEvidenceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'restore one evidence source'
+  ], { cwd: strictEvidenceRoot });
+  fs.mkdirSync(path.join(strictEvidenceRoot, 'cloudbase'), { recursive: true });
+  fs.writeFileSync(
+    path.join(strictEvidenceRoot, 'cloudbase/database.rules.json'),
+    '{"read":false,"write":false}\n'
+  );
+  spawnSync('git', ['add', 'cloudbase/database.rules.json'], { cwd: strictEvidenceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'drift outside evidence'
+  ], { cwd: strictEvidenceRoot });
+  const nonEvidenceDrift = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: strictEvidenceRoot,
+    encoding: 'utf8',
+    env: plainStrictEnv
+  });
+  assert.notEqual(nonEvidenceDrift.status, 0);
+  assert.match(
+    nonEvidenceDrift.stdout,
+    /SCREENSHOT_SOURCE_STALE evidence\/screenshots\/manifest\.tsv/
+  );
+  assert.match(nonEvidenceDrift.stdout, /LOG_SOURCE_STALE evidence\/logs\/manifest\.tsv/);
+
   fs.mkdirSync(path.join(validLogRepository.repositoryRoot, 'tests'), { recursive: true });
   fs.writeFileSync(
     path.join(validLogRepository.repositoryRoot, 'tests/stale-boundary.test.js'),
@@ -970,56 +1107,4 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
     /SCREENSHOT_UNLISTED evidence\/screenshots\/unlisted\.png/
   );
 
-  const staleSourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-stale-source-'));
-  temporaryRoots.push(staleSourceRoot);
-  fs.mkdirSync(path.join(staleSourceRoot, 'scripts'), { recursive: true });
-  fs.mkdirSync(path.join(staleSourceRoot, 'evidence/screenshots'), { recursive: true });
-  fs.copyFileSync(path.join(ROOT, 'scripts/privacy-scan.sh'), path.join(staleSourceRoot, 'scripts/privacy-scan.sh'));
-  const pngBytes = Buffer.from([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    0x00, 0x00, 0x00, 0x00
-  ]);
-  fs.writeFileSync(path.join(staleSourceRoot, 'evidence/screenshots/capture.png'), pngBytes);
-  spawnSync('git', ['init', '-q'], { cwd: staleSourceRoot });
-  spawnSync('git', ['add', '.'], { cwd: staleSourceRoot });
-  spawnSync('git', [
-    '-c', 'user.name=Anonymous QA',
-    '-c', 'user.email=qa@example.invalid',
-    'commit', '-qm', 'capture product source'
-  ], { cwd: staleSourceRoot });
-  const staleHead = spawnSync('git', ['rev-parse', 'HEAD'], {
-    cwd: staleSourceRoot,
-    encoding: 'utf8'
-  }).stdout.trim();
-  const staleTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], {
-    cwd: staleSourceRoot,
-    encoding: 'utf8'
-  }).stdout.trim();
-  const pngDigest = createHash('sha256').update(pngBytes).digest('hex');
-  fs.writeFileSync(
-    path.join(staleSourceRoot, 'evidence/screenshots/manifest.tsv'),
-    'route\thead\ttree\tsha256\tdata_source\tmanual_visual_verdict\tfile\n' +
-      `/pages/today/index\t${staleHead}\t${staleTree}\t${pngDigest}` +
-      '\tanonymous-fixture\tPASS\tcapture.png\n'
-  );
-  spawnSync('git', ['add', 'evidence/screenshots/manifest.tsv'], { cwd: staleSourceRoot });
-  spawnSync('git', [
-    '-c', 'user.name=Anonymous QA',
-    '-c', 'user.email=qa@example.invalid',
-    'commit', '-qm', 'attach stale evidence'
-  ], { cwd: staleSourceRoot });
-  const staleEvidence = spawnSync('bash', ['scripts/privacy-scan.sh'], {
-    cwd: staleSourceRoot,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PRIVACY_SCAN_ROOT: staleSourceRoot,
-      PRIVACY_SCAN_REQUIRE_LOGS: '0'
-    }
-  });
-  assert.notEqual(staleEvidence.status, 0);
-  assert.match(
-    staleEvidence.stdout,
-    /SCREENSHOT_SOURCE_HEAD_MISMATCH evidence\/screenshots\/manifest\.tsv/
-  );
 });
