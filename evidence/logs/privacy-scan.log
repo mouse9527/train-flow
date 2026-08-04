@@ -1,6 +1,6 @@
 command: PRIVACY_SCAN_REQUIRE_SCREENSHOTS=0 PRIVACY_SCAN_REQUIRE_LOGS=0 bash scripts/privacy-scan.sh
-source-head: 7b9cf1731fb8a5d0d831ab90e6d42aa34ffc4f4e
-source-tree: 081e7b1f65069e529a70fc16799b30461997a737
+source-head: daea959b9e186318fae61694b31cdf2e7e2434e3
+source-tree: 1d3c3e7021df0e3a0a852b2209a6d4ebbee775d3
 TEST_ONLY_SENTINEL scripts/privacy-scan.sh
 TEST_ONLY_SENTINEL tests/cloudfunctions/cloud-sync-security.test.js
 TEST_ONLY_SENTINEL tests/cloudfunctions/cloud-sync-security.test.js
@@ -32,6 +32,5 @@ TEST_ONLY_SENTINEL tests/services/local-database.test.js
 TEST_ONLY_SENTINEL tests/services/local-database.test.js
 TEST_ONLY_SENTINEL tests/services/local-database.test.js
 TEST_ONLY_SENTINEL tests/services/local-database.test.js
-SCREENSHOT_EVIDENCE_ABSENT evidence/screenshots
 PRIVACY_SCAN_PASS tracked-content
 exit-code: 0
