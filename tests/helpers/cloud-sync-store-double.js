@@ -117,11 +117,18 @@ function createCloudSyncStoreDouble({ retryCallbacks = 0, failBeforeCommit = 0 }
     async confirmPurge({ ownerId, deviceId, purpose, tokenHash, now }) {
       const key = stateKey(ownerId, tokenHash);
       const receipt = state.purgeReceipts[key] || null;
-      if (receipt) return structuredClone(receipt);
+      if (receipt) {
+        if (receipt.deviceId !== deviceId || receipt.purpose !== purpose) {
+          const error = new Error('confirmation invalid');
+          error.code = 'PURGE_CONFIRMATION_INVALID';
+          throw error;
+        }
+        return { purgedAt: receipt.purgedAt };
+      }
       const confirmation = state.purgeConfirmations[key] || null;
       if (
         !confirmation || confirmation.deviceId !== deviceId ||
-        confirmation.purpose !== purpose || confirmation.expiresAt < now
+        confirmation.purpose !== purpose || confirmation.expiresAt <= now
       ) {
         const error = new Error('confirmation invalid');
         error.code = 'PURGE_CONFIRMATION_INVALID';
@@ -142,10 +149,10 @@ function createCloudSyncStoreDouble({ retryCallbacks = 0, failBeforeCommit = 0 }
       }
       state.changes = state.changes.filter((change) => change.ownerId !== ownerId);
       delete state.purgeConfirmations[key];
-      const result = { purgedAt: now };
+      const result = { ownerId, deviceId, purpose, tokenHash, purgedAt: now };
       state.purgeReceipts[key] = result;
       account.status = 'purged';
-      return structuredClone(result);
+      return { purgedAt: result.purgedAt };
     },
     snapshot() {
       return structuredClone(state);

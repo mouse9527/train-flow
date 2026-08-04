@@ -10,6 +10,9 @@ const {
   createCloudSyncHandlers
 } = require('../../cloudfunctions/shared');
 const {
+  createCloudBaseStore
+} = require('../../cloudfunctions/shared/cloudbase-runtime');
+const {
   materializeCloudFunctions
 } = require('../../scripts/prepare-cloudfunctions');
 const {
@@ -99,6 +102,53 @@ function captureError(invoke) {
       () => null,
       (error) => error
     );
+}
+
+function createCloudBaseDatabaseDouble() {
+  const collections = new Map();
+  function documents(collectionName) {
+    if (!collections.has(collectionName)) collections.set(collectionName, new Map());
+    return collections.get(collectionName);
+  }
+  const database = {
+    command: { gt(value) { return { value }; } },
+    collection(collectionName) {
+      return {
+        doc(id) {
+          return {
+            async get() {
+              const value = documents(collectionName).get(id);
+              if (!value) {
+                const error = new Error('document not found');
+                error.code = 'DATABASE_DOCUMENT_NOT_FOUND';
+                throw error;
+              }
+              return { data: structuredClone(value) };
+            },
+            async set({ data }) {
+              documents(collectionName).set(id, structuredClone({ ...data, _id: id }));
+            },
+            async remove() {
+              documents(collectionName).delete(id);
+            }
+          };
+        },
+        where(filter) {
+          const matches = () => [...documents(collectionName).values()]
+            .filter((document) => Object.entries(filter).every(([key, value]) => document[key] === value));
+          return {
+            limit() {
+              return { async get() { return { data: structuredClone(matches()) }; } };
+            }
+          };
+        }
+      };
+    },
+    runTransaction(work) {
+      return work(database);
+    }
+  };
+  return database;
 }
 
 test('AC1: authBootstrap derives one opaque owner from trusted context and ignores forged identity fields', async () => {
@@ -444,6 +494,12 @@ test('AC4: accountPurge prepare/confirm is short-lived, owner/device bound, repl
     deviceId: 'device-cloud-security',
     confirmationToken: prepared.confirmationToken
   }), receipt);
+  const wrongDeviceReplay = await captureError(() => ownerOne.handlers.accountPurge({
+    action: 'confirm',
+    deviceId: 'device-other',
+    confirmationToken: prepared.confirmationToken
+  }));
+  assert.equal(wrongDeviceReplay.code, 'PURGE_CONFIRMATION_INVALID');
   const snapshot = store.snapshot();
   assert.equal(Object.keys(snapshot.entities).length, 1, 'other owner entity remains');
   assert.equal(Object.keys(snapshot.operations).length, 1, 'other owner receipt remains');
@@ -456,7 +512,7 @@ test('AC4: expired or wrongly bound purge confirmation performs no deletion', as
   const { handlers } = createHandlers({ store, now: () => clock });
   await handlers.syncPush({ operations: [syncOperation()] });
   const prepared = await handlers.accountPurge({ action: 'prepare', deviceId: 'device-one' });
-  clock = prepared.expiresAt + 1;
+  clock = prepared.expiresAt;
 
   for (const deviceId of ['device-two', 'device-one']) {
     const error = await captureError(() => handlers.accountPurge({
@@ -467,6 +523,45 @@ test('AC4: expired or wrongly bound purge confirmation performs no deletion', as
     assert.equal(error.code, 'PURGE_CONFIRMATION_INVALID');
   }
   assert.equal(Object.keys(store.snapshot().entities).length, 1);
+});
+
+test('AC4: CloudBase purge receipts enforce device binding and exact-expiry semantics', async () => {
+  const store = createCloudBaseStore(createCloudBaseDatabaseDouble());
+  const confirmation = {
+    ownerId: 'owner_cloudbase_test',
+    deviceId: 'device-one',
+    purpose: 'account_purge',
+    tokenHash: sha256('confirmation-one'),
+    issuedAt: NOW,
+    expiresAt: NOW + 300000
+  };
+  await store.preparePurge(confirmation);
+  const exactExpiry = await captureError(() => store.confirmPurge({
+    ownerId: confirmation.ownerId,
+    deviceId: confirmation.deviceId,
+    purpose: confirmation.purpose,
+    tokenHash: confirmation.tokenHash,
+    now: confirmation.expiresAt
+  }));
+  assert.equal(exactExpiry.code, 'PURGE_CONFIRMATION_INVALID');
+
+  const fresh = { ...confirmation, tokenHash: sha256('confirmation-two') };
+  await store.preparePurge(fresh);
+  assert.deepEqual(await store.confirmPurge({
+    ownerId: fresh.ownerId,
+    deviceId: fresh.deviceId,
+    purpose: fresh.purpose,
+    tokenHash: fresh.tokenHash,
+    now: NOW + 1
+  }), { purgedAt: NOW + 1 });
+  const wrongDeviceReplay = await captureError(() => store.confirmPurge({
+    ownerId: fresh.ownerId,
+    deviceId: 'device-other',
+    purpose: fresh.purpose,
+    tokenHash: fresh.tokenHash,
+    now: NOW + 2
+  }));
+  assert.equal(wrongDeviceReplay.code, 'PURGE_CONFIRMATION_INVALID');
 });
 
 test('AC1/AC5: all four public cloud entrypoints lazily obtain trusted runtime and expose only their named handler', async () => {
@@ -515,6 +610,19 @@ test('AC5: materialized CloudBase function packages are self-contained and match
         axios: '1.19.0',
         'lodash.unset': '4.18.0'
       });
+      const packageLock = JSON.parse(fs.readFileSync(path.resolve(
+        __dirname,
+        '../../cloudfunctions',
+        functionName,
+        'package-lock.json'
+      ), 'utf8'));
+      assert.equal(packageLock.packages['node_modules/wx-server-sdk'].version, '4.0.2');
+      assert.equal(
+        packageLock.packages['node_modules/@cloudbase/node-sdk'].version,
+        '3.17.2'
+      );
+      assert.equal(packageLock.packages['node_modules/axios'].version, '1.19.0');
+      assert.equal(packageLock.packages['node_modules/lodash.unset'].version, '4.18.0');
       const sharedDigest = sha256(fs.readFileSync(path.join(packageRoot, '_shared', 'index.js')));
       assert.equal(sharedDigest, report.fileDigests['index.js']);
       assert.equal(
@@ -542,6 +650,20 @@ test('AC5: client source cannot bypass cloud functions with direct sensitive col
   const combined = sources.join('\n');
   assert.doesNotMatch(combined, /wx\.cloud\.database\s*\(/);
   assert.doesNotMatch(combined, /collection\s*\(\s*['"]tf_(?:accounts|entities|operations|changes|purge_receipts)['"]\s*\)/);
+
+  const cloudRoot = path.resolve(__dirname, '../../cloudfunctions');
+  const cloudStack = [cloudRoot];
+  const cloudSources = [];
+  while (cloudStack.length > 0) {
+    const current = cloudStack.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === '_shared') continue;
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) cloudStack.push(target);
+      else if (entry.name.endsWith('.js')) cloudSources.push(fs.readFileSync(target, 'utf8'));
+    }
+  }
+  assert.doesNotMatch(`${combined}\n${cloudSources.join('\n')}`, /\.watch\s*\(/);
 });
 
 test('AC5: database rules deny every sensitive collection and example env contains names without values', () => {

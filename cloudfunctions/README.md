@@ -54,11 +54,16 @@ The command creates `cloudfunctions/<name>/_shared/` for `authBootstrap`,
 `syncPush`, `syncPull` and `accountPurge`. Generated copies are ignored by Git.
 Review the printed SHA-256 digest, then use WeChat DevTools “上传并部署：云端安装依赖”
 for each function. Every package pins stable `wx-server-sdk` `4.0.2` and overrides
-fixed `axios` / `lodash.unset` releases. `npm audit --omit=dev` still reports the
-upstream `lodash.set` prototype-pollution advisory through CloudBase's realtime
-WebSocket module. TrainFlow does not expose realtime/watch APIs, rejects prototype
-keys at its request boundary, and must re-audit when CloudBase publishes a fixed
-dependency tree.
+fixed `axios` / `lodash.unset` releases. `npm audit --omit=dev` reports four HIGH
+package entries propagated from one root advisory, `GHSA-p6mc-m468-83gw`, because
+`@cloudbase/database` depends on `lodash.set` `4.3.2` and no fixed release exists.
+That call is confined to CloudBase realtime/watch `updatedFields` merging;
+TrainFlow exposes no `.watch()` path and rejects prototype keys at its request
+boundary. Keep the lock files, block any future watch usage until the advisory is
+fixed, and re-audit on every CloudBase dependency change. Do not override
+`@cloudbase/node-sdk` across its major version merely to clear audit: the 4.x tree
+requires a newer Node dependency/runtime contract that is not verified for this
+deployment.
 
 ## Runtime contracts
 

@@ -208,7 +208,15 @@ function createCloudBaseStore(database) {
           COLLECTIONS.purgeReceipts,
           receiptId
         );
-        if (existingReceipt) return { status: 'done', receipt: existingReceipt };
+        if (existingReceipt) {
+          if (
+            existingReceipt.ownerId !== ownerId || existingReceipt.deviceId !== deviceId ||
+            existingReceipt.purpose !== purpose || existingReceipt.tokenHash !== tokenHash
+          ) {
+            throw runtimeError('PURGE_CONFIRMATION_INVALID', 'Purge confirmation is invalid');
+          }
+          return { status: 'done', receipt: existingReceipt };
+        }
         const confirmation = await readDocument(
           transaction,
           COLLECTIONS.purgeConfirmations,
@@ -218,7 +226,7 @@ function createCloudBaseStore(database) {
           !confirmation || confirmation.ownerId !== ownerId ||
           confirmation.deviceId !== deviceId || confirmation.purpose !== purpose ||
           !['prepared', 'purging'].includes(confirmation.status) ||
-          (confirmation.status === 'prepared' && confirmation.expiresAt < now)
+          (confirmation.status === 'prepared' && confirmation.expiresAt <= now)
         ) {
           throw runtimeError('PURGE_CONFIRMATION_INVALID', 'Purge confirmation is invalid');
         }
@@ -275,6 +283,9 @@ function createCloudBaseStore(database) {
         }
         const receipt = {
           ownerId,
+          deviceId,
+          purpose,
+          tokenHash,
           receiptId,
           purgedAt: now
         };
