@@ -72,6 +72,22 @@ function addConflict(draft, conflict) {
   }
 }
 
+function assertPushResponseBoundToAttempt(response, attemptedOperations) {
+  const attemptedOpIds = new Set(attemptedOperations.map(({ opId }) => opId));
+  for (const classification of [
+    ...response.accepted,
+    ...response.rejected,
+    ...response.conflicts
+  ]) {
+    if (!attemptedOpIds.has(classification.opId)) {
+      throw syncServiceError(
+        'push response classified an operation outside the attempted request',
+        'SYNC_PUSH_RESPONSE_UNBOUND'
+      );
+    }
+  }
+}
+
 function applyRemoteDomainChange(draft, change) {
   if (change.entityType === ENTITY_TYPES.WORKOUT_PLAN) {
     const index = draft.plans.findIndex(({ id }) => id === change.entityId);
@@ -194,6 +210,7 @@ class SyncService {
 
     const response = await this.provider.push({ operations: attemptedOperations });
     assertPushResult(response);
+    assertPushResponseBoundToAttempt(response, attemptedOperations);
 
     const responseSnapshot = this.database.load();
     let accepted;

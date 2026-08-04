@@ -680,7 +680,7 @@ function remotePlanEnvelope(operation, { serverRevision = 7, title = 'Remote win
   };
 }
 
-test('AC3/AC6: push removes only exact accepted operations and preserves rejected, conflict and unknown classifications', async () => {
+test('AC3/AC6: push removes only exact accepted operations and preserves rejected, conflict and unlisted operations', async () => {
   const { database } = persistentRuntime();
   savedPlan(database, { id: 'plan_push_accepted', trainingDate: '2026-09-10', title: 'Accepted' });
   savedPlan(database, { id: 'plan_push_rejected', trainingDate: '2026-09-11', title: 'Rejected' });
@@ -695,12 +695,6 @@ test('AC3/AC6: push removes only exact accepted operations and preserves rejecte
   provider.push = async (request) => {
     const result = await fakePush(request);
     result.accepted = result.accepted.filter(({ opId }) => opId !== unlistedOperation.opId);
-    result.accepted.push({
-      opId: 'op_unknown_remote_receipt',
-      entityType: ENTITY_TYPES.WORKOUT_PLAN,
-      entityId: 'plan_unknown_remote_receipt',
-      serverRevision: 99
-    });
     return result;
   };
   const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
@@ -709,7 +703,7 @@ test('AC3/AC6: push removes only exact accepted operations and preserves rejecte
   const after = database.load();
 
   assert.deepEqual(result.acceptedOpIds, [acceptedOperation.opId]);
-  assert.deepEqual(result.unknownAcceptedOpIds, ['op_unknown_remote_receipt']);
+  assert.deepEqual(result.unknownAcceptedOpIds, []);
   assert.deepEqual(after.sync.outbox.map(({ opId }) => opId), [
     rejectedOperation.opId,
     conflictOperation.opId,
@@ -811,6 +805,54 @@ test('AC3: accepted head rebases the next same-entity operation without changing
   assert.equal(after.sync.outbox[0].opId, next.opId);
   assert.equal(after.sync.outbox[0].baseServerRevision, 1);
   assert.notEqual(after.sync.outbox[0].opId, head.opId);
+});
+
+test('Attack: push response cannot accept an outbox operation that was not in the attempted request', async () => {
+  const { database, storage } = persistentRuntime();
+  const repository = createPlanRepository({ database, now: () => NOW });
+  const first = repository.save({
+    ...clone(planFixture()),
+    id: 'plan_unattempted_receipt',
+    trainingDate: '2026-09-17',
+    title: 'First queued edit'
+  }, 0);
+  repository.save({ ...first, title: 'Second queued edit' }, first.revision);
+  const [head, unattemptedNext] = database.load().sync.outbox;
+  let afterAttempt = null;
+  const fake = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const provider = {
+    bootstrap: fake.bootstrap.bind(fake),
+    pull: fake.pull.bind(fake),
+    purge: fake.purge.bind(fake),
+    async push(request) {
+      assert.deepEqual(request.operations.map(({ opId }) => opId), [head.opId]);
+      afterAttempt = database.load();
+      return {
+        accepted: [{
+          opId: head.opId,
+          entityType: head.entityType,
+          entityId: head.entityId,
+          serverRevision: 1
+        }, {
+          opId: unattemptedNext.opId,
+          entityType: unattemptedNext.entityType,
+          entityId: unattemptedNext.entityId,
+          serverRevision: 2
+        }],
+        rejected: [],
+        conflicts: []
+      };
+    }
+  };
+  storage.clearOperations();
+  const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+
+  await assert.rejects(
+    () => service.pushPending(),
+    (error) => error && error.code === 'SYNC_PUSH_RESPONSE_UNBOUND'
+  );
+  assert.deepEqual(database.load(), afterAttempt, 'unbound receipt must not apply response-stage writes');
+  assert.equal(storage.operations.filter(({ type }) => type === 'write').length, 2);
 });
 
 function scriptedPullProvider(result) {
