@@ -329,6 +329,8 @@ test('cloud sync surface declares sanitized status, explicit conflict choices an
   assert.match(pageWxml, /本机.*不.*删除|不会删除本机/);
   assert.match(pageWxml, /服务器.*绑定|服务器签发/);
   assert.match(pageWxml, /删除云端同步副本/);
+  assert.match(pageWxml, /wx:if="\{\{!syncState\.enabled\}\}"[^>]*bindtap="onPrepareSyncEnable"/);
+  assert.match(pageWxml, /wx:if="\{\{syncState\.enabled\}\}"[^>]*bindtap="onDisableCloudSync"/);
   assert.match(componentWxml, /state\.label/);
   assert.match(componentWxml, /本机.*正常|本机训练不受影响/);
   assert.match(componentWxml, /采用云端/);

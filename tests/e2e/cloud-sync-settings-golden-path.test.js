@@ -154,6 +154,9 @@ test('golden path: settings page enables, retries, resolves a plan conflict and 
   assert.deepEqual(localAfterPurge.sync.outbox, []);
   assert.deepEqual(localAfterPurge.sync.conflicts, []);
   assert.deepEqual(localAfterPurge.sync.replicas, {});
+  assert.deepEqual(page.data.syncState, syncApplication.getState());
+  assert.equal(page.data.syncState.code, 'disabled');
+  assert.equal(page.data.syncState.enabled, false);
 });
 
 test('local clear through the real settings page/application path never purges or mutates remote copies', async () => {
@@ -201,6 +204,7 @@ test('local clear through the real settings page/application path never purges o
   const remoteBefore = await provider.pull({ cursor: null, limit: 100 });
   assert.equal(remoteBefore.changes.length, 2, 'plan and settings must exist remotely before local clear');
 
+  page.onSwitchSection({ currentTarget: { dataset: { section: 'data' } } });
   await page.onPrepareLocalClear();
   const cleared = await page.onConfirmLocalClear();
   const localAfter = database.load();
@@ -214,4 +218,11 @@ test('local clear through the real settings page/application path never purges o
   assert.deepEqual(remoteAfter.changes, remoteBefore.changes);
   assert.match(page.data.dataNotice, /本机数据已清除/);
   assert.match(page.data.dataNotice, /不会删除云端数据/);
+  assert.deepEqual(page.data.syncState, syncApplication.getState());
+  assert.equal(page.data.syncState.code, 'disabled');
+
+  page.setData({ syncState: { ...page.data.syncState, code: 'synced', enabled: true } });
+  page.onSwitchSection({ currentTarget: { dataset: { section: 'cloud-sync' } } });
+  assert.deepEqual(page.data.syncState, syncApplication.getState());
+  assert.equal(page.data.syncState.code, 'disabled');
 });

@@ -163,8 +163,9 @@ function createSettingsPageDefinition({
   onSwitchSection(event) {
     const section = event.currentTarget.dataset.section;
     this.setData({ section });
-    if (section === 'cloud-sync' && !this._syncApplication) {
-      this._loadSyncApplication();
+    if (section === 'cloud-sync') {
+      if (!this._syncApplication) this._loadSyncApplication();
+      else this.refreshSyncState();
     }
   },
 
@@ -291,12 +292,16 @@ function createSettingsPageDefinition({
         if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
         this._clearConfirmationId = '';
         this._importJsonText = '';
+        const syncState = this._syncApplication
+          ? this._syncApplication.getState()
+          : this.data.syncState;
         this.setData({
           clearPreview: null,
           importPreview: null,
           importBytes: 0,
           exportReady: false,
           settings: settingsApplication.getSettings(),
+          syncState,
           dataError: '',
           dataNotice: result.cleanupPending
             ? '本机数据已清除，旧槽物理清理将在下次启动重试。'
@@ -496,9 +501,11 @@ function createSettingsPageDefinition({
     ).then((receipt) => {
       if (!isActiveLifecycle(this, epoch)) return { cancelled: true };
       this._remotePurgeConfirmationToken = '';
+      const syncState = this._syncApplication.getState();
       this.setData({
         syncPurgePreview: null,
         cloudPurgeReceipt: { purgedAt: receipt.purgedAt },
+        syncState,
         syncError: '',
         syncNotice: '云端同步副本已删除；本机数据保持不变。'
       });
