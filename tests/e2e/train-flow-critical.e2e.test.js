@@ -557,24 +557,49 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   )).join('\n');
   assert.doesNotMatch(directClientSources, /wx\s*\.\s*cloud\s*\.\s*database\s*\(/);
 
-  const scan = spawnSync('bash', [path.join(ROOT, 'scripts/privacy-scan.sh')], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    env: { ...process.env, PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0' }
-  });
-  assert.equal(scan.status, 0, scan.stdout || scan.stderr);
-  const strictEvidenceScan = spawnSync('bash', [path.join(ROOT, 'scripts/privacy-scan.sh')], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    env: { ...process.env, PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '1' }
-  });
-  assert.notEqual(strictEvidenceScan.status, 0);
-  assert.match(strictEvidenceScan.stdout, /SCREENSHOT_EVIDENCE_ABSENT evidence\/screenshots/);
-  const strictLogScan = spawnSync('bash', [path.join(ROOT, 'scripts/privacy-scan.sh')], {
-    cwd: ROOT,
+  const absentEvidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-absent-evidence-'));
+  temporaryRoots.push(absentEvidenceRoot);
+  fs.mkdirSync(path.join(absentEvidenceRoot, 'scripts'), { recursive: true });
+  fs.copyFileSync(
+    path.join(ROOT, 'scripts/privacy-scan.sh'),
+    path.join(absentEvidenceRoot, 'scripts/privacy-scan.sh')
+  );
+  spawnSync('git', ['init', '-q'], { cwd: absentEvidenceRoot });
+  spawnSync('git', ['add', 'scripts'], { cwd: absentEvidenceRoot });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'capture source without evidence'
+  ], { cwd: absentEvidenceRoot });
+
+  const scan = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: absentEvidenceRoot,
     encoding: 'utf8',
     env: {
       ...process.env,
+      PRIVACY_SCAN_ROOT: absentEvidenceRoot,
+      PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0',
+      PRIVACY_SCAN_REQUIRE_LOGS: '0'
+    }
+  });
+  assert.equal(scan.status, 0, scan.stdout || scan.stderr);
+  const strictEvidenceScan = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: absentEvidenceRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_ROOT: absentEvidenceRoot,
+      PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '1'
+    }
+  });
+  assert.notEqual(strictEvidenceScan.status, 0);
+  assert.match(strictEvidenceScan.stdout, /SCREENSHOT_EVIDENCE_ABSENT evidence\/screenshots/);
+  const strictLogScan = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: absentEvidenceRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_ROOT: absentEvidenceRoot,
       PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0',
       PRIVACY_SCAN_REQUIRE_LOGS: '1'
     }
