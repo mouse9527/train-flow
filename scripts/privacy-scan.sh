@@ -30,7 +30,13 @@ is_scanned_path() {
 is_allowed_sentinel_line() {
   local file=$1
   local line=$2
-  [[ "$line" == *PRIVACY_SCAN_RULE_DEFINITION* || "$line" == *PRIVACY_SCAN_TEST_SENTINEL* ]] && return 0
+  if [[ "$file" == scripts/privacy-scan.sh && "$line" == *PRIVACY_SCAN_RULE_DEFINITION* ]]; then
+    return 0
+  fi
+  if [[ "$file" == tests/e2e/train-flow-critical.e2e.test.js &&
+    "$line" == *PRIVACY_SCAN_TEST_SENTINEL* ]]; then
+    return 0
+  fi
   case "$file" in
     tests/cloudfunctions/cloud-sync-security.test.js)
       [[ "$line" == *test-* || "$line" == *nested-secret* ]]
@@ -125,6 +131,7 @@ if [[ -d "$screenshot_dir" ]]; then
       report SCREENSHOT_MANIFEST_SCHEMA "$manifest"
     else
       row_count=0
+      manifest_images=()
       while IFS=$'\t' read -r route head tree digest data_source verdict image_file extra; do
         [[ -n "$route$head$tree$digest$data_source$verdict$image_file" ]] || continue
         row_count=$((row_count + 1))
@@ -141,13 +148,20 @@ if [[ -d "$screenshot_dir" ]]; then
           continue
         fi
         image_path=$screenshot_dir/$image_file
+        manifest_images[${#manifest_images[@]}]=$image_path
         if [[ ! -f "$image_path" ]]; then
           report SCREENSHOT_FILE_MISSING "$image_path"
+          continue
+        fi
+        if [[ -L "$image_path" ]]; then
+          report SCREENSHOT_FILE_SYMLINK "$image_path"
           continue
         fi
         if ! git ls-files --error-unmatch "$image_path" >/dev/null 2>&1; then
           report SCREENSHOT_FILE_UNTRACKED "$image_path"
         fi
+        signature=$(LC_ALL=C od -An -tx1 -N8 "$image_path" | tr -d ' \n')
+        [[ "$signature" == 89504e470d0a1a0a ]] || report SCREENSHOT_SIGNATURE_INVALID "$image_path"
         if ! git cat-file -e "$head^{commit}" 2>/dev/null; then
           report SCREENSHOT_SOURCE_UNRESOLVED "$manifest"
         else
@@ -164,6 +178,18 @@ if [[ -d "$screenshot_dir" ]]; then
         [[ "$actual_digest" == "$digest" ]] || report SCREENSHOT_HASH_MISMATCH "$image_path"
       done < <(tail -n +2 "$manifest")
       [[ "$row_count" -gt 0 ]] || report SCREENSHOT_MANIFEST_EMPTY "$manifest"
+      while IFS= read -r -d '' tracked_image; do
+        listed=0
+        for declared_image in "${manifest_images[@]}"; do
+          if [[ "$declared_image" == "$tracked_image" ]]; then
+            listed=1
+            break
+          fi
+        done
+        [[ "$listed" -eq 1 ]] || report SCREENSHOT_UNLISTED "$tracked_image"
+      done < <(git ls-files -z "$screenshot_dir" | while IFS= read -r -d '' candidate; do
+        [[ "$candidate" == *.png ]] && printf '%s\0' "$candidate"
+      done)
     fi
   fi
 else

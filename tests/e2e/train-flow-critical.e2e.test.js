@@ -572,6 +572,10 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
     '{"appSecret":"private-value","realName":"private-person"}\n' // PRIVACY_SCAN_TEST_SENTINEL
   );
   fs.writeFileSync(
+    path.join(negativeRoot, 'miniprogram/marked.js'),
+    "const appSecret = 'must-still-fail'; // PRIVACY_SCAN_TEST_SENTINEL\n" // PRIVACY_SCAN_TEST_SENTINEL
+  );
+  fs.writeFileSync(
     path.join(negativeRoot, 'evidence/logs/request.log'),
     '{"requestPayload":"private"}\n'
   );
@@ -593,6 +597,7 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   assert.match(rejected.stdout, /DIRECT_MINIPROGRAM_DATABASE miniprogram\/leak\.js/);
   assert.match(rejected.stdout, /PII_LITERAL miniprogram\/leak\.json/);
   assert.match(rejected.stdout, /CREDENTIAL_ASSIGNMENT miniprogram\/leak\.json/);
+  assert.match(rejected.stdout, /CREDENTIAL_ASSIGNMENT miniprogram\/marked\.js/);
   assert.match(
     rejected.stdout,
     /CREDENTIAL_ASSIGNMENT tests\/e2e\/train-flow-critical\.e2e\.test\.js/
@@ -636,6 +641,11 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   const outsideBytes = Buffer.from('anonymous screenshot bytes');
   fs.writeFileSync(path.join(traversalRoot, 'evidence/outside.png'), outsideBytes);
   fs.writeFileSync(path.join(traversalRoot, 'evidence/screenshots/capture.png'), outsideBytes);
+  fs.writeFileSync(
+    path.join(traversalRoot, 'evidence/screenshots/unlisted.png'),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  );
+  fs.symlinkSync('../outside.png', path.join(traversalRoot, 'evidence/screenshots/link.png'));
   const outsideDigest = createHash('sha256').update(outsideBytes).digest('hex');
   fs.writeFileSync(
     path.join(traversalRoot, 'evidence/screenshots/manifest.tsv'),
@@ -643,10 +653,18 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
       `/pages/today/index\t${'0'.repeat(40)}\t${'0'.repeat(40)}\t${outsideDigest}` +
       '\tanonymous-fixture\tPASS\tcapture.png\n' +
       `/pages/today/index\t${'0'.repeat(40)}\t${'0'.repeat(40)}\t${outsideDigest}` +
+      '\tanonymous-fixture\tPASS\tlink.png\n' +
+      `/pages/today/index\t${'0'.repeat(40)}\t${'0'.repeat(40)}\t${outsideDigest}` +
       '\tanonymous-fixture\tPASS\t../outside.png\n'
   );
   spawnSync('git', ['init', '-q'], { cwd: traversalRoot });
-  spawnSync('git', ['add', 'scripts', 'evidence/screenshots/manifest.tsv'], { cwd: traversalRoot });
+  spawnSync('git', [
+    'add',
+    'scripts',
+    'evidence/screenshots/manifest.tsv',
+    'evidence/screenshots/link.png',
+    'evidence/screenshots/unlisted.png'
+  ], { cwd: traversalRoot });
   spawnSync('git', [
     '-c', 'user.name=Anonymous QA',
     '-c', 'user.email=qa@example.invalid',
@@ -669,5 +687,17 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   assert.match(
     traversalEvidence.stdout,
     /SCREENSHOT_FILE_UNTRACKED evidence\/screenshots\/capture\.png/
+  );
+  assert.match(
+    traversalEvidence.stdout,
+    /SCREENSHOT_FILE_SYMLINK evidence\/screenshots\/link\.png/
+  );
+  assert.match(
+    traversalEvidence.stdout,
+    /SCREENSHOT_SIGNATURE_INVALID evidence\/screenshots\/capture\.png/
+  );
+  assert.match(
+    traversalEvidence.stdout,
+    /SCREENSHOT_UNLISTED evidence\/screenshots\/unlisted\.png/
   );
 });
