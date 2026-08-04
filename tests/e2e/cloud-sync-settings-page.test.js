@@ -1,5 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..', '..');
 
 function settingsApplication() {
   return {
@@ -204,4 +208,45 @@ test('developer fixtures are anonymous and develop-only while trial and release 
   assert.equal(developerSyncFixturesEnabled(wxDouble('trial')), false);
   assert.deepEqual(productionCalls, ['release', 'trial']);
   assert.deepEqual(fixtureCalls, [['develop', 'denied']]);
+});
+
+test('cloud sync surface declares sanitized status, explicit conflict choices and distinct cloud purge copy', () => {
+  const pageJson = JSON.parse(fs.readFileSync(
+    path.join(ROOT, 'miniprogram/pages/settings/index.json'),
+    'utf8'
+  ));
+  const pageWxml = fs.readFileSync(
+    path.join(ROOT, 'miniprogram/pages/settings/index.wxml'),
+    'utf8'
+  );
+  const componentWxml = fs.readFileSync(
+    path.join(ROOT, 'miniprogram/components/sync-status/index.wxml'),
+    'utf8'
+  );
+  const pageSource = fs.readFileSync(
+    path.join(ROOT, 'miniprogram/pages/settings/index.js'),
+    'utf8'
+  );
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+
+  assert.equal(pageJson.usingComponents['sync-status'], '/components/sync-status/index');
+  assert.match(pageWxml, /云同步/);
+  assert.match(pageWxml, /sync-status/);
+  assert.match(pageWxml, /启用云同步/);
+  assert.match(pageWxml, /本机计划/);
+  assert.match(pageWxml, /本机.*不.*删除|不会删除本机/);
+  assert.match(pageWxml, /服务器.*绑定|服务器签发/);
+  assert.match(pageWxml, /删除云端同步副本/);
+  assert.match(componentWxml, /state\.label/);
+  assert.match(componentWxml, /本机.*正常|本机训练不受影响/);
+  assert.match(componentWxml, /采用云端/);
+  assert.match(componentWxml, /保留本机副本/);
+  assert.match(componentWxml, /基于云端重试/);
+  assert.doesNotMatch(pageSource, /wx\.cloud\.database|\.watch\s*\(/);
+  for (const fixture of ['waiting', 'denied', 'conflict', 'purge']) {
+    assert.match(readme, new RegExp(`pages/settings/index\\?section=cloud-sync&fixture=${fixture}`));
+  }
+  assert.match(readme, /develop/);
+  assert.match(readme, /trial/);
+  assert.match(readme, /release/);
 });

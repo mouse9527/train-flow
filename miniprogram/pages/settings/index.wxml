@@ -15,6 +15,11 @@
       data-section="data"
       bindtap="onSwitchSection"
     >本机数据</view>
+    <view
+      class="tf-tab {{section === 'cloud-sync' ? 'tf-tab-active' : ''}}"
+      data-section="cloud-sync"
+      bindtap="onSwitchSection"
+    >云同步</view>
   </view>
 
   <view class="tf-section" wx:if="{{section === 'preferences'}}">
@@ -82,6 +87,48 @@
     <view class="tf-row">
       <text class="tf-caption">训练前后请注意补水，避免空腹或身体不适时进行高强度训练。</text>
     </view>
+  </view>
+
+  <view class="tf-section cloud-sync-section" wx:if="{{section === 'cloud-sync' && syncState}}">
+    <view class="tf-section-title">可选云同步</view>
+    <text class="cloud-sync-copy">训练始终从本机开始。云端同步用于跨设备恢复；关闭、无网络或无权限时，本机计划和训练记录仍可正常使用。</text>
+
+    <sync-status
+      state="{{syncState}}"
+      bindretry="onRetrySync"
+      bindresolve="onResolveSyncConflict"
+    />
+
+    <button class="cloud-sync-primary" wx:if="{{!syncState.enabled}}" bindtap="onPrepareSyncEnable">启用云同步</button>
+    <view class="cloud-sync-preview" wx:if="{{syncEnablePreview}}">
+      <text class="cloud-sync-preview-title">启用前预览</text>
+      <text>将加入同步：{{syncEnablePreview.scope.plans}} 个本机计划、{{syncEnablePreview.scope.records}} 条本机训练记录和 {{syncEnablePreview.scope.settings}} 份设置。</text>
+      <text>当前等待队列：{{syncEnablePreview.scope.pendingOperations}} 项。</text>
+      <text>{{syncEnablePreview.warning}}</text>
+      <button class="cloud-sync-primary" bindtap="onConfirmSyncEnable">确认启用</button>
+    </view>
+    <button class="cloud-sync-secondary" wx:if="{{syncState.enabled}}" bindtap="onDisableCloudSync">关闭云同步</button>
+    <text class="cloud-sync-copy" wx:if="{{syncState.enabled}}">关闭只停止后续同步，不会删除本机数据，也不会自动删除云端同步副本。</text>
+
+    <view class="cloud-sync-divider"></view>
+    <view class="cloud-danger-zone">
+      <view class="tf-section-title cloud-danger-title">云端账号数据</view>
+      <text class="cloud-sync-copy">删除云端同步副本与“清除本机数据”是两个独立操作。确认信息由服务器签发并绑定当前设备；删除云端时不会删除本机计划、记录或设置。</text>
+      <button class="cloud-danger-button" bindtap="onPrepareCloudPurge">准备删除云端同步副本</button>
+      <view class="cloud-sync-preview cloud-danger-preview" wx:if="{{syncPurgePreview}}">
+        <text class="cloud-sync-preview-title">服务器确认已准备</text>
+        <text>{{syncPurgePreview.warning}}</text>
+        <text>确认将在 {{syncPurgePreview.expiresAt}} 后失效。</text>
+        <button class="cloud-danger-button cloud-danger-solid" bindtap="onConfirmCloudPurge">删除云端同步副本</button>
+      </view>
+      <view class="cloud-purge-receipt" wx:if="{{cloudPurgeReceipt}}">
+        <text>云端删除回执：{{cloudPurgeReceipt.purgedAt}}</text>
+        <text>本机数据保持不变。</text>
+      </view>
+    </view>
+
+    <text class="data-error" wx:if="{{syncError}}">{{syncError}}</text>
+    <text class="data-notice" wx:if="{{syncNotice}}">{{syncNotice}}</text>
   </view>
 
   <view class="tf-section data-section" wx:if="{{section === 'data'}}">

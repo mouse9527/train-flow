@@ -429,7 +429,10 @@ function createSettingsPageDefinition({
   onResolveSyncConflict(event) {
     if (!this._syncApplication || this._isUnloaded) return Promise.resolve({ cancelled: true });
     const epoch = this._lifecycleEpoch;
-    const { conflictId, action } = event.currentTarget.dataset;
+    const command = event && event.detail && event.detail.conflictId
+      ? event.detail
+      : event.currentTarget.dataset;
+    const { conflictId, action } = command;
     return Promise.resolve(
       this._syncApplication.resolveConflict({ conflictId, action })
     ).then((result) => {
