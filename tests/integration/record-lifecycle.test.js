@@ -122,9 +122,10 @@ test('real record lifecycle materializes from terminal Session, edits through ap
   assert.equal(corrected.selectedRecord.feedback.rpe, 8);
   assert.equal(corrected.selectedRecord.feedback.note, '匿名集成记录');
   const afterCorrection = database.load();
-  assert.equal(afterCorrection.sync.outbox.at(-1).kind, 'training-record.corrected');
+  assert.equal(afterCorrection.sync.outbox.at(-1).entityType, 'training_record');
+  assert.equal(afterCorrection.sync.outbox.at(-1).action, 'upsert');
+  assert.deepEqual(afterCorrection.sync.outbox.at(-1).payload, afterCorrection.records[0]);
   assert.equal(afterCorrection.statisticsProjection.dirty, true);
-  assert.doesNotMatch(JSON.stringify(afterCorrection.sync.outbox.at(-1)), /匿名集成记录|feedback|actualCorrections/);
 
   application.deleteRecord({
     recordId: corrected.selectedRecord.id,
@@ -143,7 +144,8 @@ test('real record lifecycle materializes from terminal Session, edits through ap
   );
   assert.equal(durable.length, 1);
   assert.equal(isDeletedTrainingRecord(durable[0]), true);
-  assert.equal(database.load().sync.outbox.at(-1).kind, 'training-record.deleted');
+  assert.equal(database.load().sync.outbox.at(-1).action, 'delete');
+  assert.equal(database.load().sync.outbox.at(-1).payload, null);
 });
 
 test('real record lifecycle preserves null feedback during an actual-only correction', () => {
@@ -253,7 +255,7 @@ test('real record page drives the production application and repository through 
   assert.equal(page.data.view.selectedRecord.steps[0].actualLabel, '20 次');
   assert.equal(page.data.view.selectedRecord.feedback.rpe, 7);
   assert.equal(page.data.view.selectedRecord.feedback.note, '匿名页面集成记录');
-  assert.equal(database.load().sync.outbox.at(-1).kind, 'training-record.corrected');
+  assert.equal(database.load().sync.outbox.at(-1).action, 'upsert');
 
   page.onRequestDelete();
   assert.equal(page.data.deleteConfirmation.recordId, page.data.view.selectedRecord.id);
@@ -261,7 +263,7 @@ test('real record page drives the production application and repository through 
 
   assert.deepEqual(page.data.view.records, []);
   assert.equal(page.data.view.selectedRecord, null);
-  assert.equal(database.load().sync.outbox.at(-1).kind, 'training-record.deleted');
+  assert.equal(database.load().sync.outbox.at(-1).action, 'delete');
   assert.deepEqual(toasts, [
     { title: '训练记录已更新', icon: 'none' },
     { title: '训练记录已删除', icon: 'none' }

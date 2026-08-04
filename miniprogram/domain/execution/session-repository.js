@@ -9,6 +9,8 @@ const {
   ensureTerminalTrainingRecord,
   findTrainingRecords
 } = require('./training-record');
+const { ENTITY_TYPES } = require('../sync/entity-mapper');
+const { appendRepositorySyncMutation } = require('../sync/sync-operation');
 
 function assertDatabase(database) {
   if (!database || typeof database.load !== 'function' || typeof database.commit !== 'function') {
@@ -29,7 +31,7 @@ function assertSessionIdAvailable(records, sessionId) {
   }
 }
 
-function ensureTerminalRecordAndInvalidate(draft, session, nowMs) {
+function ensureTerminalRecordAndInvalidate(draft, session, nowMs, commandIdentity) {
   const existed = findTrainingRecords(draft.records, session.id).length > 0;
   const record = ensureTerminalTrainingRecord(draft.records, session);
   if (!existed) {
@@ -40,6 +42,16 @@ function ensureTerminalRecordAndInvalidate(draft, session, nowMs) {
       recordRevision: record.revision,
       invalidatedAt: nowMs
     };
+    appendRepositorySyncMutation(draft, {
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      action: 'upsert',
+      payload: record
+    }, {
+      commandIdentity,
+      createdAt: nowMs,
+      deviceId: session.originDeviceId
+    });
   }
   return record;
 }
@@ -91,7 +103,12 @@ class SessionRepository {
         if (!isTerminal(draft.activeSession)) {
           throw createSessionError('Only one active Session is allowed', 'SESSION_ACTIVE_EXISTS');
         }
-        ensureTerminalRecordAndInvalidate(draft, draft.activeSession, nowMs);
+        ensureTerminalRecordAndInvalidate(
+          draft,
+          draft.activeSession,
+          nowMs,
+          `session.materialize:${draft.activeSession.id}:${draft.activeSession.sessionRevision}`
+        );
       }
       assertSessionIdAvailable(draft.records, candidate.id);
       draft.activeSession = cloneWorkoutSession(candidate);
@@ -128,7 +145,12 @@ class SessionRepository {
       }
       draft.activeSession = cloneWorkoutSession(applied.session);
       if (isTerminal(applied.session)) {
-        ensureTerminalRecordAndInvalidate(draft, applied.session, command.nowMs);
+        ensureTerminalRecordAndInvalidate(
+          draft,
+          applied.session,
+          command.nowMs,
+          `session.apply:${applied.session.id}:${command.commandKey}`
+        );
       }
     }, snapshot.localRevision);
     assertWorkoutSession(committed.activeSession);

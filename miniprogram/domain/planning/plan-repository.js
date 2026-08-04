@@ -1,4 +1,9 @@
 const { assertWorkoutPlan } = require('./plan-validation');
+const { ENTITY_TYPES } = require('../sync/entity-mapper');
+const {
+  appendRepositorySyncMutation,
+  createRepositoryDeviceIdFactory
+} = require('../sync/sync-operation');
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -137,15 +142,19 @@ function validateDefaultSet(plans, templateVersion) {
 }
 
 class PlanRepository {
-  constructor({ database, now = Date.now }) {
+  constructor({ database, now = Date.now, deviceIdFactory = createRepositoryDeviceIdFactory() }) {
     if (!database || typeof database.load !== 'function' || typeof database.commit !== 'function') {
       throw new Error('PlanRepository requires a LocalDatabase');
     }
     if (typeof now !== 'function') {
       throw new Error('PlanRepository now must be a function');
     }
+    if (typeof deviceIdFactory !== 'function') {
+      throw new Error('PlanRepository deviceIdFactory must be a function');
+    }
     this.database = database;
     this.now = now;
+    this.deviceIdFactory = deviceIdFactory;
   }
 
   initializeDefaults(plans, templateVersion) {
@@ -196,7 +205,20 @@ class PlanRepository {
           );
         }
       }
-      draft.plans.push(...clone(missing));
+      for (const plan of missing) {
+        const persisted = clone(plan);
+        draft.plans.push(persisted);
+        appendRepositorySyncMutation(draft, {
+          entityType: ENTITY_TYPES.WORKOUT_PLAN,
+          entityId: persisted.id,
+          action: 'upsert',
+          payload: persisted
+        }, {
+          commandIdentity: `plan.initialize:${templateVersion}:${persisted.id}:${snapshot.localRevision}`,
+          createdAt: persisted.updatedAt,
+          deviceIdFactory: this.deviceIdFactory
+        });
+      }
     }, snapshot.localRevision);
     const persisted = committed.plans.filter((plan) => candidateIds.has(plan.id) && activePlan(plan));
     return {
@@ -308,6 +330,16 @@ class PlanRepository {
       } else {
         draft.plans[index] = clone(candidate);
       }
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.WORKOUT_PLAN,
+        entityId: candidate.id,
+        action: 'upsert',
+        payload: candidate
+      }, {
+        commandIdentity: `plan.save:${candidate.id}:${expectedRevision}`,
+        createdAt: timestamp,
+        deviceIdFactory: this.deviceIdFactory
+      });
     }, snapshot.localRevision);
     return clone(committed.plans.find(({ id }) => id === candidate.id));
   }
@@ -389,6 +421,26 @@ class PlanRepository {
       }
       draft.plans[currentIndex] = clone(detachedTombstone);
       draft.plans.push(clone(detachedCandidate));
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.WORKOUT_PLAN,
+        entityId: detachedTombstone.id,
+        action: 'delete',
+        payload: null
+      }, {
+        commandIdentity: `plan.replace.delete:${expectedTargetPlanId}:${expectedTargetRevision}:${detachedCandidate.id}`,
+        createdAt: timestamp,
+        deviceIdFactory: this.deviceIdFactory
+      });
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.WORKOUT_PLAN,
+        entityId: detachedCandidate.id,
+        action: 'upsert',
+        payload: detachedCandidate
+      }, {
+        commandIdentity: `plan.replace.create:${expectedTargetPlanId}:${expectedTargetRevision}:${detachedCandidate.id}`,
+        createdAt: timestamp,
+        deviceIdFactory: this.deviceIdFactory
+      });
     }, snapshot.localRevision);
     return clone(committed.plans.find(({ id }) => id === detachedCandidate.id));
   }
@@ -433,6 +485,16 @@ class PlanRepository {
         );
       }
       draft.plans[index] = clone(tombstone);
+      appendRepositorySyncMutation(draft, {
+        entityType: ENTITY_TYPES.WORKOUT_PLAN,
+        entityId: tombstone.id,
+        action: 'delete',
+        payload: null
+      }, {
+        commandIdentity: `plan.delete:${tombstone.id}:${expectedRevision}`,
+        createdAt: timestamp,
+        deviceIdFactory: this.deviceIdFactory
+      });
     }, snapshot.localRevision);
     return clone(committed.plans.find((plan) => plan.id === id));
   }

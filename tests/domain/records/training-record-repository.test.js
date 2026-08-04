@@ -16,6 +16,10 @@ const {
 const {
   createLocalDatabase
 } = require('../../../miniprogram/services/local-database');
+const {
+  OPERATION_FIELDS,
+  assertSyncOperation
+} = require('../../../miniprogram/domain/sync/sync-operation');
 const { StorageDouble, clone } = require('../../helpers/storage-double');
 
 const NOW = 1785976500000;
@@ -177,7 +181,7 @@ test('Attack Round 2: one successful correction atomically replaces the record a
   assert.equal(database.load().records[0].actualCorrections[0].actualReps, 13);
 });
 
-test('Attack Round 2: sync and statistics descriptors are strictly closed and never leak correction or feedback payloads', () => {
+test('Attack Round 2: sync operation carries the complete corrected record while statistics invalidation stays minimal', () => {
   const { database, canonical } = createHarness();
   const corrected = unwrapRecord(
     createRepository(database).correct(correctionCommand(canonical))
@@ -186,21 +190,13 @@ test('Attack Round 2: sync and statistics descriptors are strictly closed and ne
   const outbox = snapshot.sync.outbox.at(-1);
   const invalidation = snapshot.statisticsProjection;
 
-  assertClosedKeys(outbox, [
-    'opId',
-    'kind',
-    'entityType',
-    'entityId',
-    'entityRevision',
-    'occurredAt'
-  ]);
-  assert.equal(typeof outbox.opId, 'string');
-  assert.notEqual(outbox.opId.length, 0);
-  assert.equal(outbox.kind, 'training-record.corrected');
-  assert.equal(outbox.entityType, 'training-record');
+  assertClosedKeys(outbox, OPERATION_FIELDS);
+  assertSyncOperation(outbox);
+  assert.equal(outbox.entityType, 'training_record');
   assert.equal(outbox.entityId, canonical.id);
-  assert.equal(outbox.entityRevision, corrected.revision);
-  assert.equal(outbox.occurredAt, CORRECTION_NOW);
+  assert.equal(outbox.action, 'upsert');
+  assert.equal(outbox.createdAt, CORRECTION_NOW);
+  assert.deepEqual(outbox.payload, corrected);
 
   assert.deepEqual(invalidation, {
     dirty: true,
@@ -210,7 +206,7 @@ test('Attack Round 2: sync and statistics descriptors are strictly closed and ne
     invalidatedAt: CORRECTION_NOW
   });
 
-  const descriptorJson = JSON.stringify({ outbox, invalidation });
+  const descriptorJson = JSON.stringify(invalidation);
   assert.doesNotMatch(
     descriptorJson,
     /note|pain|rpe|weightBeforeKg|actualCorrections|feedback/i
@@ -219,7 +215,7 @@ test('Attack Round 2: sync and statistics descriptors are strictly closed and ne
   assert.equal(
     descriptorJson.includes(canonical.planSnapshot.steps[0].id),
     false,
-    'actual correction step identity must not leak into the descriptor'
+    'actual correction step identity must not leak into statistics invalidation'
   );
 });
 

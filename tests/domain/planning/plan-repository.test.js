@@ -15,6 +15,7 @@ const {
 const {
   createPlanCopyService
 } = require('../../../miniprogram/domain/planning/plan-copy-service');
+const { createAppDatabase } = require('../../../miniprogram/domain/sync/app-database');
 const {
   createLocalDatabase
 } = require('../../../miniprogram/services/local-database');
@@ -400,10 +401,7 @@ test('PlanRepository commit re-check still rejects a newly active date owner aft
     id: 'plan_requested',
     trainingDate: '2026-08-10'
   });
-  const baseline = {
-    localRevision: 0,
-    plans: []
-  };
+  const baseline = createAppDatabase({ now: () => SAVE_NOW });
   let committed = false;
   const repository = createPlanRepository({
     now: () => SAVE_NOW,
@@ -436,10 +434,7 @@ test('PlanRepository commit re-check ignores a historical tombstone added after 
     id: 'plan_requested',
     trainingDate: '2026-08-10'
   });
-  const baseline = {
-    localRevision: 0,
-    plans: []
-  };
+  const baseline = createAppDatabase({ now: () => SAVE_NOW });
   const historical = makePlan(makeStep('manual'), {
     id: 'historical_owner',
     trainingDate: requested.trainingDate,
