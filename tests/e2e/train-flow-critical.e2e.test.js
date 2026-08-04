@@ -417,7 +417,13 @@ test('C3 history, invalid import, cancel/confirm clear and Sunday rest share rea
   assert.equal(importAdapter.networkAttempts(), 0);
 });
 
-test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries', async () => {
+test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries', async (t) => {
+  const temporaryRoots = [];
+  t.after(() => {
+    for (const temporaryRoot of temporaryRoots) {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
   const adapter = createAnonymousOfflineAdapter();
   const database = createLocalDatabase({ storage: adapter, now: () => FIXED_CLOCK.startAt });
   database.commit((draft) => {
@@ -552,6 +558,7 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   assert.match(strictEvidenceScan.stdout, /SCREENSHOT_EVIDENCE_ABSENT evidence\/screenshots/);
 
   const negativeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-privacy-'));
+  temporaryRoots.push(negativeRoot);
   fs.mkdirSync(path.join(negativeRoot, 'miniprogram'), { recursive: true });
   fs.mkdirSync(path.join(negativeRoot, 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(negativeRoot, 'evidence/logs'), { recursive: true });
@@ -609,6 +616,7 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   );
 
   const emptyEvidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-empty-evidence-'));
+  temporaryRoots.push(emptyEvidenceRoot);
   fs.mkdirSync(path.join(emptyEvidenceRoot, 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(emptyEvidenceRoot, 'evidence/screenshots'), { recursive: true });
   fs.copyFileSync(
@@ -635,6 +643,7 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   assert.match(emptyEvidence.stdout, /SCREENSHOT_MANIFEST_EMPTY evidence\/screenshots\/manifest\.tsv/);
 
   const traversalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-evidence-path-'));
+  temporaryRoots.push(traversalRoot);
   fs.mkdirSync(path.join(traversalRoot, 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(traversalRoot, 'evidence/screenshots'), { recursive: true });
   fs.copyFileSync(path.join(ROOT, 'scripts/privacy-scan.sh'), path.join(traversalRoot, 'scripts/privacy-scan.sh'));
