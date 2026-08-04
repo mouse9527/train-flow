@@ -40,6 +40,7 @@ const {
 const {
   createDeterministicRemoteSyncProvider
 } = require('../../miniprogram/services/remote-sync-provider');
+const { computeChecksum } = require('../../miniprogram/utils/checksum');
 
 const NOW = 1785719340000;
 
@@ -215,6 +216,133 @@ test('AC1/AC2: enabling previews only upload counts and denied cloud becomes a r
   assert.equal(application.getState().errorCode, 'CLOUD_SYNC_UNAVAILABLE');
   assert.equal(JSON.stringify(application.getState()).includes(privateError), false);
   assert.equal(JSON.stringify(application.getState()).includes('openid'), false);
+});
+
+test('P1: empty outbox enable preview atomically enqueues every missing active local entity before sync', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database, plan } = createRuntime(provider);
+  const record = createBaselineTrainingRecord({
+    id: 'session_enable_preview',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    draft.sync.outbox = [];
+    draft.sync.replicas = {};
+  });
+
+  const preview = application.prepareEnable();
+  assert.deepEqual(preview.scope, {
+    plans: 1,
+    records: 1,
+    settings: 1,
+    pendingOperations: 0
+  });
+  assert.equal(Object.prototype.hasOwnProperty.call(preview, 'previewToken'), false);
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    new Set(provider.calls.push[0].operations.map(({ entityType }) => entityType)),
+    new Set([
+      ENTITY_TYPES.WORKOUT_PLAN,
+      ENTITY_TYPES.TRAINING_RECORD,
+      ENTITY_TYPES.USER_SETTINGS
+    ])
+  );
+  assert.equal(provider.calls.push[0].operations.length, 3);
+  assert.equal(database.load().sync.outbox.length, 0);
+});
+
+test('P1: stale enable preview rejects with zero writes after the intervening local revision', async () => {
+  const provider = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const { application, database } = createRuntime(provider);
+  database.commit((draft) => {
+    draft.sync.outbox = [];
+    draft.sync.replicas = {};
+  });
+  const preview = application.prepareEnable();
+  database.commit((draft) => {
+    draft.settings.defaultRestSeconds = 95;
+    draft.settings.revision += 1;
+  });
+  const beforeConfirm = database.load();
+
+  await assert.rejects(
+    () => application.confirmEnable({ confirmationId: preview.confirmationId }),
+    { code: 'SYNC_ENABLE_PREVIEW_STALE' }
+  );
+  assert.deepEqual(database.load(), beforeConfirm);
+  assert.equal(provider.calls.bootstrap.length, 0);
+  assert.equal(provider.calls.push.length, 0);
+});
+
+test('P1: enable bootstrap preserves exact queued work and skips an exact replica fact', async () => {
+  const fake = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_fixture_owner',
+    now: () => NOW
+  });
+  const provider = {
+    ...fake,
+    async bootstrap() {
+      const error = new Error('offline fixture');
+      error.code = 'CLOUD_SYNC_UNAVAILABLE';
+      throw error;
+    }
+  };
+  const { application, database, plan } = createRuntime(provider);
+  const originalPlanOp = database.load().sync.outbox.find(({ entityId }) => entityId === plan.id);
+  const record = createBaselineTrainingRecord({
+    id: 'session_enable_replica',
+    planSnapshot: structuredClone(plan),
+    trainingDate: plan.trainingDate,
+    status: 'completed',
+    startedAt: NOW,
+    endedAt: NOW + 1000,
+    elapsedActiveSeconds: 1,
+    stepResults: plan.steps.map((step) => ({
+      stepId: step.id,
+      status: 'completed',
+      completedAt: NOW + 1000,
+      setResults: []
+    }))
+  });
+  database.commit((draft) => {
+    draft.records.push(structuredClone(record));
+    draft.sync.replicas[entityKey(ENTITY_TYPES.TRAINING_RECORD, record.id)] = {
+      entityType: ENTITY_TYPES.TRAINING_RECORD,
+      entityId: record.id,
+      serverRevision: 4,
+      payloadHash: computeChecksum(record),
+      deleted: false
+    };
+  });
+
+  const preview = application.prepareEnable();
+  const result = await application.confirmEnable({ confirmationId: preview.confirmationId });
+  const outbox = database.load().sync.outbox;
+
+  assert.equal(result.ok, false);
+  assert.equal(outbox.find(({ entityId }) => entityId === plan.id).opId, originalPlanOp.opId);
+  assert.equal(outbox.some(({ entityId }) => entityId === record.id), false);
+  assert.equal(outbox.filter(({ entityType }) => entityType === ENTITY_TYPES.USER_SETTINGS).length, 1);
 });
 
 test('AC1/AC3: manual and automatic retry share the same outbox and a lost response creates no remote duplicate', async () => {

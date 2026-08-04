@@ -1,6 +1,7 @@
 const {
   ENTITY_TYPES,
   createConflictState,
+  mapLocalMutation,
   mapRemoteChange,
   rebaseSettingsChange
 } = require('../domain/sync/entity-mapper');
@@ -26,6 +27,7 @@ const { computeChecksum } = require('../utils/checksum');
 const {
   createBaselineTrainingRecord
 } = require('../domain/execution/training-record');
+const { isDeletedTrainingRecord } = require('../domain/records/training-record');
 
 function syncServiceError(message, code) {
   const error = new Error(message);
@@ -109,6 +111,110 @@ function replicaFor(change) {
     serverRevision: change.serverRevision,
     payloadHash: change.payloadHash,
     deleted: change.action === 'delete'
+  };
+}
+
+function settingsSyncPayload(settings) {
+  const payload = {};
+  for (const [field, value] of Object.entries(settings)) {
+    if (!['schemaVersion', 'revision'].includes(field)) payload[field] = value;
+  }
+  return payload;
+}
+
+function lastValidOperationFor(outbox, entityType, entityId) {
+  let match = null;
+  for (const candidate of outbox) {
+    try {
+      assertSyncOperation(candidate);
+      if (candidate.entityType === entityType && candidate.entityId === entityId) match = candidate;
+    } catch (_error) {
+      // Unsupported legacy work still blocks push, but cannot prove a current entity fact.
+    }
+  }
+  return match;
+}
+
+function mutationIsRepresented(snapshot, mutation, replicaPayload) {
+  const normalized = mapLocalMutation(mutation);
+  const queued = lastValidOperationFor(snapshot.sync.outbox, normalized.entityType, normalized.entityId);
+  if (queued) {
+    return queued.action === normalized.action &&
+      computeChecksum(queued.payload) === computeChecksum(normalized.payload);
+  }
+  const replica = snapshot.sync.replicas[entityKey(normalized.entityType, normalized.entityId)] || null;
+  return Boolean(
+    replica &&
+    replica.deleted === (normalized.action === 'delete') &&
+    replica.payloadHash === computeChecksum(replicaPayload)
+  );
+}
+
+function buildEnablePreview(snapshot) {
+  const targetSettings = {
+    ...snapshot.settings,
+    cloudSyncEnabled: true,
+    revision: snapshot.settings.cloudSyncEnabled
+      ? snapshot.settings.revision
+      : snapshot.settings.revision + 1
+  };
+  const candidates = [];
+  for (const plan of snapshot.plans.filter(({ status }) => status !== 'deleted')) {
+    candidates.push({
+      mutation: {
+        entityType: ENTITY_TYPES.WORKOUT_PLAN,
+        entityId: plan.id,
+        action: 'upsert',
+        payload: cloneJson(plan)
+      },
+      replicaPayload: plan
+    });
+  }
+  for (const record of snapshot.records.filter((candidate) => !isDeletedTrainingRecord(candidate))) {
+    candidates.push({
+      mutation: {
+        entityType: ENTITY_TYPES.TRAINING_RECORD,
+        entityId: record.id,
+        action: 'upsert',
+        payload: cloneJson(record)
+      },
+      replicaPayload: record
+    });
+  }
+  candidates.push({
+    mutation: {
+      entityType: ENTITY_TYPES.USER_SETTINGS,
+      entityId: 'settings',
+      action: 'upsert',
+      payload: settingsSyncPayload(targetSettings)
+    },
+    replicaPayload: targetSettings
+  });
+  const missingMutations = candidates
+    .filter(({ mutation, replicaPayload }) => !mutationIsRepresented(snapshot, mutation, replicaPayload))
+    .map(({ mutation }) => mapLocalMutation(mutation));
+  const previewToken = computeChecksum({
+    scope: 'trainflow-enable-preview-v1',
+    baselineLocalRevision: snapshot.localRevision,
+    targetSettings,
+    missing: missingMutations.map((mutation) => ({
+      entityType: mutation.entityType,
+      entityId: mutation.entityId,
+      action: mutation.action,
+      payloadHash: computeChecksum(mutation.payload)
+    }))
+  });
+  return {
+    baselineLocalRevision: snapshot.localRevision,
+    previewToken,
+    scope: {
+      plans: snapshot.plans.filter(({ status }) => status !== 'deleted').length,
+      records: snapshot.records.filter((candidate) => !isDeletedTrainingRecord(candidate)).length,
+      settings: 1,
+      pendingOperations: snapshot.sync.outbox.length
+    },
+    targetSettings,
+    missingMutations
   };
 }
 
@@ -349,51 +455,79 @@ class SyncService {
   }
 
   previewEnable() {
-    const snapshot = this.database.load();
+    const preview = buildEnablePreview(this.database.load());
     return {
-      baselineLocalRevision: snapshot.localRevision,
-      scope: {
-        plans: snapshot.plans.filter(({ status }) => status !== 'deleted').length,
-        records: snapshot.records.length,
-        settings: 1,
-        pendingOperations: snapshot.sync.outbox.length
-      }
+      baselineLocalRevision: preview.baselineLocalRevision,
+      previewToken: preview.previewToken,
+      scope: preview.scope
     };
   }
 
-  setEnabled({ enabled, expectedLocalRevision }) {
-    if (typeof enabled !== 'boolean' || !Number.isSafeInteger(expectedLocalRevision) || expectedLocalRevision < 0) {
+  setEnabled({ enabled, expectedLocalRevision, previewToken } = {}) {
+    if (
+      typeof enabled !== 'boolean' ||
+      !Number.isSafeInteger(expectedLocalRevision) || expectedLocalRevision < 0 ||
+      (enabled && (typeof previewToken !== 'string' || !/^[a-f0-9]{64}$/.test(previewToken))) ||
+      (!enabled && previewToken !== undefined)
+    ) {
       throw syncServiceError('cloud sync preference command is invalid', 'SYNC_PREFERENCE_INVALID');
     }
     const changedAt = this.now();
     if (!Number.isSafeInteger(changedAt) || changedAt < 0) {
       throw syncServiceError('SyncService now must return a non-negative safe integer', 'SYNC_CLOCK_INVALID');
     }
-    return this.database.commit((draft) => {
-      const current = draft.settings.cloudSyncEnabled;
-      if (current !== enabled) {
-        const expectedSettingsRevision = draft.settings.revision;
-        draft.settings = {
-          ...draft.settings,
-          cloudSyncEnabled: enabled,
-          revision: expectedSettingsRevision + 1
-        };
-        appendRepositorySyncMutation(draft, {
-          entityType: ENTITY_TYPES.USER_SETTINGS,
-          entityId: 'settings',
-          action: 'upsert',
-          payload: { cloudSyncEnabled: enabled }
-        }, {
-          commandIdentity: `sync.preference:${expectedSettingsRevision}`,
-          createdAt: changedAt,
-          deviceId: draft.install ? draft.install.deviceId : null,
-          deviceIdFactory: this.deviceIdFactory
-        });
+    try {
+      return this.database.commit((draft) => {
+        if (enabled) {
+          const preview = buildEnablePreview(draft);
+          if (
+            preview.baselineLocalRevision !== expectedLocalRevision ||
+            preview.previewToken !== previewToken
+          ) {
+            throw syncServiceError('enable preview no longer matches local data', 'SYNC_ENABLE_PREVIEW_STALE');
+          }
+          draft.settings = cloneJson(preview.targetSettings);
+          for (const mutation of preview.missingMutations) {
+            appendRepositorySyncMutation(draft, mutation, {
+              commandIdentity: `sync.enable:${previewToken}:${mutation.entityType}:${mutation.entityId}`,
+              createdAt: changedAt,
+              deviceId: draft.install ? draft.install.deviceId : null,
+              deviceIdFactory: this.deviceIdFactory
+            });
+          }
+        } else if (draft.settings.cloudSyncEnabled) {
+          const expectedSettingsRevision = draft.settings.revision;
+          draft.settings = {
+            ...draft.settings,
+            cloudSyncEnabled: false,
+            revision: expectedSettingsRevision + 1
+          };
+          appendRepositorySyncMutation(draft, {
+            entityType: ENTITY_TYPES.USER_SETTINGS,
+            entityId: 'settings',
+            action: 'upsert',
+            payload: { cloudSyncEnabled: false }
+          }, {
+            commandIdentity: `sync.preference:${expectedSettingsRevision}`,
+            createdAt: changedAt,
+            deviceId: draft.install ? draft.install.deviceId : null,
+            deviceIdFactory: this.deviceIdFactory
+          });
+        }
+        draft.sync.enabled = enabled;
+        draft.sync.provider = enabled ? 'cloudbase' : 'none';
+        if (!enabled) draft.sync.lastError = null;
+      }, expectedLocalRevision);
+    } catch (error) {
+      if (
+        enabled &&
+        error && typeof error.message === 'string' &&
+        /LocalDatabase revision conflict|baseline changed concurrently/.test(error.message)
+      ) {
+        throw syncServiceError('enable preview no longer matches local data', 'SYNC_ENABLE_PREVIEW_STALE');
       }
-      draft.sync.enabled = enabled;
-      draft.sync.provider = enabled ? 'cloudbase' : 'none';
-      if (!enabled) draft.sync.lastError = null;
-    }, expectedLocalRevision);
+      throw error;
+    }
   }
 
   recordFailure(error) {

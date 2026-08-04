@@ -187,10 +187,20 @@ function createSyncApplicationService({ syncService } = {}) {
     prepareEnable(command) {
       assertEmptyCommand(command, 'prepareEnable');
       const preview = syncService.previewEnable();
+      if (
+        !preview ||
+        !Number.isSafeInteger(preview.baselineLocalRevision) || preview.baselineLocalRevision < 0 ||
+        typeof preview.previewToken !== 'string' || !/^[a-f0-9]{64}$/.test(preview.previewToken)
+      ) {
+        throw applicationError('SyncService enable preview is invalid', 'SYNC_ENABLE_PREVIEW_INVALID');
+      }
       enableSequence += 1;
       const confirmationId = `sync_enable_${preview.baselineLocalRevision}_${enableSequence}`;
       enableConfirmations.clear();
-      enableConfirmations.set(confirmationId, preview.baselineLocalRevision);
+      enableConfirmations.set(confirmationId, {
+        expectedLocalRevision: preview.baselineLocalRevision,
+        previewToken: preview.previewToken
+      });
       return {
         confirmationId,
         scope: preview.scope,
@@ -200,13 +210,17 @@ function createSyncApplicationService({ syncService } = {}) {
 
     confirmEnable(command) {
       const validated = assertConfirmationCommand(command, 'confirmEnable');
-      const expectedLocalRevision = enableConfirmations.get(validated.confirmationId);
-      if (expectedLocalRevision === undefined) {
+      const confirmation = enableConfirmations.get(validated.confirmationId);
+      if (!confirmation) {
         throw applicationError('confirmEnable confirmation is missing', 'SYNC_CONFIRMATION_INVALID');
       }
       enableConfirmations.delete(validated.confirmationId);
       return runExclusive(async () => {
-        syncService.setEnabled({ enabled: true, expectedLocalRevision });
+        syncService.setEnabled({
+          enabled: true,
+          expectedLocalRevision: confirmation.expectedLocalRevision,
+          previewToken: confirmation.previewToken
+        });
         return runRecoverableSync();
       });
     },
