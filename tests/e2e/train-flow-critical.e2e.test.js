@@ -1,4 +1,9 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
@@ -24,6 +29,9 @@ const {
   createWorkoutApplicationService
 } = require('../../miniprogram/application/workout-application-service');
 const {
+  createSyncApplicationService
+} = require('../../miniprogram/application/sync-application-service');
+const {
   createPlanRepository
 } = require('../../miniprogram/domain/planning/plan-repository');
 const {
@@ -33,14 +41,53 @@ const {
   createSettingsRepository
 } = require('../../miniprogram/domain/identity-settings/settings-repository');
 const {
+  createDefaultPlans
+} = require('../../miniprogram/domain/planning/default-plan-factory');
+const {
   createSessionRepository
 } = require('../../miniprogram/domain/execution/session-repository');
+const {
+  ENTITY_TYPES
+} = require('../../miniprogram/domain/sync/entity-mapper');
+const {
+  createCloudBaseSyncProvider
+} = require('../../miniprogram/services/cloudbase-sync-provider');
 const {
   createLocalDatabase
 } = require('../../miniprogram/services/local-database');
 const {
+  createDeterministicRemoteSyncProvider
+} = require('../../miniprogram/services/remote-sync-provider');
+const {
   createLocalStatisticsService
 } = require('../../miniprogram/services/statistics-service');
+const {
+  createSyncService
+} = require('../../miniprogram/services/sync-service');
+const {
+  createCloudSyncHandlers
+} = require('../../cloudfunctions/shared');
+const {
+  createCloudSyncStoreDouble
+} = require('../helpers/cloud-sync-store-double');
+
+const ROOT = path.join(__dirname, '..', '..');
+
+function remotePlanEnvelope(plan, nowMs) {
+  return {
+    ownerId: 'anonymous_remote_owner',
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: plan.id,
+    serverRevision: 2,
+    schemaVersion: 1,
+    payload: structuredClone(plan),
+    deleted: false,
+    deletedAt: null,
+    createdAt: nowMs,
+    updatedAt: nowMs + 1,
+    sourceDeviceId: 'anonymous_remote_device'
+  };
+}
 
 test('C1 anonymous offline first launch reaches one terminal record and weekly statistics', () => {
   const adapter = createAnonymousOfflineAdapter();
@@ -283,4 +330,161 @@ test('C3 history, invalid import, cancel/confirm clear and Sunday rest share rea
   assert.deepEqual(dataDatabase.load().records, []);
   assert.equal(adapter.networkAttempts(), 0);
   assert.equal(dataAdapter.networkAttempts(), 0);
+});
+
+test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries', async () => {
+  const adapter = createAnonymousOfflineAdapter();
+  const database = createLocalDatabase({ storage: adapter, now: () => FIXED_CLOCK.startAt });
+  database.commit((draft) => {
+    draft.install = { deviceId: 'anonymous_device_sync', createdAt: FIXED_CLOCK.startAt };
+  });
+  const planRepository = createPlanRepository({ database, now: () => FIXED_CLOCK.startAt });
+  const syncPlan = {
+    ...structuredClone(createDefaultPlans()[0]),
+    id: 'plan_critical_sync',
+    trainingDate: '2026-08-10',
+    templateSource: null,
+    createdAt: FIXED_CLOCK.startAt,
+    updatedAt: FIXED_CLOCK.startAt,
+    revision: 1
+  };
+  planRepository.save(syncPlan, 0);
+  const deterministic = createDeterministicRemoteSyncProvider({
+    ownerId: 'anonymous_remote_owner',
+    now: () => FIXED_CLOCK.startAt
+  });
+  let denyBootstrap = true;
+  const recoverableProvider = {
+    async bootstrap(request) {
+      if (denyBootstrap) {
+        denyBootstrap = false;
+        const error = new Error('anonymous bootstrap denied once');
+        error.code = 'CLOUD_SYNC_UNAVAILABLE';
+        throw error;
+      }
+      return deterministic.bootstrap(request);
+    },
+    push: (request) => deterministic.push(request),
+    pull: (request) => deterministic.pull(request),
+    preparePurge: (request) => deterministic.preparePurge(request),
+    purge: (request) => deterministic.purge(request)
+  };
+  const sync = createSyncApplicationService({
+    syncService: createSyncService({
+      database,
+      provider: recoverableProvider,
+      now: () => FIXED_CLOCK.startAt
+    })
+  });
+
+  const enable = sync.prepareEnable();
+  const denied = await sync.confirmEnable({ confirmationId: enable.confirmationId });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.state.code, 'failure');
+  const retried = await sync.retry({ source: 'manual' });
+  assert.equal(retried.ok, true, JSON.stringify(retried));
+  assert.equal(sync.getState().code, 'synced');
+
+  const local = planRepository.findById(syncPlan.id);
+  const changed = {
+    ...structuredClone(local),
+    title: '匿名本机调整',
+    revision: local.revision + 1,
+    updatedAt: FIXED_CLOCK.startAt + 10
+  };
+  planRepository.save(changed, local.revision);
+  const pending = database.load().sync.outbox.find(({ entityId }) => entityId === changed.id);
+  deterministic.conflictOperation(pending.opId, remotePlanEnvelope({
+    ...structuredClone(changed),
+    title: '匿名云端调整',
+    revision: changed.revision + 1,
+    updatedAt: FIXED_CLOCK.startAt + 11
+  }, FIXED_CLOCK.startAt));
+  await sync.retry({ source: 'manual' });
+  const conflict = sync.getState().conflicts[0];
+  assert.equal(sync.getState().code, 'conflict');
+  await sync.resolveConflict({ conflictId: conflict.conflictId, action: 'keep_remote' });
+  await sync.retry({ source: 'manual' });
+  assert.equal(planRepository.findById(changed.id).title, '匿名云端调整');
+  const purgePreview = await sync.prepareRemotePurge();
+  const purgeReceipt = await sync.purgeRemote({
+    confirmationToken: purgePreview.confirmationToken
+  });
+  assert.equal(purgeReceipt.purgedAt, FIXED_CLOCK.startAt);
+
+  const cloudBase = createCloudBaseSyncProvider({ wx: adapter });
+  await assert.rejects(
+    cloudBase.bootstrap({ deviceId: 'anonymous_device_sync' }),
+    (error) => error.code === 'NETWORK_OFFLINE'
+  );
+  assert.equal(adapter.networkAttempts(), 1);
+
+  const trustedSubject = 'anonymous-trusted-subject';
+  const cloudStore = createCloudSyncStoreDouble();
+  const handlers = createCloudSyncHandlers({
+    getTrustedContext: () => ({ OPENID: trustedSubject }),
+    store: cloudStore,
+    env: {
+      TRAINFLOW_ALLOWED_OPENID_SHA256: createHash('sha256').update(trustedSubject).digest('hex'),
+      TRAINFLOW_OWNER_HMAC_KEY: 'test-only-sentinel-owner-key-0000000000000000',
+      TRAINFLOW_CURSOR_HMAC_KEY: 'test-only-sentinel-cursor-key-000000000000000',
+      TRAINFLOW_PURGE_HMAC_KEY: 'test-only-sentinel-purge-key-000000000000000',
+      TRAINFLOW_PURGE_TTL_SECONDS: '300'
+    },
+    now: () => FIXED_CLOCK.startAt,
+    randomBytes: (size) => Buffer.alloc(size, 0x31),
+    logger: { info() {}, warn() {}, error() {} }
+  });
+  await handlers.authBootstrap({
+    deviceId: 'anonymous_cloud_device',
+    schemaVersion: 1,
+    ownerId: 'forged-event-owner'
+  });
+  const cloudSnapshot = cloudStore.snapshot();
+  assert.equal(JSON.stringify(cloudSnapshot).includes('forged-event-owner'), false);
+  assert.equal(Object.keys(cloudSnapshot.accounts).length, 1);
+
+  const directClientSources = fs.readdirSync(path.join(ROOT, 'miniprogram'), {
+    recursive: true,
+    withFileTypes: true
+  }).filter((entry) => entry.isFile()).map((entry) => (
+    fs.readFileSync(path.join(entry.parentPath, entry.name), 'utf8')
+  )).join('\n');
+  assert.doesNotMatch(directClientSources, /wx\s*\.\s*cloud\s*\.\s*database\s*\(/);
+
+  const scan = spawnSync('bash', [path.join(ROOT, 'scripts/privacy-scan.sh')], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  });
+  assert.equal(scan.status, 0, scan.stdout || scan.stderr);
+
+  const negativeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-privacy-'));
+  fs.mkdirSync(path.join(negativeRoot, 'miniprogram'), { recursive: true });
+  fs.mkdirSync(path.join(negativeRoot, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(negativeRoot, 'evidence/logs'), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, 'scripts/privacy-scan.sh'), path.join(negativeRoot, 'scripts/privacy-scan.sh'));
+  fs.writeFileSync(
+    path.join(negativeRoot, 'miniprogram/leak.js'),
+    "const localPath = '/Users/example/private';\n" +
+      "const appid = 'wx0123456789abcdef';\n" +
+      "const appSecret = 'non-test-private-value';\n" +
+      "const realName = 'private-person';\n" +
+      'wx.cloud.database();\n'
+  );
+  fs.writeFileSync(path.join(negativeRoot, 'evidence/logs/request.log'), 'requestPayload: private\n');
+  spawnSync('git', ['init', '-q'], { cwd: negativeRoot });
+  spawnSync('git', ['add', '.'], { cwd: negativeRoot });
+  const rejected = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: negativeRoot,
+    encoding: 'utf8',
+    env: { ...process.env, PRIVACY_SCAN_ROOT: negativeRoot }
+  });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stdout, /ABSOLUTE_USER_PATH miniprogram\/leak\.js/);
+  assert.match(rejected.stdout, /REAL_WECHAT_APPID miniprogram\/leak\.js/);
+  assert.match(rejected.stdout, /DIRECT_MINIPROGRAM_DATABASE miniprogram\/leak\.js/);
+  assert.match(rejected.stdout, /PII_LITERAL miniprogram\/leak\.js/);
+  assert.match(rejected.stdout, /CREDENTIAL_ASSIGNMENT miniprogram\/leak\.js/);
+  assert.match(rejected.stdout, /EVIDENCE_LOG_PRIVATE_PAYLOAD evidence\/logs\/request\.log/);
+  assert.doesNotMatch(rejected.stdout, /\/Users\/example|wx0123456789abcdef/);
 });
