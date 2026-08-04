@@ -286,11 +286,22 @@ test('C3 history, invalid import, cancel/confirm clear and Sunday rest share rea
   const selected = historyView.selectedRecord;
   assert.equal(historyView.records.length, 1);
   assert.equal(selected.status, 'aborted');
-  history.deleteRecord({
+  const editDraft = history.createEditDraft(selected);
+  editDraft.feedbackMissing = false;
+  editDraft.feedback.rpe = 5;
+  const corrected = history.correctRecord({
     recordId: selected.id,
     expectedRevision: selected.revision,
+    commandKey: 'critical:data:correct',
+    nowMs: nowMs + 1,
+    draft: editDraft
+  });
+  assert.equal(corrected.feedback.rpe, 5);
+  history.deleteRecord({
+    recordId: selected.id,
+    expectedRevision: corrected.revision,
     commandKey: 'critical:data:delete',
-    nowMs: nowMs + 1
+    nowMs: nowMs + 2
   });
   assert.equal(history.getView().records.length, 0);
 
@@ -313,23 +324,39 @@ test('C3 history, invalid import, cancel/confirm clear and Sunday rest share rea
   });
   const exported = settings.createExportPreview();
   assert.equal(exported.summary.plans, 7);
-  const bytesBeforeInvalidImport = dataAdapter.storageBytes();
-  assert.throws(() => settings.previewImport('{"packageVersion":'), /JSON|Unexpected|parse/i);
-  assert.equal(dataAdapter.storageBytes(), bytesBeforeInvalidImport);
+  const importAdapter = createAnonymousOfflineAdapter();
+  const importDatabase = createLocalDatabase({ storage: importAdapter, now: () => nowMs });
+  importDatabase.commit((draft) => {
+    draft.install = { deviceId: 'anonymous_device_import', createdAt: nowMs };
+  });
+  const importSettings = createSettingsDataApplicationService({
+    repository: createSettingsRepository({ database: importDatabase, now: () => nowMs }),
+    database: importDatabase,
+    now: () => nowMs
+  });
+  const bytesBeforeInvalidImport = importAdapter.storageBytes();
+  assert.throws(() => importSettings.previewImport('{"packageVersion":'), /JSON|Unexpected|parse/i);
+  assert.equal(importAdapter.storageBytes(), bytesBeforeInvalidImport);
+  const importPreview = importSettings.previewImport(exported.jsonText);
+  const imported = importSettings.confirmImport(exported.jsonText, importPreview.confirmationId);
+  assert.equal(imported.applied, true);
+  assert.equal(importDatabase.load().plans.length, 7);
 
-  const cancelPreview = settings.prepareLocalClear();
+  const bytesBeforeCancelledClear = importAdapter.storageBytes();
+  const cancelPreview = importSettings.prepareLocalClear();
   assert.equal(cancelPreview.counts.plans, 7);
-  assert.equal(dataAdapter.storageBytes(), bytesBeforeInvalidImport);
-  const confirmPreview = settings.prepareLocalClear();
-  const cleared = settings.confirmLocalClear(confirmPreview.confirmationId);
+  assert.equal(importAdapter.storageBytes(), bytesBeforeCancelledClear);
+  const confirmPreview = importSettings.prepareLocalClear();
+  const cleared = importSettings.confirmLocalClear(confirmPreview.confirmationId);
 
   assert.equal(sunday.isRestDay, true);
   assert.equal(sunday.canStartWorkout, false);
   assert.equal(cleared.purged, true);
-  assert.deepEqual(dataDatabase.load().plans, []);
-  assert.deepEqual(dataDatabase.load().records, []);
+  assert.deepEqual(importDatabase.load().plans, []);
+  assert.deepEqual(importDatabase.load().records, []);
   assert.equal(adapter.networkAttempts(), 0);
   assert.equal(dataAdapter.networkAttempts(), 0);
+  assert.equal(importAdapter.networkAttempts(), 0);
 });
 
 test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cross public boundaries', async () => {
@@ -454,9 +481,17 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
 
   const scan = spawnSync('bash', [path.join(ROOT, 'scripts/privacy-scan.sh')], {
     cwd: ROOT,
-    encoding: 'utf8'
+    encoding: 'utf8',
+    env: { ...process.env, PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0' }
   });
   assert.equal(scan.status, 0, scan.stdout || scan.stderr);
+  const strictEvidenceScan = spawnSync('bash', [path.join(ROOT, 'scripts/privacy-scan.sh')], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '1' }
+  });
+  assert.notEqual(strictEvidenceScan.status, 0);
+  assert.match(strictEvidenceScan.stdout, /SCREENSHOT_EVIDENCE_ABSENT evidence\/screenshots/);
 
   const negativeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'train-flow-privacy-'));
   fs.mkdirSync(path.join(negativeRoot, 'miniprogram'), { recursive: true });

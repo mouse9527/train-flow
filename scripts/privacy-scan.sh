@@ -8,6 +8,7 @@ fi
 cd "$scan_root" || exit 2
 
 failed=0
+require_screenshots=${PRIVACY_SCAN_REQUIRE_SCREENSHOTS:-1}
 
 report() {
   printf '%s %s\n' "$1" "$2"
@@ -18,8 +19,23 @@ is_scanner_sentinel() {
   [[ "$1" == "scripts/privacy-scan.sh" || "$1" == "tests/e2e/train-flow-critical.e2e.test.js" ]]
 }
 
-is_test_path() {
-  [[ "$1" == tests/* || "$1" == */tests/* || "$1" == *.test.js ]]
+is_known_test_sentinel() {
+  case "$1" in
+    tests/cloudfunctions/cloud-sync-security.test.js|\
+    tests/domain/planning/default-plan-initialization.test.js|\
+    tests/domain/sync/entity-mapper-conflicts.test.js|\
+    tests/e2e/app-shell-golden-path.test.js|\
+    tests/e2e/cloud-sync-security-golden-path.test.js|\
+    tests/e2e/train-flow-critical.e2e.test.js|\
+    tests/integration/app-shell-settings.test.js|\
+    tests/integration/settings-persistence.test.js|\
+    tests/services/local-database.test.js)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 is_scanned_path() {
@@ -48,13 +64,23 @@ while IFS= read -r -d '' file; do
     report DIRECT_MINIPROGRAM_DATABASE "$file"
   fi
 
-  if ! is_test_path "$file" && ! is_scanner_sentinel "$file"; then
+  pii_match=0
+  credential_match=0
+  if ! is_scanner_sentinel "$file"; then
     if grep -Eqi '(realName|fullName|legalName|patientName|userName)[[:space:]]*[:=][[:space:]]*["'"'"'`][^"'"'"'`]+' "$file" ||
       grep -Eq '\b1[3-9][0-9]{9}\b|\b[0-9]{17}[0-9Xx]\b' "$file"; then
-      report PII_LITERAL "$file"
+      pii_match=1
     fi
     if grep -Eqi '(appSecret|password|privateKey|session_key|sessionKey|authToken|accessToken|openId|openid)[[:space:]]*[:=][[:space:]]*["'"'"'`][^"'"'"'`]+' "$file"; then
-      report CREDENTIAL_ASSIGNMENT "$file"
+      credential_match=1
+    fi
+  fi
+  if [[ "$pii_match" -eq 1 || "$credential_match" -eq 1 ]]; then
+    if is_known_test_sentinel "$file"; then
+      printf '%s %s\n' TEST_ONLY_SENTINEL "$file"
+    else
+      [[ "$pii_match" -eq 1 ]] && report PII_LITERAL "$file"
+      [[ "$credential_match" -eq 1 ]] && report CREDENTIAL_ASSIGNMENT "$file"
     fi
   fi
 
@@ -93,7 +119,11 @@ if [[ -d "$screenshot_dir" ]]; then
     fi
   fi
 else
-  printf '%s %s\n' SCREENSHOT_EVIDENCE_ABSENT "$screenshot_dir"
+  if [[ "$require_screenshots" == 1 ]]; then
+    report SCREENSHOT_EVIDENCE_ABSENT "$screenshot_dir"
+  else
+    printf '%s %s\n' SCREENSHOT_EVIDENCE_ABSENT "$screenshot_dir"
+  fi
 fi
 
 exit "$failed"
