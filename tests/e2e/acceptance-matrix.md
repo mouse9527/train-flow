@@ -78,7 +78,7 @@ route	head	tree	sha256	data_source	manual_visual_verdict	file
 kind	head	tree	sha256	redaction_verdict	file
 ```
 
-三个 kind 必须各出现一次并分别绑定不同的 `.log` 文件，不能以一份输出冒充多类命令证据。日志文件和 manifest 必须 tracked、非符号链接、非空纯文本、哈希一致、人工去敏结论为 `PASS`；source head 必须能解析为 commit，tree 必须属于该 commit，并与本次证据运行绑定值一致。产品源码、`tests/`、`scripts/` 或 package/project 配置相对 source commit 有变化时，证据一律视为过期。任何未列入 manifest 的 tracked `.log`、NUL/二进制内容或来源过期都会阻断。
+三个 kind 必须各出现一次并分别绑定不同的 `.log` 文件，不能以一份输出冒充多类命令证据。日志文件和 manifest 必须 tracked、非符号链接、非空纯文本、哈希一致、人工去敏结论为 `PASS`；source head 必须能解析为 commit，tree 必须属于该 commit，并与本次证据运行绑定值一致。除 `evidence/screenshots/` 与 `evidence/logs/` 外的整个项目树（含产品、测试、脚本、CloudBase 规则、ignore 和 package/project 配置）相对 source commit 有任何 tracked 或未忽略的 untracked 变化时，证据一律视为过期。任何未列入 manifest 的 tracked `.log`、NUL/二进制内容或来源过期都会阻断。
 
 每份日志采用相同的最小 provenance 包装，命令输出置于 source-tree 与 exit-code 之间；首行命令必须与 kind 精确对应，末行只允许成功退出：
 

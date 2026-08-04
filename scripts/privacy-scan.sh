@@ -285,10 +285,14 @@ if [[ "$require_logs" == 1 ]]; then
         else
           log_source_tree=$(git rev-parse "$head^{tree}")
           [[ "$log_source_tree" == "$tree" ]] || report LOG_SOURCE_TREE_MISMATCH "$log_manifest"
-          git diff --quiet "$head" -- \
-            miniprogram cloudfunctions tests scripts \
-            project.config.json package.json package-lock.json README.md ||
+          git diff --quiet "$head" -- . \
+            ':(exclude)evidence/screenshots/**' \
+            ':(exclude)evidence/logs/**' ||
             report LOG_SOURCE_STALE "$log_manifest"
+          if git ls-files --others --exclude-standard | \
+            LC_ALL=C grep -Ev '^evidence/(screenshots|logs)/' | grep -q .; then
+            report LOG_SOURCE_STALE "$log_manifest"
+          fi
         fi
         if [[ "$unique_binding" -eq 1 ]]; then
           case "$kind" in

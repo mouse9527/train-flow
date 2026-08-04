@@ -699,6 +699,43 @@ test('C4 sync recovery/conflict/purge, trusted cloud owner and privacy scan cros
   });
   assert.notEqual(staleLogs.status, 0);
   assert.match(staleLogs.stdout, /LOG_SOURCE_STALE evidence\/logs\/manifest\.tsv/);
+  fs.rmSync(path.join(validLogRepository.repositoryRoot, 'tests/stale-boundary.test.js'));
+  spawnSync('git', ['add', '-u', 'tests/stale-boundary.test.js'], {
+    cwd: validLogRepository.repositoryRoot
+  });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'restore test boundary'
+  ], { cwd: validLogRepository.repositoryRoot });
+  fs.mkdirSync(path.join(validLogRepository.repositoryRoot, 'cloudbase'), { recursive: true });
+  fs.writeFileSync(
+    path.join(validLogRepository.repositoryRoot, 'cloudbase/database.rules.json'),
+    '{"read":false,"write":false}\n'
+  );
+  fs.writeFileSync(path.join(validLogRepository.repositoryRoot, '.gitignore'), '.private-runtime\n');
+  spawnSync('git', ['add', 'cloudbase/database.rules.json', '.gitignore'], {
+    cwd: validLogRepository.repositoryRoot
+  });
+  spawnSync('git', [
+    '-c', 'user.name=Anonymous QA',
+    '-c', 'user.email=qa@example.invalid',
+    'commit', '-qm', 'change deployment safety boundary after evidence'
+  ], { cwd: validLogRepository.repositoryRoot });
+  const staleSafetyFiles = spawnSync('bash', ['scripts/privacy-scan.sh'], {
+    cwd: validLogRepository.repositoryRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PRIVACY_SCAN_ROOT: validLogRepository.repositoryRoot,
+      PRIVACY_SCAN_REQUIRE_SCREENSHOTS: '0',
+      PRIVACY_SCAN_REQUIRE_LOGS: '1',
+      PRIVACY_SCAN_EXPECTED_HEAD: validLogRepository.sourceHead,
+      PRIVACY_SCAN_EXPECTED_TREE: validLogRepository.sourceTree
+    }
+  });
+  assert.notEqual(staleSafetyFiles.status, 0);
+  assert.match(staleSafetyFiles.stdout, /LOG_SOURCE_STALE evidence\/logs\/manifest\.tsv/);
 
   const invalidLogRepository = initializeEvidenceRepository('train-flow-invalid-logs-');
   const invalidLogDir = path.join(invalidLogRepository.repositoryRoot, 'evidence/logs');
