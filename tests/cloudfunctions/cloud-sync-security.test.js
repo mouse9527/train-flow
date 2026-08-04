@@ -35,7 +35,9 @@ function createMemoryStore({ retryCallbacks = 0, failBeforeCommit = 0 } = {}) {
     accounts: {},
     entities: {},
     operations: {},
-    changes: []
+    changes: [],
+    purgeConfirmations: {},
+    purgeReceipts: {}
   };
   let queue = Promise.resolve();
 
@@ -94,6 +96,70 @@ function createMemoryStore({ retryCallbacks = 0, failBeforeCommit = 0 } = {}) {
         }
       });
     },
+    async listChanges({ ownerId, epoch, afterSequence, limit }) {
+      const account = state.accounts[ownerId] || null;
+      if (!account || account.status !== 'active' || account.epoch !== epoch) {
+        const error = new Error('cursor unavailable');
+        error.code = 'CURSOR_INVALID';
+        throw error;
+      }
+      const raw = state.changes
+        .filter((change) => (
+          change.ownerId === ownerId &&
+          change.epoch === epoch &&
+          change.sequence > afterSequence
+        ))
+        .sort((left, right) => left.sequence - right.sequence);
+      return {
+        changes: structuredClone(raw.slice(0, limit)),
+        hasMore: raw.length > limit
+      };
+    },
+    async getOwnerSyncState(ownerId) {
+      const account = state.accounts[ownerId] || null;
+      return account ? {
+        status: account.status,
+        epoch: account.epoch,
+        sequence: account.sequence
+      } : null;
+    },
+    async preparePurge(confirmation) {
+      state.purgeConfirmations[stateKey(confirmation.ownerId, confirmation.tokenHash)] =
+        structuredClone(confirmation);
+    },
+    async confirmPurge({ ownerId, deviceId, purpose, tokenHash, now }) {
+      const key = stateKey(ownerId, tokenHash);
+      const receipt = state.purgeReceipts[key] || null;
+      if (receipt) return structuredClone(receipt);
+      const confirmation = state.purgeConfirmations[key] || null;
+      if (
+        !confirmation || confirmation.deviceId !== deviceId ||
+        confirmation.purpose !== purpose || confirmation.expiresAt < now
+      ) {
+        const error = new Error('confirmation invalid');
+        error.code = 'PURGE_CONFIRMATION_INVALID';
+        throw error;
+      }
+      const account = state.accounts[ownerId] || {
+        ownerId, status: 'active', epoch: 1, sequence: 0, createdAt: now, updatedAt: now
+      };
+      account.status = 'purging';
+      account.epoch += 1;
+      account.updatedAt = now;
+      state.accounts[ownerId] = account;
+      for (const keyName of Object.keys(state.entities)) {
+        if (JSON.parse(keyName)[0] === ownerId) delete state.entities[keyName];
+      }
+      for (const keyName of Object.keys(state.operations)) {
+        if (JSON.parse(keyName)[0] === ownerId) delete state.operations[keyName];
+      }
+      state.changes = state.changes.filter((change) => change.ownerId !== ownerId);
+      delete state.purgeConfirmations[key];
+      const result = { purgedAt: now };
+      state.purgeReceipts[key] = result;
+      account.status = 'purged';
+      return structuredClone(result);
+    },
     snapshot() {
       return structuredClone(state);
     }
@@ -131,9 +197,12 @@ function syncOperation({
 
 function createHandlers({
   openId = ALLOWED_OPENID,
+  allowedOpenId = ALLOWED_OPENID,
   env = {},
   store = createBootstrapStore(),
-  logger = { info() {}, warn() {}, error() {} }
+  logger = { info() {}, warn() {}, error() {} },
+  now = () => NOW,
+  randomBytes = (size) => Buffer.alloc(size, 0x2a)
 } = {}) {
   return {
     store,
@@ -141,15 +210,15 @@ function createHandlers({
       getTrustedContext: () => openId === null ? {} : { OPENID: openId },
       store,
       env: {
-        TRAINFLOW_ALLOWED_OPENID_SHA256: sha256(ALLOWED_OPENID),
+        TRAINFLOW_ALLOWED_OPENID_SHA256: sha256(allowedOpenId),
         TRAINFLOW_OWNER_HMAC_KEY: 'test-only-owner-hmac-key-with-32-bytes',
         TRAINFLOW_CURSOR_HMAC_KEY: 'test-only-cursor-hmac-key-with-32-bytes',
         TRAINFLOW_PURGE_HMAC_KEY: 'test-only-purge-hmac-key-with-32-bytes',
         TRAINFLOW_PURGE_TTL_SECONDS: '300',
         ...env
       },
-      now: () => NOW,
-      randomBytes: (size) => Buffer.alloc(size, 0x2a),
+      now,
+      randomBytes,
       logger
     })
   };
@@ -339,7 +408,8 @@ test('AC3: transaction failure leaves entity, receipt and change feed all absent
 
   assert.match(error.message, /transaction failure/);
   assert.deepEqual(store.snapshot(), {
-    accounts: {}, entities: {}, operations: {}, changes: []
+    accounts: {}, entities: {}, operations: {}, changes: [],
+    purgeConfirmations: {}, purgeReceipts: {}
   });
 });
 
@@ -366,4 +436,123 @@ test('AC2/AC3: delete writes a server-timed tombstone and stale delete cannot er
   assert.equal(entity.payload, null);
   assert.equal(entity.deletedAt, NOW);
   assert.equal(entity.updatedAt, NOW);
+});
+
+test('AC4: syncPull uses an opaque owner-bound cursor, coalesces a raw page and advances across every raw change', async () => {
+  const store = createMemoryStore();
+  const { handlers } = createHandlers({ store });
+  const first = syncOperation({ opId: `op_${'7'.repeat(64)}` });
+  await handlers.syncPush({ operations: [first] });
+  await handlers.syncPush({ operations: [{
+    ...first,
+    opId: `op_${'8'.repeat(64)}`,
+    baseServerRevision: 1,
+    payload: { ...first.payload, title: 'Server revision two' }
+  }] });
+  await handlers.syncPush({ operations: [syncOperation({
+    opId: `op_${'9'.repeat(64)}`,
+    entityId: 'plan_second_entity',
+    payload: { ...first.payload, id: 'plan_second_entity', title: 'Second entity' }
+  })] });
+
+  const firstPage = await handlers.syncPull({ cursor: null, limit: 2, ownerId: 'forged' });
+  assert.equal(firstPage.changes.length, 1, 'two raw revisions of one entity coalesce to the latest envelope');
+  assert.equal(firstPage.changes[0].serverRevision, 2);
+  assert.equal(firstPage.hasMore, true);
+  assert.match(firstPage.nextCursor, /^cursor_v1\./);
+  assert.doesNotMatch(firstPage.nextCursor, /owner_|openid|\b2\b/);
+
+  const secondPage = await handlers.syncPull({ cursor: firstPage.nextCursor, limit: 2 });
+  assert.equal(secondPage.changes.length, 1);
+  assert.equal(secondPage.changes[0].entityId, 'plan_second_entity');
+  assert.equal(secondPage.hasMore, false);
+  assert.notEqual(secondPage.nextCursor, firstPage.nextCursor);
+});
+
+test('AC4: tampered and cross-owner cursors fail closed while the other owner cannot read changes', async () => {
+  const store = createMemoryStore();
+  const ownerOne = createHandlers({ store });
+  await ownerOne.handlers.syncPush({ operations: [syncOperation()] });
+  const page = await ownerOne.handlers.syncPull({ cursor: null, limit: 1 });
+  const tampered = `${page.nextCursor.slice(0, -1)}${page.nextCursor.endsWith('A') ? 'B' : 'A'}`;
+  const ownerTwo = createHandlers({
+    store,
+    openId: DENIED_OPENID,
+    allowedOpenId: DENIED_OPENID
+  });
+
+  for (const invoke of [
+    () => ownerOne.handlers.syncPull({ cursor: tampered, limit: 1 }),
+    () => ownerTwo.handlers.syncPull({ cursor: page.nextCursor, limit: 1 })
+  ]) {
+    const error = await captureError(invoke);
+    assert.equal(error.code, 'CURSOR_INVALID');
+    assert.equal(error.message, 'Sync cursor is invalid');
+  }
+});
+
+test('AC4: accountPurge prepare/confirm is short-lived, owner/device bound, replay-safe and isolated', async () => {
+  const store = createMemoryStore();
+  let clock = NOW;
+  const ownerOne = createHandlers({ store, now: () => clock });
+  const ownerTwo = createHandlers({
+    store,
+    openId: DENIED_OPENID,
+    allowedOpenId: DENIED_OPENID,
+    now: () => clock,
+    randomBytes: (size) => Buffer.alloc(size, 0x3b)
+  });
+  await ownerOne.handlers.syncPush({ operations: [syncOperation()] });
+  await ownerTwo.handlers.syncPush({ operations: [syncOperation({ opId: `op_${'a'.repeat(64)}` })] });
+
+  const prepared = await ownerOne.handlers.accountPurge({
+    action: 'prepare',
+    deviceId: 'device-cloud-security'
+  });
+  assert.deepEqual(Object.keys(prepared), ['confirmationToken', 'expiresAt']);
+  assert.match(prepared.confirmationToken, /^purge_v1\./);
+  assert.equal(prepared.expiresAt, NOW + 300000);
+  assert.doesNotMatch(prepared.confirmationToken, /owner_|openid|device-cloud/);
+
+  const crossOwner = await captureError(() => ownerTwo.handlers.accountPurge({
+    action: 'confirm',
+    deviceId: 'device-cloud-security',
+    confirmationToken: prepared.confirmationToken
+  }));
+  assert.equal(crossOwner.code, 'PURGE_CONFIRMATION_INVALID');
+
+  const receipt = await ownerOne.handlers.accountPurge({
+    action: 'confirm',
+    deviceId: 'device-cloud-security',
+    confirmationToken: prepared.confirmationToken
+  });
+  assert.deepEqual(receipt, { purgedAt: NOW });
+  assert.deepEqual(await ownerOne.handlers.accountPurge({
+    action: 'confirm',
+    deviceId: 'device-cloud-security',
+    confirmationToken: prepared.confirmationToken
+  }), receipt);
+  const snapshot = store.snapshot();
+  assert.equal(Object.keys(snapshot.entities).length, 1, 'other owner entity remains');
+  assert.equal(Object.keys(snapshot.operations).length, 1, 'other owner receipt remains');
+  assert.equal(snapshot.changes.length, 1, 'other owner change feed remains');
+});
+
+test('AC4: expired or wrongly bound purge confirmation performs no deletion', async () => {
+  const store = createMemoryStore();
+  let clock = NOW;
+  const { handlers } = createHandlers({ store, now: () => clock });
+  await handlers.syncPush({ operations: [syncOperation()] });
+  const prepared = await handlers.accountPurge({ action: 'prepare', deviceId: 'device-one' });
+  clock = prepared.expiresAt + 1;
+
+  for (const deviceId of ['device-two', 'device-one']) {
+    const error = await captureError(() => handlers.accountPurge({
+      action: 'confirm',
+      deviceId,
+      confirmationToken: prepared.confirmationToken
+    }));
+    assert.equal(error.code, 'PURGE_CONFIRMATION_INVALID');
+  }
+  assert.equal(Object.keys(store.snapshot().entities).length, 1);
 });

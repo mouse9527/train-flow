@@ -1,4 +1,6 @@
 const {
+  createCipheriv,
+  createDecipheriv,
   createHash,
   createHmac,
   timingSafeEqual
@@ -60,6 +62,86 @@ function cloneJson(value) {
 
 function hmacSha256(key, value) {
   return createHmac('sha256', key).update(value).digest('hex');
+}
+
+function encryptionKey(secret) {
+  return createHash('sha256').update(secret).digest();
+}
+
+function assertRandomBytes(randomBytes, size) {
+  const value = randomBytes(size);
+  if (!Buffer.isBuffer(value) || value.length !== size) {
+    throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
+  }
+  return value;
+}
+
+function sealCursor(payload, { secret, randomBytes }) {
+  if (!validateSecret(secret)) {
+    throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
+  }
+  const iv = assertRandomBytes(randomBytes, 12);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey(secret), iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(payload), 'utf8'),
+    cipher.final()
+  ]);
+  return `cursor_v1.${Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString('base64url')}`;
+}
+
+function cursorError() {
+  return cloudError('CURSOR_INVALID', 'Sync cursor is invalid');
+}
+
+function openCursor(token, { secret, ownerId }) {
+  try {
+    if (typeof token !== 'string' || !token.startsWith('cursor_v1.') || !validateSecret(secret)) {
+      throw cursorError();
+    }
+    const packed = Buffer.from(token.slice('cursor_v1.'.length), 'base64url');
+    if (packed.length < 29) throw cursorError();
+    const iv = packed.subarray(0, 12);
+    const tag = packed.subarray(12, 28);
+    const ciphertext = packed.subarray(28);
+    const decipher = createDecipheriv('aes-256-gcm', encryptionKey(secret), iv);
+    decipher.setAuthTag(tag);
+    const payload = JSON.parse(Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final()
+    ]).toString('utf8'));
+    if (
+      !payload || Object.getPrototypeOf(payload) !== Object.prototype ||
+      payload.ownerId !== ownerId ||
+      !Number.isSafeInteger(payload.epoch) || payload.epoch < 1 ||
+      !Number.isSafeInteger(payload.sequence) || payload.sequence < 0
+    ) {
+      throw cursorError();
+    }
+    return payload;
+  } catch (_error) {
+    throw cursorError();
+  }
+}
+
+function purgeError() {
+  return cloudError('PURGE_CONFIRMATION_INVALID', 'Purge confirmation is invalid');
+}
+
+function createPurgeToken({ secret, randomBytes }) {
+  if (!validateSecret(secret)) {
+    throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
+  }
+  const nonce = assertRandomBytes(randomBytes, 24).toString('hex');
+  const signature = hmacSha256(secret, `purge-v1:${nonce}`);
+  return `purge_v1.${nonce}.${signature}`;
+}
+
+function assertPurgeToken(token, secret) {
+  if (typeof token !== 'string' || !validateSecret(secret)) throw purgeError();
+  const match = /^purge_v1\.([a-f0-9]{48})\.([a-f0-9]{64})$/.exec(token);
+  if (!match) throw purgeError();
+  const expected = hmacSha256(secret, `purge-v1:${match[1]}`);
+  if (!safeEqualHex(match[2], expected)) throw purgeError();
 }
 
 function safeEqualHex(left, right) {
@@ -318,7 +400,7 @@ function createCloudSyncHandlers({
     !store || typeof store !== 'object' ||
     !env || typeof env !== 'object' || Array.isArray(env) ||
     typeof now !== 'function' ||
-    (randomBytes !== undefined && typeof randomBytes !== 'function')
+    typeof randomBytes !== 'function'
   ) {
     throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
   }
@@ -382,6 +464,132 @@ function createCloudSyncHandlers({
           result[collection].push(classification.value);
         }
         return result;
+      });
+    },
+
+    syncPull(event) {
+      return withOwner('syncPull', async (ownerId) => {
+        if (!event || typeof event !== 'object' || Array.isArray(event)) {
+          throw cloudError('CLOUD_SYNC_REQUEST_INVALID', 'Cloud sync request is invalid');
+        }
+        const limit = event.limit === undefined ? 50 : event.limit;
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+          throw cloudError('CLOUD_SYNC_REQUEST_INVALID', 'Cloud sync request is invalid');
+        }
+        if (
+          typeof store.getOwnerSyncState !== 'function' ||
+          typeof store.listChanges !== 'function'
+        ) {
+          throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
+        }
+        const state = await store.getOwnerSyncState(ownerId);
+        if (!state || state.status !== 'active') throw cursorError();
+        const position = event.cursor === null || event.cursor === undefined
+          ? { ownerId, epoch: state.epoch, sequence: 0 }
+          : openCursor(event.cursor, {
+              secret: env.TRAINFLOW_CURSOR_HMAC_KEY,
+              ownerId
+            });
+        if (position.epoch !== state.epoch || position.sequence > state.sequence) {
+          throw cursorError();
+        }
+        let page;
+        try {
+          page = await store.listChanges({
+            ownerId,
+            epoch: position.epoch,
+            afterSequence: position.sequence,
+            limit
+          });
+        } catch (_error) {
+          throw cursorError();
+        }
+        const rawChanges = page && Array.isArray(page.changes) ? page.changes : [];
+        const latestByEntity = new Map();
+        for (const change of rawChanges) {
+          if (
+            !change || change.ownerId !== ownerId || change.epoch !== position.epoch ||
+            !Number.isSafeInteger(change.sequence) || change.sequence <= position.sequence ||
+            !change.envelope || change.envelope.ownerId !== ownerId
+          ) {
+            throw cursorError();
+          }
+          latestByEntity.set(
+            JSON.stringify([change.envelope.entityType, change.envelope.entityId]),
+            change
+          );
+        }
+        const changes = [...latestByEntity.values()]
+          .sort((left, right) => left.sequence - right.sequence)
+          .map(({ envelope }) => cloneJson(envelope));
+        const nextSequence = rawChanges.length > 0
+          ? rawChanges[rawChanges.length - 1].sequence
+          : position.sequence;
+        const nextCursor = nextSequence === 0 ? null : sealCursor({
+          ownerId,
+          epoch: position.epoch,
+          sequence: nextSequence
+        }, {
+          secret: env.TRAINFLOW_CURSOR_HMAC_KEY,
+          randomBytes
+        });
+        return {
+          changes,
+          nextCursor,
+          hasMore: Boolean(page && page.hasMore)
+        };
+      });
+    },
+
+    accountPurge(event) {
+      return withOwner('accountPurge', async (ownerId) => {
+        if (
+          !event || typeof event !== 'object' || Array.isArray(event) ||
+          typeof event.deviceId !== 'string' || event.deviceId.length === 0
+        ) {
+          throw purgeError();
+        }
+        const secret = env.TRAINFLOW_PURGE_HMAC_KEY;
+        if (event.action === 'prepare') {
+          if (typeof store.preparePurge !== 'function') {
+            throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
+          }
+          const ttlSeconds = Number(env.TRAINFLOW_PURGE_TTL_SECONDS);
+          if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 30 || ttlSeconds > 900) {
+            throw cloudError('CLOUD_SYNC_CONFIGURATION_INVALID', 'Cloud sync configuration is invalid');
+          }
+          const issuedAt = now();
+          const confirmationToken = createPurgeToken({ secret, randomBytes });
+          const expiresAt = issuedAt + ttlSeconds * 1000;
+          await store.preparePurge({
+            ownerId,
+            deviceId: event.deviceId,
+            purpose: 'account_purge',
+            tokenHash: sha256(confirmationToken),
+            issuedAt,
+            expiresAt
+          });
+          return { confirmationToken, expiresAt };
+        }
+        if (event.action === 'confirm' && typeof store.confirmPurge === 'function') {
+          try {
+            assertPurgeToken(event.confirmationToken, secret);
+            const receipt = await store.confirmPurge({
+              ownerId,
+              deviceId: event.deviceId,
+              purpose: 'account_purge',
+              tokenHash: sha256(event.confirmationToken),
+              now: now()
+            });
+            if (!receipt || !Number.isSafeInteger(receipt.purgedAt) || receipt.purgedAt < 0) {
+              throw purgeError();
+            }
+            return { purgedAt: receipt.purgedAt };
+          } catch (_error) {
+            throw purgeError();
+          }
+        }
+        throw purgeError();
       });
     }
   };
