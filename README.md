@@ -1,131 +1,91 @@
-# TrainFlow (练程)
+# 练程 TrainFlow
 
-Offline-first, single-user native WeChat Mini Program for morning workout planning,
-reliable timing, training records and basic stats. No TypeScript, no cross-platform
-framework, no npm runtime dependencies.
+练程是一个原生微信小程序技术栈实现的个人健身训练助手。它以本机数据为运行基础：没有网络、没有云环境或云端暂时不可用时，计划、训练计时、记录与统计仍然可以使用。云同步是可选的跨设备恢复能力，不是启动条件。
 
-## Getting started
+## V1 已完成
 
-1. Open this directory in WeChat DevTools; `project.config.json` ships with the
-   placeholder `touristappid` so the project imports without a real AppID.
-2. `npm test` runs the Node-native test suite (unit + structural E2E) — no
-   third-party test runner required.
+- 初始化并查看一周训练计划，编辑动作、复制计划到其他日期。
+- 执行计时、间歇、力量和手动动作；支持暂停、继续、跳过、组间休息和训练总结。
+- 使用绝对时间恢复后台计时，重启后恢复未结束的训练会话。
+- 保存、查看、编辑和删除训练记录，查看周完成率、训练分钟与轻量趋势。
+- 配置振动、声音和屏幕常亮偏好；导出、预览导入和清除本机数据。
+- 按需启用 CloudBase 同步，处理失败重试、冲突和云端副本删除。
 
-## Structure
+## 运行要求
 
-- `miniprogram/pages/` — page routes registered in `miniprogram/app.json`.
-- `miniprogram/application/` — application services pages call into; pages never
-  touch `wx.setStorageSync` or the cloud database directly.
-- `miniprogram/domain/` — domain models and repository contracts, framework-free.
-- `miniprogram/assets/` — packaged local media used by device adapters.
-- `tests/integration/`, `tests/e2e/` — Node `--test` suites.
-- `cloudfunctions/` — trusted CloudBase identity, push, pull and purge functions;
-  see `cloudfunctions/README.md` before materializing or deploying them.
+- 已注册的微信小程序账号；只做本地开发时也可使用测试号或 `touristappid`。
+- 微信开发者工具 Stable 版。
+- Node.js 20 或更高版本，仅用于测试、文档检查和云函数准备；小程序运行时没有 npm 依赖。
 
-## Notification audio asset
-
-`miniprogram/assets/workout-notification.m4a` is a short project-generated alert
-tone used by the default WeChat `InnerAudioContext` when sound reminders are
-enabled. It contains no downloaded or third-party recording: the source was a
-deterministic 22.05 kHz mono PCM sine-wave tone generated locally, then encoded
-with the macOS system converter:
+## 导入与本机运行
 
 ```sh
-/usr/bin/afconvert notification-tone.wav \
-  -o miniprogram/assets/workout-notification.m4a \
-  -f m4af -d aac -b 32000 -c 1
+npm test
+npm run docs:check
 ```
 
-The source WAV was temporary; the packaged M4A is the auditable delivery asset.
+1. 在微信开发者工具选择“导入项目”，目录选择仓库根目录，而不是 `miniprogram/`。
+2. `project.config.json` 保留可公开提交的 `touristappid`，`miniprogramRoot` 已指向 `miniprogram/`。
+3. 需要真机预览或上传时，在本机 `project.config.json` 临时把 `appid` 换成你自己的真实 AppID。AppID 不是密码，但它是部署标识；公共分支继续保留占位值，提交前确认没有把本机替换带入 Git。开发者工具的其他本机偏好由已忽略的 `project.private.config.json` 承载。
+4. 编译后从“今日”进入。首次使用会在本机初始化匿名首周计划，不需要 CloudBase。
 
-## Today page development fixtures
+本项目不使用 uni-app、Taro 或其他跨端框架，也没有运行时 npm 依赖。
 
-The Today page accepts an anonymous date/fixture query in WeChat DevTools so the
-built-in 2026 plan remains reproducible after those calendar dates have passed:
+## 目录结构
 
-- `pages/today/index?date=2026-08-03` — scheduled workout.
-- `pages/today/index?date=2026-08-03&fixture=active` — active session / continue.
-- `pages/today/index?date=2026-08-03&fixture=completed` — completed session summary.
-- `pages/today/index?date=2026-08-09` — rest day with no start action.
-- `pages/today/index?date=2026-08-10` — honest no-plan state.
+- `miniprogram/pages/`：今日、计划、训练、记录、统计和设置页面。
+- `miniprogram/application/`：页面调用的应用服务。
+- `miniprogram/domain/`：计划、训练会话、记录和同步领域模型。
+- `miniprogram/services/`：本地数据库、设备能力、统计和远程同步适配器。
+- `cloudfunctions/`：CloudBase 鉴权、推送、拉取和云端副本删除函数。
+- `tests/`：Node 原生测试和 V1 验收矩阵。
+- `evidence/`：匿名截图与去敏测试日志；不保存真实训练数据。
 
-These query parameters are enabled only when the Mini Program environment is
-`develop`. `trial` and `release` ignore both `date` and `fixture` and render the
-real `currentTrainingDate`. Fixtures are read-only view inputs; they do not
-commit records or sessions to the local database.
+## 开发者工具复现入口
 
-## Plan editor verification
+以下查询参数只在 `develop` 环境生效，`trial` 和 `release` 会忽略它们：
 
-Open `pages/plan/edit/index?planId=plan_20260803_builtin` in WeChat DevTools to
-exercise the plan editor. It supports kind-specific duration/set/rep/rest and
-equipment-target fields, step add/delete/reorder, field-level validation, and a
-copy-to-date flow. Copying over an existing date always shows a confirmation
-bound to the target plan ID and exact revision. Replayed taps reuse one copy
-intent; completing or cancelling the flow rotates it, so a later user-initiated
-copy receives a fresh identity. The copied source is the current detached editor
-draft, including unsaved nested edits. Saving or copying recalculates duration as
-follows: timed steps use duration; interval steps use sets × duration plus rests
-between sets; strength steps use 5 seconds per rep plus rests between sets; manual
-steps use 5 seconds per rep; rest days use zero. Existing plans preserve their
-non-modeled baseline by applying only the modeled-step delta, while new plans use
-the modeled total directly. Saving an edited plan only affects future workout
-starts because an active Session keeps its own deep `PlanSnapshot`.
+- `pages/today/index?date=2026-08-03`：训练日。
+- `pages/today/index?date=2026-08-09`：休息日。
+- `pages/today/index?date=2026-08-03&fixture=active`：进行中的训练。
+- `pages/today/index?date=2026-08-03&fixture=completed`：已完成训练。
+- `pages/stats/index?fixture=worked-sample&state=populated&date=2026-08-05`：匿名统计示例。
+- `pages/stats/index?fixture=worked-sample&state=empty&date=2026-08-09`：匿名空统计状态。
+- `pages/settings/index?section=data`：本机导入、导出与清除。
+- `pages/settings/index?section=cloud-sync&fixture=waiting`：匿名待同步状态。
+- `pages/settings/index?section=cloud-sync&fixture=denied`：匿名权限失败状态。
+- `pages/settings/index?section=cloud-sync&fixture=conflict`：匿名同步冲突界面。
+- `pages/settings/index?section=cloud-sync&fixture=purge`：匿名云端删除确认界面。
 
-## Local backup and restore
+Fixture 只提供匿名、只读的开发视图，不会写入真实记录或访问真实云账号。
 
-Open `pages/settings/index?section=data` to generate a canonical JSON backup,
-preview a restore, or clear this device. The backup contains only portable
-profile/settings/plans/records data; it excludes device identity, OpenID,
-authentication material, synchronization cursors/outbox/conflicts and runtime
-projections. Imports are limited to 5 MiB, validated before any write, and bound
-to the previewed package plus the exact local database revision. Confirmed
-restores and clears use one strict A/B commit. Local clear always says what it
-does: it removes this device's data and never claims that cloud data was deleted.
+## 手机预览与体验版
 
-## Optional cloud sync verification
+1. 先执行 `npm test`、`npm run docs:check` 和 `bash scripts/privacy-scan.sh`。
+2. 在开发者工具确认使用真实 AppID，点击“预览”，用该小程序的开发者或体验成员微信扫码。
+3. 至少验证一次：离线冷启动、计时后台恢复、训练记录保存，以及真机振动/屏幕常亮降级。
+4. 点击“上传”，填写版本号与用户可读的项目备注。
+5. 在微信公众平台的版本管理中把上传版本设为体验版，完成体验成员验证后提交审核；审核通过后再发布。
 
-Open `pages/settings/index?section=cloud-sync` to enable or disable optional
-CloudBase sync, preview the local upload scope, retry recoverable failures,
-resolve conflicts explicitly, or delete only the cloud account copy. The page
-renders the sanitized SyncService state and never reads CloudBase collections
-directly. Cloud failure does not block local planning, workouts or records.
+不要把开发者工具缓存通过、Node 测试通过或体验版通过互相替代；它们是不同证据层级。
 
-WeChat DevTools `develop` builds provide anonymous, non-persistent visual states:
+## 数据与云同步
 
-- `pages/settings/index?section=cloud-sync&fixture=waiting`
-- `pages/settings/index?section=cloud-sync&fixture=denied`
-- `pages/settings/index?section=cloud-sync&fixture=conflict`
-- `pages/settings/index?section=cloud-sync&fixture=purge`
+- [隐私与数据说明](docs/privacy-and-data.md)：本机、导出和云端分别保存什么，以及如何清除。
+- [CloudBase 配置](docs/cloud-setup.md)：环境、集合、规则、函数、允许名单和密钥变量。
+- [云函数运行契约](cloudfunctions/README.md)：服务端授权与部署包细节。
+- [V1 验收矩阵](tests/e2e/acceptance-matrix.md)：自动化、开发者工具证据和限制。
 
-The `trial` and `release` environments ignore every fixture parameter and use
-the real local sync state. The purge fixture only prepares the server-bound
-confirmation surface; it does not touch a real cloud account or local data.
+真实值只进入微信云函数环境变量或本机忽略文件。仓库中的 `.env.example` 只列变量名，不能复制真实值进 Git、截图、Issue、PR 或测试日志。
 
-## Statistics page verification
+## 已知限制与延后项
 
-Open `pages/stats/index` to review the current Monday-to-Sunday completion rate,
-active minutes, treadmill/rowing time, completed strength actions, recent streak,
-latest chest/back weights and the last seven duration/RPE/body-weight points.
-Unknown values remain “未记录” and a week without planned workouts shows an unknown
-completion rate instead of `0%`. When a completed timed action has no persisted
-actual duration, the page labels the plan-derived duration as an estimate.
+- 语音提示只保留设置项，V1 不提供 TTS；声音不可用时退化为振动和可见提示。
+- 微信开发者工具不能证明真实设备的振动与系统屏幕常亮，发布前需真机 smoke。
+- 进行中的训练 Session 只在当前设备恢复，不会迁移到另一台设备；云同步面向计划、记录和设置。
+- 真实 CloudBase 环境部署与账号允许名单需要项目所有者在微信后台完成；仓库测试使用隔离 Provider，不访问真实凭据。
+- 第二周具体训练内容、自建数据库适配器和更完整的趋势分析不在 V1 范围。
 
-WeChat DevTools `develop` builds also provide anonymous read-only fixtures:
+## 通知音频
 
-- `pages/stats/index?fixture=worked-sample&state=populated&date=2026-08-05`
-- `pages/stats/index?fixture=worked-sample&state=empty&date=2026-08-09`
-
-`trial` and `release` builds ignore these fixture parameters and read only the
-current local plans and training records. The charts use WXML/CSS only and add no
-runtime chart dependency.
-
-## Privacy
-
-The public repository contains no real identities, health data, training
-records, OpenIDs, or secrets — see `design/train-flow-solution-design.md` in the
-workspace for the full privacy boundary.
-
-Cloud sync remains optional: the local product works without a cloud environment.
-When enabling it, configure allowlist hashes and HMAC keys only as CloudBase
-function secrets, apply deny-all client database rules, then run
-`npm run cloud:prepare` before uploading the four independent function packages.
+`miniprogram/assets/workout-notification.m4a` 是项目本地生成的短提示音，不包含下载录音或第三方素材。它只在声音提醒开启且设备支持时使用。
