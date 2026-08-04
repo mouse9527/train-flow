@@ -28,6 +28,9 @@ const {
 } = require('../../miniprogram/services/remote-sync-provider');
 const { createSyncService } = require('../../miniprogram/services/sync-service');
 const {
+  createSyncApplicationService
+} = require('../../miniprogram/application/sync-application-service');
+const {
   appendSyncOperation,
   applyAcceptedOperations,
   assertSyncOperation,
@@ -1000,4 +1003,215 @@ test('AC4/AC6: pull rebases settings fields explicitly while preserving the loca
   assert.equal(after.sync.outbox[0].baseServerRevision, 3);
   assert.equal(after.sync.conflicts.at(-1).status, 'rebased');
   assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.USER_SETTINGS, 'settings')].serverRevision, 3);
+});
+
+test('AC2/AC4: application bootstrap and purge are reachable without letting bootstrap advance the pull cursor', async () => {
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const remoteDraft = newDraft();
+  const operation = queuePlan(remoteDraft, { intentKey: 'bootstrap-cursor-source' });
+  await provider.push({ operations: [operation] });
+  const { database } = persistentRuntime();
+  const before = database.load();
+  const application = createSyncApplicationService({
+    syncService: createSyncService({ database, provider, now: () => NOW + 5_000 })
+  });
+
+  const bootstrap = await application.bootstrap();
+  assert.equal(bootstrap.cursor, 'cursor_1');
+  assert.equal(database.load().sync.cursor, before.sync.cursor, 'bootstrap cursor is advisory only');
+  assert.deepEqual(provider.calls.bootstrap, [{ deviceId: before.install.deviceId }]);
+
+  const purge = await application.purgeRemote({ confirmationToken: 'confirm_application_purge' });
+  assert.deepEqual(purge, { purgedAt: NOW });
+  assert.deepEqual(database.load(), before, 'remote purge must not silently mutate local data');
+  assert.deepEqual(provider.calls.purge, [{ confirmationToken: '[redacted]' }]);
+});
+
+test('AC2/AC4: application synchronizeOnce pushes then drains opaque pull pages through SyncService only', async () => {
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  const remoteDraft = newDraft();
+  const first = { ...clone(planFixture()), id: 'plan_application_pull_1', trainingDate: '2026-09-22' };
+  const second = { ...clone(planFixture()), id: 'plan_application_pull_2', trainingDate: '2026-09-23' };
+  const firstOperation = appendSyncOperation(remoteDraft, {
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: first.id,
+    action: 'upsert',
+    payload: first
+  }, { createdAt: NOW, intentKey: 'application-pull-1', deviceIdFactory: () => 'device_remote_application' });
+  const secondOperation = appendSyncOperation(remoteDraft, {
+    entityType: ENTITY_TYPES.WORKOUT_PLAN,
+    entityId: second.id,
+    action: 'upsert',
+    payload: second
+  }, { createdAt: NOW + 1, intentKey: 'application-pull-2', deviceIdFactory: () => 'unused' });
+  await provider.push({ operations: [firstOperation, secondOperation] });
+  const { database } = persistentRuntime();
+  const application = createSyncApplicationService({
+    syncService: createSyncService({ database, provider, now: () => NOW + 5_000 })
+  });
+
+  const result = await application.synchronizeOnce({ pullLimit: 1, maxPullPages: 3 });
+
+  assert.equal(result.pullPages.length, 2);
+  assert.equal(result.pullPages[0].hasMore, true);
+  assert.equal(result.pullPages[1].hasMore, false);
+  assert.equal(database.load().sync.cursor, 'cursor_2');
+  assert.deepEqual(database.load().plans.map(({ id }) => id).sort(), [first.id, second.id]);
+});
+
+test('AC6: push settings conflict uses field rebase instead of a generic unresolved conflict', async () => {
+  const { database } = persistentRuntime();
+  const settings = createSettingsApplicationService({
+    repository: createSettingsRepository({ database, now: () => NOW })
+  });
+  settings.updateSettings({ soundEnabled: false }, 1);
+  const localOperation = clone(database.load().sync.outbox[0]);
+  const remoteSettings = {
+    ...DEFAULT_USER_SETTINGS,
+    soundEnabled: true,
+    defaultRestSeconds: 90,
+    revision: 5
+  };
+  const remote = {
+    ownerId: 'owner_fake_sync',
+    entityType: ENTITY_TYPES.USER_SETTINGS,
+    entityId: 'settings',
+    serverRevision: 3,
+    schemaVersion: 1,
+    payload: remoteSettings,
+    deleted: false,
+    deletedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW + 1,
+    sourceDeviceId: 'device_remote_settings_conflict'
+  };
+  const provider = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+  provider.conflictOperation(localOperation.opId, remote);
+  const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+
+  await service.pushPending();
+  const after = database.load();
+
+  assert.equal(after.settings.soundEnabled, false);
+  assert.equal(after.settings.defaultRestSeconds, 90);
+  assert.equal(after.settings.revision, 6);
+  assert.equal(after.sync.outbox[0].opId, localOperation.opId);
+  assert.equal(after.sync.outbox[0].baseServerRevision, 3);
+  assert.equal(after.sync.conflicts.at(-1).status, 'rebased');
+  assert.equal(after.sync.conflicts.at(-1).remote.serverRevision, 3);
+  assert.equal(after.sync.replicas[entityKey(ENTITY_TYPES.USER_SETTINGS, 'settings')].serverRevision, 3);
+});
+
+test('AC2/AC4: provider throws and invalid bootstrap, pull or purge responses leave local storage untouched', async (t) => {
+  const cases = [{
+    name: 'bootstrap throws',
+    invoke(service) { return service.bootstrap(); },
+    override: { async bootstrap() { throw new Error('bootstrap unavailable'); } },
+    pattern: /bootstrap unavailable/
+  }, {
+    name: 'bootstrap returns an invalid closed response',
+    invoke(service) { return service.bootstrap(); },
+    override: { async bootstrap() { return { cursor: null, serverTime: NOW, extra: true }; } },
+    code: 'REMOTE_SYNC_RESPONSE_INVALID'
+  }, {
+    name: 'pull throws',
+    invoke(service) { return service.pullNextPage({ limit: 10 }); },
+    override: { async pull() { throw new Error('pull unavailable'); } },
+    pattern: /pull unavailable/
+  }, {
+    name: 'pull returns an invalid closed response',
+    invoke(service) { return service.pullNextPage({ limit: 10 }); },
+    override: { async pull() { return { changes: [], nextCursor: null, hasMore: false, extra: true }; } },
+    code: 'REMOTE_SYNC_RESPONSE_INVALID'
+  }, {
+    name: 'purge throws',
+    invoke(service) { return service.purgeRemote({ confirmationToken: 'confirm_remote_purge' }); },
+    override: { async purge() { throw new Error('purge unavailable'); } },
+    pattern: /purge unavailable/
+  }, {
+    name: 'purge returns an invalid closed response',
+    invoke(service) { return service.purgeRemote({ confirmationToken: 'confirm_remote_purge' }); },
+    override: { async purge() { return { purgedAt: NOW, extra: true }; } },
+    code: 'REMOTE_SYNC_RESPONSE_INVALID'
+  }];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { database, storage } = persistentRuntime();
+      const before = database.load();
+      storage.clearOperations();
+      const fake = createDeterministicRemoteSyncProvider({ ownerId: 'owner_fake_sync', now: () => NOW });
+      const provider = { ...fake, ...scenario.override };
+      const service = createSyncService({ database, provider, now: () => NOW + 5_000 });
+
+      await assert.rejects(
+        () => scenario.invoke(service),
+        scenario.code ? (error) => error && error.code === scenario.code : scenario.pattern
+      );
+      assert.deepEqual(database.load(), before);
+      assert.deepEqual(storage.operations.filter(({ type }) => type === 'write'), []);
+    });
+  }
+});
+
+test('AC2: application commands use closed schemas before invoking SyncService', async () => {
+  const calls = [];
+  let getterExecuted = false;
+  const application = createSyncApplicationService({
+    syncService: {
+      async bootstrap() { calls.push('bootstrap'); return { cursor: null, serverTime: NOW }; },
+      async pushPending() { calls.push('pushPending'); return {}; },
+      async pullNextPage() { calls.push('pullNextPage'); return { hasMore: false, nextCursor: null }; },
+      async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; }
+    }
+  });
+
+  assert.throws(() => application.bootstrap({ unexpected: true }), { code: 'SYNC_APPLICATION_INVALID' });
+  assert.throws(() => application.pushPending(null), { code: 'SYNC_APPLICATION_INVALID' });
+  assert.throws(
+    () => application.pullNextPage({ limit: 10, unexpected: true }),
+    { code: 'SYNC_APPLICATION_INVALID' }
+  );
+  assert.throws(
+    () => application.purgeRemote({ confirmationToken: 'confirm', unexpected: true }),
+    { code: 'SYNC_APPLICATION_INVALID' }
+  );
+  assert.throws(
+    () => application.synchronizeOnce({ pullLimit: 10, unexpected: true }),
+    { code: 'SYNC_APPLICATION_INVALID' }
+  );
+  const accessorCommand = {};
+  Object.defineProperty(accessorCommand, 'confirmationToken', {
+    enumerable: true,
+    get() {
+      getterExecuted = true;
+      return 'confirm';
+    }
+  });
+  assert.throws(() => application.purgeRemote(accessorCommand), { code: 'SYNC_APPLICATION_INVALID' });
+  assert.equal(getterExecuted, false, 'closed command validation must not execute accessor input');
+  assert.deepEqual(calls, []);
+});
+
+test('AC2: application facade rejects overlapping remote commands and releases its instance lock', async () => {
+  let releasePush;
+  const pushGate = new Promise((resolve) => { releasePush = resolve; });
+  const calls = [];
+  const application = createSyncApplicationService({
+    syncService: {
+      async bootstrap() { calls.push('bootstrap'); return { cursor: null, serverTime: NOW }; },
+      async pushPending() { calls.push('pushPending'); return pushGate; },
+      async pullNextPage() { calls.push('pullNextPage'); return { hasMore: false, nextCursor: null }; },
+      async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; }
+    }
+  });
+
+  const first = application.pushPending();
+  await assert.rejects(() => application.bootstrap(), { code: 'SYNC_APPLICATION_BUSY' });
+  assert.deepEqual(calls, ['pushPending']);
+
+  releasePush({ acceptedOpIds: [] });
+  await first;
+  await application.bootstrap();
+  assert.deepEqual(calls, ['pushPending', 'bootstrap']);
 });

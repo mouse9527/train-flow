@@ -8,9 +8,12 @@ const {
   applyAcceptedOperations,
   assertSyncOperation,
   assertSyncReplica,
+  entityKey,
   selectPushableOperations
 } = require('../domain/sync/sync-operation');
 const {
+  assertBootstrapResult,
+  assertPurgeResult,
   assertPushResult,
   assertPullResult,
   assertRemoteSyncProvider
@@ -130,6 +133,26 @@ class SyncService {
     this.now = now;
   }
 
+  async bootstrap() {
+    const snapshot = this.database.load();
+    if (
+      !snapshot.install ||
+      typeof snapshot.install.deviceId !== 'string' ||
+      snapshot.install.deviceId.length === 0
+    ) {
+      throw syncServiceError('sync bootstrap requires an install deviceId', 'SYNC_DEVICE_ID_REQUIRED');
+    }
+    const response = await this.provider.bootstrap({ deviceId: snapshot.install.deviceId });
+    assertBootstrapResult(response);
+    return cloneJson(response);
+  }
+
+  async purgeRemote({ confirmationToken } = {}) {
+    const response = await this.provider.purge({ confirmationToken });
+    assertPurgeResult(response);
+    return cloneJson(response);
+  }
+
   async pushPending() {
     const snapshot = this.database.load();
     const selection = selectPushableOperations(snapshot.sync.outbox);
@@ -179,14 +202,33 @@ class SyncService {
       for (const classification of response.conflicts) {
         const operation = findOperation(draft.sync.outbox, classification.opId);
         if (!operation) continue;
-        const conflict = createConflictState({
-          localOperation: operation,
-          remoteChange: mapRemoteChange(classification.remote),
-          localEntity: operation.payload,
-          detectedAt: attemptedAt
-        });
-        if (!draft.sync.conflicts.some(({ conflictId }) => conflictId === conflict.conflictId)) {
-          draft.sync.conflicts.push(conflict);
+        const remoteChange = mapRemoteChange(classification.remote);
+        if (
+          operation.entityType === ENTITY_TYPES.USER_SETTINGS &&
+          operation.action === 'upsert' &&
+          remoteChange.action === 'upsert'
+        ) {
+          const rebased = rebaseSettingsChange({
+            localSettings: draft.settings,
+            localOperation: operation,
+            remoteChange,
+            detectedAt: attemptedAt
+          });
+          draft.settings = rebased.settings;
+          const operationIndex = draft.sync.outbox.indexOf(operation);
+          draft.sync.outbox[operationIndex] = rebased.operation;
+          assertSyncOperation(draft.sync.outbox[operationIndex]);
+          addConflict(draft, rebased.conflict);
+          const key = entityKey(remoteChange.entityType, remoteChange.entityId);
+          draft.sync.replicas[key] = replicaFor(remoteChange);
+          assertSyncReplica(draft.sync.replicas[key]);
+        } else {
+          addConflict(draft, createConflictState({
+            localOperation: operation,
+            remoteChange,
+            localEntity: operation.payload,
+            detectedAt: attemptedAt
+          }));
         }
       }
       draft.sync.lastSyncedAt = attemptedAt;
@@ -214,7 +256,7 @@ class SyncService {
     const keys = new Set();
     let replayed = 0;
     for (const change of changes) {
-      const key = JSON.stringify([change.entityType, change.entityId]);
+      const key = entityKey(change.entityType, change.entityId);
       if (keys.has(key)) {
         throw syncServiceError('pull page contains duplicate entity changes', 'SYNC_PULL_DUPLICATE_ENTITY');
       }
@@ -254,7 +296,7 @@ class SyncService {
     let applied = 0;
     this.database.commit((draft) => {
       for (const change of changes) {
-        const key = JSON.stringify([change.entityType, change.entityId]);
+        const key = entityKey(change.entityType, change.entityId);
         const currentReplica = draft.sync.replicas[key] || null;
         if (
           currentReplica &&
