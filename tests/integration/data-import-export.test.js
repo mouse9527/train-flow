@@ -652,7 +652,8 @@ function assertRuntimeMetadataRebuilt(snapshot, expectedInstall) {
     lastSyncedAt: null,
     lastError: null,
     outbox: [],
-    conflicts: []
+    conflicts: [],
+    replicas: {}
   });
 }
 
@@ -996,7 +997,8 @@ test('[B] Attack: confirmed local purge 以 empty snapshot 为唯一 truth，保
     lastSyncedAt: null,
     lastError: null,
     outbox: [],
-    conflicts: []
+    conflicts: [],
+    replicas: {}
   });
   assert.equal(remoteCalls, 0);
   assert.deepEqual(database.load(), result.snapshot);

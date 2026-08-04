@@ -388,7 +388,8 @@ function emptyRuntimeMetadata() {
       lastSyncedAt: null,
       lastError: null,
       outbox: [],
-      conflicts: []
+      conflicts: [],
+      replicas: {}
     }
   };
 }
