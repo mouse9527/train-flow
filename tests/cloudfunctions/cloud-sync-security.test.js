@@ -12,6 +12,9 @@ const {
 const {
   materializeCloudFunctions
 } = require('../../scripts/prepare-cloudfunctions');
+const {
+  createCloudSyncStoreDouble: createMemoryStore
+} = require('../helpers/cloud-sync-store-double');
 
 const NOW = 1785816000000;
 const ALLOWED_OPENID = 'openid-test-allowed';
@@ -30,147 +33,6 @@ function createBootstrapStore() {
       return { cursor: null };
     }
   };
-}
-
-function stateKey(...parts) {
-  return JSON.stringify(parts);
-}
-
-function createMemoryStore({ retryCallbacks = 0, failBeforeCommit = 0 } = {}) {
-  let state = {
-    accounts: {},
-    entities: {},
-    operations: {},
-    changes: [],
-    purgeConfirmations: {},
-    purgeReceipts: {}
-  };
-  let queue = Promise.resolve();
-
-  function transactionFor(draft) {
-    return {
-      getAccount(ownerId) {
-        return structuredClone(draft.accounts[ownerId] || null);
-      },
-      putAccount(account) {
-        draft.accounts[account.ownerId] = structuredClone(account);
-      },
-      getOperation(ownerId, opId) {
-        return structuredClone(draft.operations[stateKey(ownerId, opId)] || null);
-      },
-      putOperation(operation) {
-        draft.operations[stateKey(operation.ownerId, operation.opId)] = structuredClone(operation);
-      },
-      getEntity(ownerId, entityType, entityId) {
-        return structuredClone(draft.entities[stateKey(ownerId, entityType, entityId)] || null);
-      },
-      putEntity(entity) {
-        draft.entities[stateKey(entity.ownerId, entity.entityType, entity.entityId)] = structuredClone(entity);
-      },
-      appendChange(change) {
-        draft.changes.push(structuredClone(change));
-      }
-    };
-  }
-
-  const store = {
-    async bootstrapOwner({ ownerId }) {
-      const account = state.accounts[ownerId];
-      return { cursor: account && account.sequence > 0 ? `memory-${account.sequence}` : null };
-    },
-    runTransaction(work) {
-      const previous = queue;
-      let release;
-      queue = new Promise((resolve) => { release = resolve; });
-      return previous.then(async () => {
-        try {
-          while (retryCallbacks > 0) {
-            retryCallbacks -= 1;
-            const discarded = structuredClone(state);
-            await work(transactionFor(discarded));
-          }
-          const draft = structuredClone(state);
-          const result = await work(transactionFor(draft));
-          if (failBeforeCommit > 0) {
-            failBeforeCommit -= 1;
-            throw new Error('injected transaction failure');
-          }
-          state = draft;
-          return structuredClone(result);
-        } finally {
-          release();
-        }
-      });
-    },
-    async listChanges({ ownerId, epoch, afterSequence, limit }) {
-      const account = state.accounts[ownerId] || null;
-      if (!account || account.status !== 'active' || account.epoch !== epoch) {
-        const error = new Error('cursor unavailable');
-        error.code = 'CURSOR_INVALID';
-        throw error;
-      }
-      const raw = state.changes
-        .filter((change) => (
-          change.ownerId === ownerId &&
-          change.epoch === epoch &&
-          change.sequence > afterSequence
-        ))
-        .sort((left, right) => left.sequence - right.sequence);
-      return {
-        changes: structuredClone(raw.slice(0, limit)),
-        hasMore: raw.length > limit
-      };
-    },
-    async getOwnerSyncState(ownerId) {
-      const account = state.accounts[ownerId] || null;
-      return account ? {
-        status: account.status,
-        epoch: account.epoch,
-        sequence: account.sequence
-      } : null;
-    },
-    async preparePurge(confirmation) {
-      state.purgeConfirmations[stateKey(confirmation.ownerId, confirmation.tokenHash)] =
-        structuredClone(confirmation);
-    },
-    async confirmPurge({ ownerId, deviceId, purpose, tokenHash, now }) {
-      const key = stateKey(ownerId, tokenHash);
-      const receipt = state.purgeReceipts[key] || null;
-      if (receipt) return structuredClone(receipt);
-      const confirmation = state.purgeConfirmations[key] || null;
-      if (
-        !confirmation || confirmation.deviceId !== deviceId ||
-        confirmation.purpose !== purpose || confirmation.expiresAt < now
-      ) {
-        const error = new Error('confirmation invalid');
-        error.code = 'PURGE_CONFIRMATION_INVALID';
-        throw error;
-      }
-      const account = state.accounts[ownerId] || {
-        ownerId, status: 'active', epoch: 1, sequence: 0, createdAt: now, updatedAt: now
-      };
-      account.status = 'purging';
-      account.epoch += 1;
-      account.updatedAt = now;
-      state.accounts[ownerId] = account;
-      for (const keyName of Object.keys(state.entities)) {
-        if (JSON.parse(keyName)[0] === ownerId) delete state.entities[keyName];
-      }
-      for (const keyName of Object.keys(state.operations)) {
-        if (JSON.parse(keyName)[0] === ownerId) delete state.operations[keyName];
-      }
-      state.changes = state.changes.filter((change) => change.ownerId !== ownerId);
-      delete state.purgeConfirmations[key];
-      const result = { purgedAt: now };
-      state.purgeReceipts[key] = result;
-      account.status = 'purged';
-      return structuredClone(result);
-    },
-    snapshot() {
-      return structuredClone(state);
-    }
-  };
-  return store;
 }
 
 function syncOperation({
@@ -444,6 +306,28 @@ test('AC2/AC3: delete writes a server-timed tombstone and stale delete cannot er
   assert.equal(entity.updatedAt, NOW);
 });
 
+test('AC2: prototype-pollution keys are rejected at every payload depth', async () => {
+  for (const maliciousPayload of [
+    JSON.parse(`{"id":"plan_cloud_security","__proto__":{"polluted":"yes"}}`),
+    { id: 'plan_cloud_security', nested: { constructor: { prototype: { polluted: 'yes' } } } },
+    { id: 'plan_cloud_security', nested: { prototype: { polluted: 'yes' } } }
+  ]) {
+    const store = createMemoryStore();
+    const { handlers } = createHandlers({ store });
+    const error = await captureError(() => handlers.syncPush({
+      operations: [syncOperation({ entityId: 'plan_cloud_security', payload: maliciousPayload })]
+    }));
+
+    assert.equal(error.code, 'SYNC_PAYLOAD_INVALID');
+    assert.equal(error.message, 'Sync payload is invalid');
+    assert.deepEqual(store.snapshot(), {
+      accounts: {}, entities: {}, operations: {}, changes: [],
+      purgeConfirmations: {}, purgeReceipts: {}
+    });
+    assert.equal({}.polluted, undefined);
+  }
+});
+
 test('AC4: syncPull uses an opaque owner-bound cursor, coalesces a raw page and advances across every raw change', async () => {
   const store = createMemoryStore();
   const { handlers } = createHandlers({ store });
@@ -495,6 +379,28 @@ test('AC4: tampered and cross-owner cursors fail closed while the other owner ca
     assert.equal(error.code, 'CURSOR_INVALID');
     assert.equal(error.message, 'Sync cursor is invalid');
   }
+});
+
+test('AC4: non-monotonic store change sequences fail closed without issuing a regressed cursor', async () => {
+  const store = createMemoryStore();
+  const { handlers } = createHandlers({ store });
+  const first = syncOperation({ opId: `op_${'b'.repeat(64)}` });
+  await handlers.syncPush({ operations: [first] });
+  await handlers.syncPush({ operations: [{
+    ...first,
+    opId: `op_${'c'.repeat(64)}`,
+    baseServerRevision: 1,
+    payload: { ...first.payload, title: 'Revision two' }
+  }] });
+  const listChanges = store.listChanges.bind(store);
+  store.listChanges = async (input) => {
+    const page = await listChanges(input);
+    return { ...page, changes: page.changes.reverse() };
+  };
+
+  const error = await captureError(() => handlers.syncPull({ cursor: null, limit: 2 }));
+  assert.equal(error.code, 'CURSOR_INVALID');
+  assert.equal(error.message, 'Sync cursor is invalid');
 });
 
 test('AC4: accountPurge prepare/confirm is short-lived, owner/device bound, replay-safe and isolated', async () => {
@@ -605,6 +511,10 @@ test('AC5: materialized CloudBase function packages are self-contained and match
       assert.match(entrySource, /\.\/_shared\/cloudbase-runtime/);
       const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
       assert.equal(packageJson.dependencies['wx-server-sdk'], '4.0.2');
+      assert.deepEqual(packageJson.overrides, {
+        axios: '1.19.0',
+        'lodash.unset': '4.18.0'
+      });
       const sharedDigest = sha256(fs.readFileSync(path.join(packageRoot, '_shared', 'index.js')));
       assert.equal(sharedDigest, report.fileDigests['index.js']);
       assert.equal(

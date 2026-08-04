@@ -53,7 +53,12 @@ npm run cloud:prepare
 The command creates `cloudfunctions/<name>/_shared/` for `authBootstrap`,
 `syncPush`, `syncPull` and `accountPurge`. Generated copies are ignored by Git.
 Review the printed SHA-256 digest, then use WeChat DevTools “上传并部署：云端安装依赖”
-for each function. Every package pins `wx-server-sdk` to `4.0.2`.
+for each function. Every package pins stable `wx-server-sdk` `4.0.2` and overrides
+fixed `axios` / `lodash.unset` releases. `npm audit --omit=dev` still reports the
+upstream `lodash.set` prototype-pollution advisory through CloudBase's realtime
+WebSocket module. TrainFlow does not expose realtime/watch APIs, rejects prototype
+keys at its request boundary, and must re-audit when CloudBase publishes a fixed
+dependency tree.
 
 ## Runtime contracts
 

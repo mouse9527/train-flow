@@ -33,6 +33,7 @@ const SERVER_FIELDS = new Set([
   'createdat',
   'updatedat'
 ]);
+const PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function cloudError(code, message) {
   const error = new Error(message);
@@ -202,6 +203,9 @@ function sanitizePayload(value, { root = true } = {}) {
   const result = {};
   for (const [field, nested] of Object.entries(value)) {
     const lower = field.toLowerCase();
+    if (PROTOTYPE_KEYS.has(lower)) {
+      throw cloudError('SYNC_PAYLOAD_INVALID', 'Sync payload is invalid');
+    }
     const rootTimestamp = root && (lower === 'createdat' || lower === 'updatedat');
     if (!isSecretField(field) || rootTimestamp) {
       if (!rootTimestamp) result[field] = sanitizePayload(nested, { root: false });
@@ -506,14 +510,17 @@ function createCloudSyncHandlers({
         }
         const rawChanges = page && Array.isArray(page.changes) ? page.changes : [];
         const latestByEntity = new Map();
+        let previousSequence = position.sequence;
         for (const change of rawChanges) {
           if (
             !change || change.ownerId !== ownerId || change.epoch !== position.epoch ||
-            !Number.isSafeInteger(change.sequence) || change.sequence <= position.sequence ||
+            !Number.isSafeInteger(change.sequence) || change.sequence <= previousSequence ||
+            change.sequence > state.sequence ||
             !change.envelope || change.envelope.ownerId !== ownerId
           ) {
             throw cursorError();
           }
+          previousSequence = change.sequence;
           latestByEntity.set(
             JSON.stringify([change.envelope.entityType, change.envelope.entityId]),
             change
