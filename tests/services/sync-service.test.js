@@ -21,6 +21,7 @@ const { DEFAULT_USER_SETTINGS } = require('../../miniprogram/utils/constants');
 const { StorageDouble, clone } = require('../helpers/storage-double');
 const {
   assertBootstrapResult,
+  assertPurgePreparationResult,
   assertPullResult,
   assertPushResult,
   assertRemoteSyncProvider,
@@ -668,9 +669,9 @@ test('Attack: replaying the terminal command is a zero-write no-op and never que
   );
 });
 
-test('AC2: RemoteSyncProvider contract is closed and requires bootstrap, push, pull and purge', () => {
+test('AC2: RemoteSyncProvider contract is closed and requires bootstrap, push, pull, preparePurge and purge', () => {
   assert.throws(
-    () => assertRemoteSyncProvider({ bootstrap() {}, push() {}, pull() {} }),
+    () => assertRemoteSyncProvider({ bootstrap() {}, push() {}, pull() {}, purge() {} }),
     (error) => error && error.code === 'REMOTE_SYNC_PROVIDER_INVALID'
   );
   assert.throws(
@@ -717,7 +718,12 @@ test('AC2/AC3: deterministic fake provider supports idempotent push, cursor pull
   assert.equal(firstPage.hasMore, false);
   assert.equal(typeof firstPage.nextCursor, 'string');
 
-  const purged = await provider.purge({ confirmationToken: 'confirm_fake_purge' });
+  const prepared = await provider.preparePurge({ deviceId: 'device_sync_test' });
+  assertPurgePreparationResult(prepared);
+  const purged = await provider.purge({
+    deviceId: 'device_sync_test',
+    confirmationToken: prepared.confirmationToken
+  });
   assert.deepEqual(purged, { purgedAt: NOW });
   assert.deepEqual(
     await provider.pull({ cursor: null, limit: 10 }),
@@ -864,6 +870,7 @@ test('AC3: duplicate accepted receipts fail closed without replica write or part
   const provider = {
     bootstrap: fake.bootstrap.bind(fake),
     pull: fake.pull.bind(fake),
+    preparePurge: fake.preparePurge.bind(fake),
     purge: fake.purge.bind(fake),
     async push(request) {
       const result = await fake.push(request);
@@ -956,6 +963,7 @@ test('Attack: push response cannot accept an outbox operation that was not in th
   const provider = {
     bootstrap: fake.bootstrap.bind(fake),
     pull: fake.pull.bind(fake),
+    preparePurge: fake.preparePurge.bind(fake),
     purge: fake.purge.bind(fake),
     async push(request) {
       assert.deepEqual(request.operations.map(({ opId }) => opId), [head.opId]);
@@ -995,6 +1003,7 @@ function scriptedPullProvider(result) {
     async bootstrap() { return { cursor: null, serverTime: NOW }; },
     async push() { return { accepted: [], rejected: [], conflicts: [] }; },
     async pull() { return clone(result); },
+    async preparePurge() { return { confirmationToken: 'purge_test', expiresAt: NOW + 300000 }; },
     async purge() { return { purgedAt: NOW }; }
   };
 }
@@ -1198,10 +1207,15 @@ test('AC2/AC4: application bootstrap and purge are reachable without letting boo
   assert.equal(database.load().sync.cursor, before.sync.cursor, 'bootstrap cursor is advisory only');
   assert.deepEqual(provider.calls.bootstrap, [{ deviceId: before.install.deviceId }]);
 
-  const purge = await application.purgeRemote({ confirmationToken: 'confirm_application_purge' });
+  const prepared = await application.prepareRemotePurge();
+  const purge = await application.purgeRemote({ confirmationToken: prepared.confirmationToken });
   assert.deepEqual(purge, { purgedAt: NOW });
   assert.deepEqual(database.load(), before, 'remote purge must not silently mutate local data');
-  assert.deepEqual(provider.calls.purge, [{ confirmationToken: '[redacted]' }]);
+  assert.deepEqual(provider.calls.preparePurge, [{ deviceId: before.install.deviceId }]);
+  assert.deepEqual(provider.calls.purge, [{
+    deviceId: before.install.deviceId,
+    confirmationToken: '[redacted]'
+  }]);
 });
 
 test('AC2/AC4: application synchronizeOnce pushes then drains opaque pull pages through SyncService only', async () => {
@@ -1339,6 +1353,7 @@ test('AC2: application commands use closed schemas before invoking SyncService',
       async bootstrap() { calls.push('bootstrap'); return { cursor: null, serverTime: NOW }; },
       async pushPending() { calls.push('pushPending'); return {}; },
       async pullNextPage() { calls.push('pullNextPage'); return { hasMore: false, nextCursor: null }; },
+      async prepareRemotePurge() { calls.push('prepareRemotePurge'); return { confirmationToken: 'purge_test', expiresAt: NOW + 300000 }; },
       async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; }
     }
   });
@@ -1347,6 +1362,10 @@ test('AC2: application commands use closed schemas before invoking SyncService',
   assert.throws(() => application.pushPending(null), { code: 'SYNC_APPLICATION_INVALID' });
   assert.throws(
     () => application.pullNextPage({ limit: 10, unexpected: true }),
+    { code: 'SYNC_APPLICATION_INVALID' }
+  );
+  assert.throws(
+    () => application.prepareRemotePurge({ unexpected: true }),
     { code: 'SYNC_APPLICATION_INVALID' }
   );
   assert.throws(
@@ -1379,6 +1398,7 @@ test('AC2: application facade rejects overlapping remote commands and releases i
       async bootstrap() { calls.push('bootstrap'); return { cursor: null, serverTime: NOW }; },
       async pushPending() { calls.push('pushPending'); return pushGate; },
       async pullNextPage() { calls.push('pullNextPage'); return { hasMore: false, nextCursor: null }; },
+      async prepareRemotePurge() { calls.push('prepareRemotePurge'); return { confirmationToken: 'purge_test', expiresAt: NOW + 300000 }; },
       async purgeRemote() { calls.push('purgeRemote'); return { purgedAt: NOW }; }
     }
   });

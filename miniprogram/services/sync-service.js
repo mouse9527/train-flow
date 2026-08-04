@@ -13,6 +13,7 @@ const {
 } = require('../domain/sync/sync-operation');
 const {
   assertBootstrapResult,
+  assertPurgePreparationResult,
   assertPurgeResult,
   assertPushResult,
   assertPullResult,
@@ -164,8 +165,33 @@ class SyncService {
   }
 
   async purgeRemote({ confirmationToken } = {}) {
-    const response = await this.provider.purge({ confirmationToken });
+    const snapshot = this.database.load();
+    if (
+      !snapshot.install ||
+      typeof snapshot.install.deviceId !== 'string' ||
+      snapshot.install.deviceId.length === 0
+    ) {
+      throw syncServiceError('remote purge requires an install deviceId', 'SYNC_DEVICE_ID_REQUIRED');
+    }
+    const response = await this.provider.purge({
+      deviceId: snapshot.install.deviceId,
+      confirmationToken
+    });
     assertPurgeResult(response);
+    return cloneJson(response);
+  }
+
+  async prepareRemotePurge() {
+    const snapshot = this.database.load();
+    if (
+      !snapshot.install ||
+      typeof snapshot.install.deviceId !== 'string' ||
+      snapshot.install.deviceId.length === 0
+    ) {
+      throw syncServiceError('remote purge requires an install deviceId', 'SYNC_DEVICE_ID_REQUIRED');
+    }
+    const response = await this.provider.preparePurge({ deviceId: snapshot.install.deviceId });
+    assertPurgePreparationResult(response);
     return cloneJson(response);
   }
 

@@ -83,7 +83,13 @@ function assertSyncService(syncService) {
   if (!syncService || typeof syncService !== 'object' || Array.isArray(syncService)) {
     throw applicationError('createSyncApplicationService requires a SyncService');
   }
-  for (const method of ['bootstrap', 'pushPending', 'pullNextPage', 'purgeRemote']) {
+  for (const method of [
+    'bootstrap',
+    'pushPending',
+    'pullNextPage',
+    'prepareRemotePurge',
+    'purgeRemote'
+  ]) {
     if (typeof syncService[method] !== 'function') {
       throw applicationError(`SyncService requires ${method}()`);
     }
@@ -132,6 +138,11 @@ function createSyncApplicationService({ syncService } = {}) {
       return runExclusive(() => syncService.purgeRemote({
         confirmationToken: validated.confirmationToken
       }));
+    },
+
+    prepareRemotePurge(command) {
+      assertEmptyCommand(command, 'prepareRemotePurge');
+      return runExclusive(() => syncService.prepareRemotePurge());
     },
 
     synchronizeOnce(command) {
